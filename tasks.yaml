@@ -15,17 +15,6 @@ queue:
       - The maintainer's preview in a Rex pane resumes a session by key and by click.
     plan: openspec/changes/fullscreen-picker/proposal.md
 
-  - id: RAWR-002
-    title: Parse and report through ctl-core
-    scope: cli
-    outcome: >-
-      rawr parses its commands, prints help and reports errors through ctl-core, as
-      the other ctl tools do.
-    blocked_by: []
-    acceptance:
-      - main.rs builds its commands with ctl-core App and clap derive, with no hand-written argument matching.
-      - pick still writes only the chosen command to stdout and exits non-zero with empty stdout when it has nothing to offer.
-
   - id: RAWR-003
     title: Find any local Claude Code session from the picker
     scope: picker
@@ -38,7 +27,17 @@ queue:
       - Search reads one prompt-history file and stats transcripts; it opens no transcript it does not show.
     notes:
       - Local sessions only; older sessions are a horizon row.
-archive: []
+archive:
+  - id: RAWR-002
+    title: Parse and report through ctl-core
+    scope: cli
+    outcome: >-
+      rawr parses its commands, prints help and reports errors through ctl-core, as
+      the other ctl tools do.
+    completed: 2026-11-07T23:28:32
+    evidence:
+      - 0b96b8df65e246b95ff6416f3a4203b0987c9fda
+    disposition: completed
 horizon:
   - id: RAWR-004
     title: One shared process for every pane's picker
