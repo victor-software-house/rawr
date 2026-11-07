@@ -27,6 +27,56 @@ queue:
       - Search reads one prompt-history file and stats transcripts; it opens no transcript it does not show.
     notes:
       - Local sessions only; older sessions are a horizon row.
+    plan: openspec/changes/session-search/proposal.md
+
+  - id: RAWR-006
+    title: Print shell integration and add the Claude hook on request
+    scope: cli
+    outcome: >-
+      bash, zsh and fish users get rawr working from one printed line, and Claude
+      Code records sessions after one explicit command.
+    blocked_by: []
+    acceptance:
+      - rawr init <bash|zsh|fish> prints a static script, and pick and find quote for that shell.
+      - rawr setup claude adds the SessionStart hook once and reports added or unchanged; --dry-run changes nothing.
+    plan: openspec/changes/install-and-shells/proposal.md
+
+  - id: RAWR-007
+    title: Ship macOS arm64 and Linux glibc binaries with an install script
+    scope: release
+    outcome: >-
+      A release carries darwin-arm64, linux-x64 and linux-arm64 tarballs with
+      digests, and install.sh installs the right one without editing shell files.
+    blocked_by: []
+    acceptance:
+      - verctl assets prints the three targets.
+      - install.sh verifies the digest, installs into RAWR_INSTALL_DIR or ~/.local/bin, and prints the rawr init line.
+    plan: openspec/changes/install-and-shells/proposal.md
+
+  - id: RAWR-008
+    title: Install from the organization Homebrew tap
+    scope: release
+    outcome: >-
+      brew install victor-software-house/tap/rawr installs the binary and its
+      completions, and each release updates the formula.
+    blocked_by: []
+    acceptance:
+      - victor-software-house/homebrew-tap holds a rawr formula whose brew test passes.
+      - A release updates the formula version and digests without a hand edit.
+    plan: openspec/changes/install-and-shells/proposal.md
+
+  - id: RAWR-009
+    title: Offer shell completions through ctl-core
+    scope: cli
+    outcome: >-
+      rawr completion <bash|zsh|fish> prints static completions from the shared
+      ctl-core verb.
+    blocked_by: []
+    acceptance:
+      - rawr depends on a ctl-core release with the completion verb, and the bash script names every command.
+    plan: openspec/changes/install-and-shells/proposal.md
+    notes:
+      - ctl-core owns the verb; its research and OpenSpec change come first, in that repository.
 archive:
   - id: RAWR-002
     title: Parse and report through ctl-core
