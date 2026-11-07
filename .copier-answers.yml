@@ -24,6 +24,7 @@ pieces:
 - lint_markdown
 - lint_toml
 - lint_typos
+- openspec
 - ci
 - drift_check
 - rust_tasks

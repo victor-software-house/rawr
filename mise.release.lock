@@ -36,6 +36,23 @@ url = "https://github.com/open-policy-agent/conftest/releases/download/v0.71.1/c
 url_api = "https://api.github.com/repos/open-policy-agent/conftest/releases/assets/614476647"
 provenance = "github-attestations"
 
+[[tools."github:Fission-AI/OpenSpec"]]
+version = "1.16.0"
+backend = "github:Fission-AI/OpenSpec"
+specifiers = ["1.16.0"]
+
+[tools."github:Fission-AI/OpenSpec"."platforms.linux-x64"]
+checksum = "sha256:f27fb2ff5c6c4aafb207cb0b797189215adb3a1150d4b4600a2d6a0b6e192ae1"
+url = "https://github.com/Fission-AI/OpenSpec/releases/download/v1.16.0/openspec-linux-x64.tar.gz"
+url_api = "https://api.github.com/repos/Fission-AI/OpenSpec/releases/assets/693785691"
+provenance = "github-attestations"
+
+[tools."github:Fission-AI/OpenSpec"."platforms.macos-arm64"]
+checksum = "sha256:51e9298489a86718e32433ddffbb6d4a29ee9da992bf3bcfaa29a664ec7b4cc2"
+url = "https://github.com/Fission-AI/OpenSpec/releases/download/v1.16.0/openspec-darwin-arm64.tar.gz"
+url_api = "https://api.github.com/repos/Fission-AI/OpenSpec/releases/assets/693785649"
+provenance = "github-attestations"
+
 [[tools."github:victor-software-house/verctl"]]
 version = "0.7.2"
 backend = "github:victor-software-house/verctl"
