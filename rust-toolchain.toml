@@ -1,0 +1,6 @@
+# The pinned stable, for editors and plain cargo. The formatting nightly lives
+# only in mise.toml and the format task.
+[toolchain]
+channel = "1.99.1"
+profile = "minimal"
+components = ["clippy"]

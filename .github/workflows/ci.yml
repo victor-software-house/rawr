@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [main]
+
+# The shared Verify job reads this run and the runs that replaced it.
+permissions:
+  actions: read
+  contents: read
+  pull-requests: read
+
+concurrency:
+  # A draft run gets a group of its own, so it never cancels the ready run.
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref_name }}${{ github.event.pull_request.draft && '-draft' || '' }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    if: ${{ !github.event.pull_request.draft }}
+    uses: victor-software-house/actions/.github/workflows/rust-ci.yml@ca84425f5597bc5fd59e5614d0cf1f2f06194377 # main, 2026-11-05
+    with:
+      mise-version: 2026.11.2
+      advisories: true
+      semver: false
+      timeout-minutes: 8
+      build-runner: '["ubuntu-latest"]'
+      read-only-runner: '["ubuntu-latest"]'
+      light-runner: ubuntu-latest
+      cache-volume: false

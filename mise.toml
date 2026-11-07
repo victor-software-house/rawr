@@ -1,0 +1,68 @@
+# The latest stable mise is the floor; CI pins the same version.
+min_version = "2026.11.2"
+
+[settings]
+# mise loads git:: task includes only in experimental mode.
+experimental = true
+lockfile = true
+# The platforms CI and contributors use. Without it, mise install fills every
+# tool up to the platforms any tool already records, and rewrites the locks.
+lockfile_platforms = ["linux-x64", "macos-arm64"]
+
+# Every tool this root declares must match mise.lock or mise.<env>.lock.
+[tool_config]
+locked = true
+
+# The toolchain lives here, not in mise.dev.toml, because CI loads only
+# MISE_ENV=ci. The stable pin equals rust-toolchain.toml and rust-version.
+[tools]
+rust = [
+  # Pinned stable: build, lint, test.
+  { version = "1.99.1", profile = "minimal", components = "clippy", mr_boxington = true },
+  # Formatting only, for rustfmt's unstable options.
+  { version = "nightly-2026-11-01", profile = "minimal", components = "rustfmt" },
+]
+mr-boxington = "1.29.1"
+"github:EmbarkStudios/cargo-deny" = "0.20.2"
+"github:bnjbvr/cargo-machete" = "0.9.2"
+jq = "1.8.2"
+
+# The shared Rust tasks read their toolchains from here and name none.
+[env]
+# format runs rustfmt on the nightly, for its unstable options.
+RUSTFMT_TOOLCHAIN = "+nightly-2026-11-01"
+# doc builds on the nightly, as docs.rs does.
+RUST_NIGHTLY = "nightly-2026-11-01"
+
+# The one gate, composed from the pieces this repository keeps. deny:advisories
+# and semver need the network, so they run as their own CI steps.
+[tasks.verify]
+description = "Every offline check this repository runs"
+depends = [
+  "check:toolchain",
+  "format",
+  "lint",
+  "check:features",
+  "test",
+  "deny",
+  "deps",
+  "check:versions",
+  "check:repo",
+]
+
+# mise-tasks/ holds this repository's task fragments and file tasks. An
+# includes list replaces the default task dirs, so mise-tasks comes first; add
+# pinned git:: catalogs after it.
+[task_config]
+includes = [
+  # Pinned git:: catalogs follow mise-tasks.
+  "mise-tasks",
+  # `mise run ver`, which the release workflow and check:versions run. Bump
+  # the ref together with the verctl pin in mise.release.toml and the
+  # workflow's pin.
+  "git::https://github.com/victor-software-house/verctl.git//tasks/ver?ref=v0.7.2",
+  # The shared Rust tasks, at actions main, 2026-11-05.
+  "git::https://github.com/victor-software-house/actions.git//tasks/rust.toml?ref=ca84425f5597bc5fd59e5614d0cf1f2f06194377",
+  # template:check, template:off, and template:on, at actions main, 2026-11-05.
+  "git::https://github.com/victor-software-house/actions.git//tasks/template.toml?ref=ca84425f5597bc5fd59e5614d0cf1f2f06194377",
+]

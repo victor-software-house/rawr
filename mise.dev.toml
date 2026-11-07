@@ -1,0 +1,13 @@
+# Loaded when MISE_ENV contains `dev` (local default via .miserc.toml). CI never
+# loads it, so local-only tools and the git hooks live here. Their tasks are in
+# mise-tasks/.
+
+[tools]
+lefthook = "2.2.2"
+"github:crate-ci/committed" = "1.1.11"
+gitleaks = "8.30.1"
+
+# Installs the git hooks after every `mise install`, even when every tool is
+# already present. CI never loads this file, so runners never get the hooks.
+[hooks]
+postinstall = "lefthook install"
