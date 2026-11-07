@@ -1,0 +1,27 @@
+# Releases, driven by verctl through .github/workflows/release.yml.
+
+# Cargo.lock carries the version too, so a bump leaves it stale. `after`
+# regenerates it and `stage` puts it on the Version PR commit.
+prepare:
+  after: [cargo, update, --workspace]
+  stage: [Cargo.lock]
+
+# Released on GitHub only: a tag, the Release, and its binaries, which
+# `mise use -g github:victor-software-house/rex-resume` installs. Cargo.toml
+# sets publish = false, so nothing goes to crates.io.
+packages:
+  - name: rex-resume
+    path: Cargo.toml
+    publisher: none
+
+# One tarball per host binary, on the built-in records' free hosted runners.
+assets:
+  darwin-arm64: {}
+  linux-x64: {}
+
+# Maintainers and Apps a changelog never credits.
+changelog:
+  internal_authors:
+    - any-victor
+    - "github-actions[bot]"
+    - "vsh-changeset-version[bot]"

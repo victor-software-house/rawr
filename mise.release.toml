@@ -1,0 +1,5 @@
+# Loaded when MISE_ENV contains `release`: the release workflow. Bump the pin
+# together with the ver task's ref in mise.toml and the workflow's pin.
+
+[tools]
+"github:victor-software-house/verctl" = "0.7.2"
