@@ -1,0 +1,61 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/victor-software-house/qctl/main/schema/tasks.schema.json
+schema_version: 5
+prefix: RAWR
+active: RAWR-001
+queue:
+  - id: RAWR-001
+    title: Offer a restored pane its sessions in a full-screen picker
+    scope: picker
+    outcome: >-
+      A restored Rex pane offers its Claude Code sessions in a full-screen picker
+      that takes keys and the mouse.
+    blocked_by: []
+    acceptance:
+      - Every task in the fullscreen-picker change is checked off with evidence.
+      - The maintainer's preview in a Rex pane resumes a session by key and by click.
+    plan: openspec/changes/fullscreen-picker/proposal.md
+
+  - id: RAWR-002
+    title: Parse and report through ctl-core
+    scope: cli
+    outcome: >-
+      rawr parses its commands, prints help and reports errors through ctl-core, as
+      the other ctl tools do.
+    blocked_by: []
+    acceptance:
+      - main.rs builds its commands with ctl-core App and clap derive, with no hand-written argument matching.
+      - pick still writes only the chosen command to stdout and exits non-zero with empty stdout when it has nothing to offer.
+
+  - id: RAWR-003
+    title: Find any local Claude Code session from the picker
+    scope: picker
+    outcome: >-
+      Typing in the picker searches every resumable local Claude Code session, not
+      only the pane's own.
+    blocked_by: []
+    acceptance:
+      - Typing filters the list on each key press, matching titles, folders, prompts and session IDs.
+      - Search reads one prompt-history file and stats transcripts; it opens no transcript it does not show.
+    notes:
+      - Local sessions only; older sessions are a horizon row.
+archive: []
+horizon:
+  - id: RAWR-004
+    title: One shared process for every pane's picker
+    scope: architecture
+    outcome: >-
+      One long-lived process holds the session list and serves the picker in every
+      pane, so no pane rescans on its own.
+    kind: deferred
+    open: >-
+      A per-pane scan is fast enough today, and a daemon adds lifecycle, sockets and
+      upgrades that a small public tool would have to own.
+
+  - id: RAWR-005
+    title: Search older sessions through session-lake
+    scope: picker
+    outcome: >-
+      The picker also finds sessions whose local transcripts were pruned, through
+      session-lake.
+    kind: deferred
+    open: session-lake has no public interface rawr can depend on.

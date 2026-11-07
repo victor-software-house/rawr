@@ -70,6 +70,23 @@ checksum_source = "mise-versions"
 url = "https://github.com/crate-ci/committed/releases/download/v1.1.11/committed-v1.1.11-aarch64-apple-darwin.tar.gz"
 url_api = "https://api.github.com/repos/crate-ci/committed/releases/assets/362199688"
 
+[[tools."github:victor-software-house/qctl"]]
+version = "0.6.0"
+backend = "github:victor-software-house/qctl"
+specifiers = ["0.6.0"]
+
+[tools."github:victor-software-house/qctl"."platforms.linux-x64"]
+checksum = "sha256:1f175c10b26a4f756b837fa781a5bfd06e8d0c3ffce3f05f5513a7b644a5a91d"
+checksum_source = "mise-versions"
+url = "https://github.com/victor-software-house/qctl/releases/download/v0.6.0/qctl_0.6.0_linux_x64.tar.gz"
+url_api = "https://api.github.com/repos/victor-software-house/qctl/releases/assets/671129124"
+
+[tools."github:victor-software-house/qctl"."platforms.macos-arm64"]
+checksum = "sha256:407793b3a811d4d25f0da008bcead5e3ce9eab18c4554002714c6c288bc662f3"
+checksum_source = "mise-versions"
+url = "https://github.com/victor-software-house/qctl/releases/download/v0.6.0/qctl_0.6.0_macos_arm64.tar.gz"
+url_api = "https://api.github.com/repos/victor-software-house/qctl/releases/assets/671129358"
+
 [[tools."github:victor-software-house/verctl"]]
 version = "0.7.2"
 backend = "github:victor-software-house/verctl"
