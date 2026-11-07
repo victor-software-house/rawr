@@ -6,8 +6,6 @@ mod state;
 mod terminal;
 mod view;
 
-use std::time::Instant;
-
 use anyhow::{Context, Result};
 use ratatui::crossterm::event::{self, Event};
 
@@ -32,23 +30,22 @@ pub(crate) fn choose(agents: &[Agent]) -> Result<Option<usize>> {
     let mut offset = 0;
     let mut drawn = None;
     loop {
-        let frame = match drawn.take() {
-            Some(frame) => frame,
-            None => {
-                let mut result = None;
-                screen
-                    .terminal()
-                    .draw(|frame| result = Some(view::draw(frame, agents, &state, offset)))
-                    .context("draw the picker")?;
-                result.context("the picker drew no frame")?
-            }
+        let frame = if let Some(frame) = drawn.take() {
+            frame
+        } else {
+            let mut result = None;
+            screen
+                .terminal()
+                .draw(|frame| result = Some(view::draw(frame, agents, &state, offset)))
+                .context("draw the picker")?;
+            result.context("the picker drew no frame")?
         };
         offset = frame.offset;
         let step = match event::read().context("read the terminal")? {
             Event::Key(key) => state.on_key(key, frame.page),
             Event::Mouse(mouse) => {
                 let hit = frame.rows.get(usize::from(mouse.row)).copied().flatten();
-                let step = state.on_mouse(mouse, hit, Instant::now());
+                let step = state.on_mouse(mouse, hit);
                 let pointer = if state.hover().is_some() {
                     Pointer::Hand
                 } else {

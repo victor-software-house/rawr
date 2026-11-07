@@ -54,17 +54,17 @@ The picker SHALL move the selection with Up, Down, `k`, `j`, Home, End, `g`, `G`
 
 ### Requirement: Mouse control
 
-The picker SHALL select the row under a left click, resume it on a second left click on the same row within 400 ms, and move the selection one row per wheel step.
+The picker SHALL select the row under a left click when that row is not selected, resume the row under a left click when it is selected, and move the selection one row per wheel step.
 
-#### Scenario: Double click
+#### Scenario: Click another row
 
-- **WHEN** the user clicks the second row twice within 400 ms
+- **WHEN** the first row is selected and the user clicks the second row
+- **THEN** the picker stays open with the second row selected
+
+#### Scenario: Click the selected row
+
+- **WHEN** the second row is selected and the user clicks it
 - **THEN** `pick` prints the second session's command
-
-#### Scenario: A single click
-
-- **WHEN** the first row is selected and the user clicks it once
-- **THEN** the picker stays open with the first row selected
 
 #### Scenario: Wheel
 

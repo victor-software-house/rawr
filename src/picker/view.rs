@@ -114,7 +114,7 @@ fn keys(width: usize) -> Line<'static> {
         ("↑↓", "select"),
         ("⏎", "resume"),
         ("1-9", "resume nth"),
-        ("double-click", "resume"),
+        ("click", "select, again resume"),
         ("esc", "shell"),
     ];
     let mut spans = vec![Span::raw(" ")];
@@ -201,6 +201,8 @@ pub(crate) fn draw(frame: &mut Frame<'_>, agents: &[Agent], state: &State, offse
             Scrollbar::new(ScrollbarOrientation::VerticalRight)
                 .begin_symbol(None)
                 .end_symbol(None)
+                .track_symbol(Some("│"))
+                .thumb_symbol("┃")
                 .track_style(Style::new().add_modifier(Modifier::DIM)),
             list,
             &mut scroll,
@@ -226,7 +228,7 @@ pub(crate) fn draw(frame: &mut Frame<'_>, agents: &[Agent], state: &State, offse
 
 #[cfg(test)]
 mod tests {
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
@@ -310,7 +312,7 @@ mod tests {
             row: 6,
             modifiers: KeyModifiers::NONE,
         };
-        state.on_mouse(moved, Some(1), Instant::now());
+        state.on_mouse(moved, Some(1));
         let (buffer, _) = render(&agents, &state, 60, 14);
         let top = TOP;
         assert_eq!(row(&buffer, top + 4), " ❯ Add CSV export");
@@ -351,7 +353,11 @@ mod tests {
             shown.iter().any(|line| line.starts_with(" ❯ Task 7")),
             "{shown:?}"
         );
-        assert!(shown.iter().any(|line| line.ends_with("1d07")), "{shown:?}");
+        assert!(shown.iter().any(|line| line.contains("1d07")), "{shown:?}");
+        assert!(
+            shown.iter().any(|line| line.ends_with('┃')),
+            "a scrollbar thumb: {shown:?}"
+        );
         assert!(drawn.offset > 0);
         assert!(drawn.rows.contains(&Some(7)));
         assert!(!drawn.rows.contains(&Some(0)));

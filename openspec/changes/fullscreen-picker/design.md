@@ -43,10 +43,12 @@ The binary is built from [ratatui] 0.30 on its [crossterm] 0.29 backend.
    The selected row has the `❯` pointer and a bold title in bright blue (ANSI 12); a hovered row turns its dim text to the default foreground.
    Hover changes only the text colour, so it never reads as selected.
    Body text uses the terminal's default foreground and secondary text is dimmed, so both read in light and dark themes.
-6. **Click selects, double click resumes.**
-   A left click selects the row under it; a second click on the same row within 400 ms resumes it.
-   Alternative: a click on the row already selected resumes it.
-   It lost: the first row starts selected, so one stray click would start a session the user did not mean to open.
+6. **A click selects, and a click on the selected row resumes.**
+   A left click on a row that is not selected selects it; a left click on the selected row resumes it.
+   Two clicks on a row therefore resume it at any speed.
+   Alternative: a timed double click resumes, and a click on the selected row does nothing.
+   It lost: the maintainer chose the faster path, and a click on the highlighted row reads as "open this one".
+   Cost: the first row starts selected, so one click on it resumes at once.
 7. **The wheel moves the selection.**
    One wheel step moves the selection one row and the view follows it.
    Alternative: the wheel scrolls the view and leaves the selection.

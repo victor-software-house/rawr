@@ -2,15 +2,9 @@
 //! the hovered row, and when the user resumes a session or dismisses the
 //! picker. Nothing here draws or reads the terminal.
 
-use std::time::{Duration, Instant};
-
 use ratatui::crossterm::event::{
     KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
-
-/// The longest gap between two clicks on one row that still makes a double
-/// click; the common desktop default.
-const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 
 /// What an event asks the loop to do next.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,13 +19,12 @@ pub(crate) enum Step {
     Dismiss,
 }
 
-/// The picker's selection, hover and click history over `len` sessions.
+/// The picker's selection and hovered row over `len` sessions.
 #[derive(Debug)]
 pub(crate) struct State {
     len: usize,
     selected: usize,
     hover: Option<usize>,
-    last_click: Option<(usize, Instant)>,
 }
 
 impl State {
@@ -41,7 +34,6 @@ impl State {
             len,
             selected: 0,
             hover: None,
-            last_click: None,
         }
     }
 
@@ -92,34 +84,22 @@ impl State {
     }
 
     /// Applies a mouse report; `hit` is the session drawn on the reported row,
-    /// if any.
+    /// if any. A click on another row selects it, and a click on the selected
+    /// row resumes it.
     #[expect(
         clippy::wildcard_enum_match_arm,
         reason = "crossterm's MouseEventKind has buttons and directions the picker ignores"
     )]
-    pub(crate) fn on_mouse(&mut self, mouse: MouseEvent, hit: Option<usize>, now: Instant) -> Step {
+    pub(crate) fn on_mouse(&mut self, mouse: MouseEvent, hit: Option<usize>) -> Step {
         let hovered = self.set_hover(hit);
         match mouse.kind {
             MouseEventKind::ScrollUp => self.select(self.selected.saturating_sub(1)),
             MouseEventKind::ScrollDown => self.select(self.selected.saturating_add(1)),
-            MouseEventKind::Down(MouseButton::Left) => {
-                let Some(index) = hit else {
-                    self.last_click = None;
-                    return hovered;
-                };
-                let double = self.last_click.is_some_and(|(last, at)| {
-                    last == index && now.saturating_duration_since(at) <= DOUBLE_CLICK
-                });
-                if double {
-                    self.last_click = None;
-                    return Step::Resume(index);
-                }
-                self.last_click = Some((index, now));
-                match self.select(index) {
-                    Step::Ignore => hovered,
-                    step => step,
-                }
-            }
+            MouseEventKind::Down(MouseButton::Left) => match hit {
+                Some(index) if index == self.selected => Step::Resume(index),
+                Some(index) => self.select(index),
+                None => hovered,
+            },
             _ => hovered,
         }
     }
@@ -182,52 +162,40 @@ mod tests {
     }
 
     #[test]
-    fn a_double_click_resumes_and_a_single_click_selects() {
-        let start = Instant::now();
+    fn a_click_selects_another_row_and_resumes_the_selected_one() {
         let mut state = State::new(3);
-        assert_eq!(state.on_mouse(click(), Some(0), start), Step::Redraw);
-        assert_eq!(
-            state.selected(),
-            0,
-            "a click on the selected row keeps it open"
-        );
-        let late = start + Duration::from_millis(500);
-        assert_eq!(state.on_mouse(click(), Some(1), late), Step::Redraw);
+        assert_eq!(state.on_mouse(click(), Some(1)), Step::Redraw);
         assert_eq!(state.selected(), 1);
-        let soon = late + Duration::from_millis(250);
-        assert_eq!(state.on_mouse(click(), Some(1), soon), Step::Resume(1));
+        assert_eq!(state.on_mouse(click(), Some(2)), Step::Redraw);
+        assert_eq!(state.selected(), 2);
+        assert_eq!(state.on_mouse(click(), Some(2)), Step::Resume(2));
     }
 
     #[test]
-    fn clicks_on_different_rows_are_not_a_double_click() {
-        let start = Instant::now();
+    fn a_click_outside_the_rows_changes_nothing() {
         let mut state = State::new(3);
-        state.on_mouse(click(), Some(0), start);
-        let soon = start + Duration::from_millis(100);
-        assert_eq!(state.on_mouse(click(), Some(2), soon), Step::Redraw);
-        assert_eq!(state.selected(), 2);
+        assert_eq!(state.on_mouse(click(), None), Step::Ignore);
+        assert_eq!(state.selected(), 0);
     }
 
     #[test]
     fn the_wheel_moves_the_selection() {
-        let now = Instant::now();
         let mut state = State::new(3);
         let down = mouse(MouseEventKind::ScrollDown);
-        state.on_mouse(down, None, now);
-        state.on_mouse(down, None, now);
+        state.on_mouse(down, None);
+        state.on_mouse(down, None);
         assert_eq!(state.selected(), 2);
-        assert_eq!(state.on_mouse(down, None, now), Step::Ignore);
+        assert_eq!(state.on_mouse(down, None), Step::Ignore);
     }
 
     #[test]
     fn hover_follows_the_pointer_and_redraws_only_on_change() {
-        let now = Instant::now();
         let mut state = State::new(3);
         let moved = mouse(MouseEventKind::Moved);
-        assert_eq!(state.on_mouse(moved, Some(1), now), Step::Redraw);
+        assert_eq!(state.on_mouse(moved, Some(1)), Step::Redraw);
         assert_eq!(state.hover(), Some(1));
-        assert_eq!(state.on_mouse(moved, Some(1), now), Step::Ignore);
-        assert_eq!(state.on_mouse(moved, None, now), Step::Redraw);
+        assert_eq!(state.on_mouse(moved, Some(1)), Step::Ignore);
+        assert_eq!(state.on_mouse(moved, None), Step::Redraw);
         assert_eq!(state.hover(), None);
     }
 }

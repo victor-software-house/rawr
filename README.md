@@ -17,15 +17,15 @@ Choosing one resumes it in that pane; dismissing the picker leaves a plain shell
    ~/code/shop · 1 day ago
    b8e4d7c2-1a9f-4e63-8d07-2c5f9a3e6b14
 
- ↑↓ select  ⏎ resume  1-9 resume nth  double-click resume  esc shell
+ ↑↓ select  ⏎ resume  1-9 resume nth  click select, again resume  esc shell
 ```
 
 The picker opens on the alternate screen, so the pane's restored output is back unchanged when it closes.
 
 | Action | Keys | Mouse |
 | --- | --- | --- |
-| Select | `↑` `↓`, `k` `j`, `Home` `End`, `g` `G`, `PgUp` `PgDn` | Click a session, or scroll the wheel |
-| Resume | `Enter`, or `1` to `9` for that session | Double-click a session |
+| Select | `↑` `↓`, `k` `j`, `Home` `End`, `g` `G`, `PgUp` `PgDn` | Click another session, or scroll the wheel |
+| Resume | `Enter`, or `1` to `9` for that session | Click the selected session |
 | Leave a plain shell | `Esc`, `q`, `Ctrl+C` | |
 
 Hovering a session brightens it and shows the hand pointer in terminals that support OSC 22.
