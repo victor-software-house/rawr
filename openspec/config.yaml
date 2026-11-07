@@ -1,0 +1,27 @@
+schema: spec-driven
+
+context: |
+  rex-resume is a public Rust binary that brings Claude Code sessions back
+  into their Rex panes after a Rex server restart.
+  The repository is public: examples, fixtures and scenarios use invented
+  session titles, folders and IDs, never ones taken from a real machine.
+  Contracts: AGENTS.md and openspec/specs/.
+  Writing style: plain English, short sentences, one sentence per line, no
+  em-dashes, no emojis.
+  Every reference is a clickable link, with reference-style aliases defined
+  once at the end of the file, and code links pinned to a commit.
+
+rules:
+  proposal:
+    - State the problem and what the user gains.
+    - Name the modules the change touches.
+  specs:
+    - Every requirement uses SHALL and has at least one WHEN/THEN scenario.
+    - Scenarios use concrete keys, values, files and commands.
+  design:
+    - Each decision names the alternative considered and why it lost.
+    - Cite the external sources a design follows, pinned to a version.
+  tasks:
+    - Each task names the command or observation that proves it is done.
+    - The pull request's CI verifies builds and tests; no task builds locally except a preview binary the maintainer asked for.
+    - No task bumps a version or cuts a release; the maintainer asks for a release separately.
