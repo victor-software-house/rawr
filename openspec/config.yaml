@@ -1,7 +1,7 @@
 schema: spec-driven
 
 context: |
-  rex-resume is a public Rust binary that brings Claude Code sessions back
+  rawr is a public Rust binary that brings Claude Code sessions back
   into their Rex panes after a Rex server restart.
   The repository is public: examples, fixtures and scenarios use invented
   session titles, folders and IDs, never ones taken from a real machine.

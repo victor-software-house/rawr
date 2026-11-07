@@ -8,12 +8,12 @@ Record which Claude Code sessions started in which Rex pane, so a restored pane 
 
 ### Requirement: Record a session per pane
 
-`rex-resume record` SHALL read the Claude Code `SessionStart` hook input on stdin and `REX_BLOCK` from the environment, and add the session to that pane's index file `$XDG_STATE_HOME/rex-agents/<block id>.json`, or `~/.local/state/rex-agents/<block id>.json` when `XDG_STATE_HOME` is unset.
+`rawr record` SHALL read the Claude Code `SessionStart` hook input on stdin and `REX_BLOCK` from the environment, and add the session to that pane's index file `$XDG_STATE_HOME/rawr/<block id>.json`, or `~/.local/state/rawr/<block id>.json` when `XDG_STATE_HOME` is unset.
 
 #### Scenario: A session starts in a Rex pane
 
 - **WHEN** the hook input is `{"session_id":"6f1c2a90-3b7e-4d21-9c55-0a8e4f7b1d33","transcript_path":"/home/dev/.claude/projects/-home-dev-code-shop/6f1c2a90-3b7e-4d21-9c55-0a8e4f7b1d33.jsonl","cwd":"/home/dev/code/shop"}` and `REX_BLOCK=block:0190f3a2-7c41-7e10-8b2d-5d9e6a4c1f08`
-- **THEN** `rex-agents/0190f3a2-7c41-7e10-8b2d-5d9e6a4c1f08.json` lists that session first, with its folder and transcript path
+- **THEN** `rawr/0190f3a2-7c41-7e10-8b2d-5d9e6a4c1f08.json` lists that session first, with its folder and transcript path
 
 ### Requirement: Keep the five newest sessions
 

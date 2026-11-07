@@ -7,10 +7,10 @@ prepare:
   stage: [Cargo.lock]
 
 # Released on GitHub only: a tag, the Release, and its binaries, which
-# `mise use -g github:victor-software-house/rex-resume` installs. Cargo.toml
+# `mise use -g github:victor-software-house/rawr` installs. Cargo.toml
 # sets publish = false, so nothing goes to crates.io.
 packages:
-  - name: rex-resume
+  - name: rawr
     path: Cargo.toml
     publisher: none
 

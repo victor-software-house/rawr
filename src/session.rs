@@ -219,7 +219,7 @@ mod tests {
 
     #[test]
     fn title_prefers_the_user_title() {
-        let dir = std::env::temp_dir().join(format!("rex-resume-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("rawr-test-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("t.jsonl");
         fs::write(

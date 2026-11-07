@@ -16,7 +16,7 @@ use anyhow::{Context, Result};
 
 use crate::index::{BlockId, HookInput, PaneIndex};
 
-const USAGE: &str = "usage: rex-resume <record|pick>
+const USAGE: &str = "usage: rawr <record|pick>
 
   record  add the Claude session described on stdin to this pane's index
   pick    choose one of this pane's agents and print the command that resumes it";
@@ -27,7 +27,7 @@ fn main() -> ExitCode {
         Some("record") => record().map(|()| ExitCode::SUCCESS),
         Some("pick") => pick(),
         Some("--version" | "-V") => {
-            println!("rex-resume {}", env!("CARGO_PKG_VERSION"));
+            println!("rawr {}", env!("CARGO_PKG_VERSION"));
             Ok(ExitCode::SUCCESS)
         }
         Some("--help" | "-h") => {
@@ -40,7 +40,7 @@ fn main() -> ExitCode {
         }
     };
     outcome.unwrap_or_else(|error| {
-        eprintln!("rex-resume: {error:#}");
+        eprintln!("rawr: {error:#}");
         ExitCode::FAILURE
     })
 }

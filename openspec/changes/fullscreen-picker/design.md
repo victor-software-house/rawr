@@ -2,7 +2,7 @@
 
 ## Context
 
-`pick` runs inside `$(rex-resume pick)`, so stdout is captured by the shell and only stderr and the terminal device reach the user.
+`pick` runs inside `$(rawr pick)`, so stdout is captured by the shell and only stderr and the terminal device reach the user.
 Rex keeps block IDs, labels and scrollback across a server restart, but no running program, so the picker runs in a fresh login shell.
 The binary is built from [ratatui] 0.30 on its [crossterm] 0.29 backend.
 

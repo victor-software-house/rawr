@@ -105,7 +105,7 @@ impl PaneIndex {
     }
 }
 
-/// `$XDG_STATE_HOME/rex-agents`, or `~/.local/state/rex-agents`.
+/// `$XDG_STATE_HOME/rawr`, or `~/.local/state/rawr`.
 pub(crate) fn state_dir() -> Result<PathBuf> {
     let base = match std::env::var_os("XDG_STATE_HOME") {
         Some(dir) if !dir.is_empty() => PathBuf::from(dir),
@@ -113,7 +113,7 @@ pub(crate) fn state_dir() -> Result<PathBuf> {
             .context("no home directory")?
             .join(".local/state"),
     };
-    Ok(base.join("rex-agents"))
+    Ok(base.join("rawr"))
 }
 
 #[derive(Debug, Deserialize)]

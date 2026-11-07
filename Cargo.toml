@@ -1,11 +1,11 @@
 [package]
-name = "rex-resume"
+name = "rawr"
 version = "0.0.0"
 edition = "2024"
 rust-version = "1.99.1"
 description = "Bring Claude Code agents back into their Rex panes after a Rex server restart"
 license = "MIT"
-repository = "https://github.com/victor-software-house/rex-resume"
+repository = "https://github.com/victor-software-house/rawr"
 readme = "README.md"
 keywords = ["rex", "claude", "terminal", "resume", "tui"]
 categories = ["command-line-utilities"]

@@ -8,7 +8,7 @@ Offer a restored Rex pane's Claude Code sessions in a full-screen picker, and ha
 
 ### Requirement: Offer only resumable sessions
 
-`rex-resume pick` SHALL offer the sessions in the pane's index whose transcript still exists and which no running Claude Code process holds.
+`rawr pick` SHALL offer the sessions in the pane's index whose transcript still exists and which no running Claude Code process holds.
 
 #### Scenario: One session is still running
 
