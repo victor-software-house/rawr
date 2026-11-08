@@ -141,40 +141,29 @@ struct TitleRow {
     ai: Option<String>,
 }
 
-/// How much of a transcript's end [`transcript_title`] reads, first and at
-/// most. Transcripts reach hundreds of megabytes, and Claude Code writes the
-/// title rows again every few dozen kilobytes, the user's title next to each
-/// generated one, so the end holds the current title. Of 162 local
-/// transcripts, 139 had a title row, and 99% of those had their last one
-/// within 33 KB of the end.
-const TITLE_WINDOWS: [u64; 2] = [64 << 10, 1 << 20];
+/// How much of a transcript's end [`transcript_title`] reads. Transcripts
+/// reach hundreds of megabytes, and Claude Code writes the title rows again
+/// every few dozen kilobytes, the user's title next to each generated one, so
+/// the end holds the current title. Of 167 local transcripts, 144 had a title
+/// row: the last user title always sat within 31.6 KB of the end, and the
+/// last generated title within 33.5 KB, but for one 2.6 MB transcript whose
+/// only title row was its first line. A wider second read found nothing more,
+/// and read 11.8 MB more on every load, all of it from untitled transcripts.
+const TITLE_WINDOW: u64 = 64 << 10;
 
 /// The session's title: the last title the user set, else the last one
-/// Claude generated, from the transcript's last 64 KiB, or its last MiB when
-/// those hold no title row.
+/// Claude generated, both read from the transcript's last 64 KiB, skipping
+/// the partial line the window starts in. A title row further back is not
+/// read.
 pub(crate) fn transcript_title(path: &Path) -> Option<String> {
     let mut file = File::open(path).ok()?;
     let len = file.metadata().ok()?.len();
-    for window in TITLE_WINDOWS {
-        if let Some(title) = title_within(&mut file, len, window) {
-            return Some(title);
-        }
-        if len <= window {
-            break;
-        }
-    }
-    None
-}
-
-/// The title in the last `window` bytes of a transcript `len` bytes long,
-/// skipping the partial line the window starts in.
-fn title_within(file: &mut File, len: u64, window: u64) -> Option<String> {
     let custom_marker = memmem::Finder::new(br#""type":"custom-title""#);
     let ai_marker = memmem::Finder::new(br#""type":"ai-title""#);
-    let start = len.saturating_sub(window);
+    let start = len.saturating_sub(TITLE_WINDOW);
     file.seek(SeekFrom::Start(start)).ok()?;
     let mut tail = Vec::new();
-    file.take(window).read_to_end(&mut tail).ok()?;
+    file.take(TITLE_WINDOW).read_to_end(&mut tail).ok()?;
     let whole = if start == 0 {
         tail.as_slice()
     } else {
@@ -291,7 +280,26 @@ mod tests {
     }
 
     #[test]
-    fn a_title_beyond_the_first_window_is_found_in_the_second() {
+    fn a_user_title_beats_a_later_generated_one_across_the_window() {
+        let dir = std::env::temp_dir().join(format!("rawr-order-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("t.jsonl");
+        let filler = format!(
+            "{{\"type\":\"user\",\"message\":\"{}\"}}\n",
+            "x".repeat(1000)
+        );
+        let mut text = filler.repeat(100);
+        text.push_str("{\"type\":\"custom-title\",\"customTitle\":\"Named by me\"}\n");
+        text.push_str(&filler.repeat(40));
+        text.push_str("{\"type\":\"ai-title\",\"aiTitle\":\"Later guess\"}\n");
+        text.push_str(&filler.repeat(10));
+        fs::write(&path, text).unwrap();
+        assert_eq!(transcript_title(&path).as_deref(), Some("Named by me"));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_title_beyond_the_window_is_not_read() {
         let dir = std::env::temp_dir().join(format!("rawr-window-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("t.jsonl");
@@ -300,11 +308,9 @@ mod tests {
             "x".repeat(1000)
         );
         let mut text = String::from("{\"type\":\"ai-title\",\"aiTitle\":\"Further back\"}\n");
-        for _ in 0..200 {
-            text.push_str(&filler);
-        }
+        text.push_str(&filler.repeat(200));
         fs::write(&path, text).unwrap();
-        assert_eq!(transcript_title(&path).as_deref(), Some("Further back"));
+        assert_eq!(transcript_title(&path), None);
         fs::remove_dir_all(&dir).unwrap();
     }
 

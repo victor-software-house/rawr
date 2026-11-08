@@ -24,7 +24,7 @@ queue:
     blocked_by: []
     acceptance:
       - Typing filters the list on each key press, matching titles, folders, prompts and session IDs.
-      - Search reads one prompt-history file and stats transcripts; it opens no transcript it does not show.
+      - Search reads one prompt-history file, one projects listing, and the last 64 KiB of each listed transcript, once per load.
     notes:
       - Local sessions only; older sessions are a horizon row.
     plan: openspec/changes/session-search/proposal.md

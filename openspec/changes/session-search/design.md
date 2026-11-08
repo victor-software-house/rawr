@@ -21,7 +21,9 @@ Transcripts live at `~/.claude/projects/<folder slug>/<session id>.jsonl`, and C
    The title is searched as well as the prompts.
    Alternative: always the first prompt.
    It lost: first prompts such as `hi` or a line pointing at a brief file say nothing about the session, and they made the list hard to read.
-   Reading the ends costs at most 64 KiB per session for 99% of transcripts measured, once per catalog load, not per key press.
+   Reading the ends costs 64 KiB per session, once per catalog load, not per key press: 10.7 MB for 167 local transcripts, read in about 3 ms from a warm cache.
+   Alternative: read titles only for the rows on screen, or cache them by path and modification time.
+   It lost: a title found only for shown rows could not be searched, and 3 ms does not repay a cache.
 4. **Words match by substring, all of them, ignoring case.**
    A query of `login redirect` matches a session whose prompts, folder or ID contain both words.
    Alternative: fuzzy subsequence matching, as fzf does.
