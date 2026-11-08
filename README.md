@@ -12,11 +12,9 @@ Choosing one resumes it in that pane; dismissing the picker leaves a plain shell
 
  ❯ Fix the login redirect loop after the OAuth callback
    ~/code/shop · 2 h ago
-   6f1c2a90-3b7e-4d21-9c55-0a8e4f7b1d33
 
    Add CSV export to the reports page
    ~/code/shop · 1 day ago
-   b8e4d7c2-1a9f-4e63-8d07-2c5f9a3e6b14
 
  ↑↓ select  ⏎ resume  / search  1-9 resume nth  click select, again resume  esc shell
 ```
