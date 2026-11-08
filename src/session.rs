@@ -63,7 +63,7 @@ struct Running {
 }
 
 /// Claude Code's configuration folder: `$CLAUDE_CONFIG_DIR`, or `~/.claude`.
-fn claude_dir() -> Result<PathBuf> {
+pub(crate) fn claude_dir() -> Result<PathBuf> {
     match std::env::var_os("CLAUDE_CONFIG_DIR") {
         Some(dir) if !dir.is_empty() => Ok(PathBuf::from(dir)),
         _ => Ok(std::env::home_dir()
@@ -169,7 +169,7 @@ fn transcript_title(path: &Path) -> Option<String> {
 /// `text` safe to draw: control characters dropped, tabs and line breaks
 /// turned into spaces. Titles come from transcripts, so an escape sequence in
 /// one must not reach the terminal.
-fn sanitize(text: &str) -> String {
+pub(crate) fn sanitize(text: &str) -> String {
     text.chars()
         .filter_map(|c| match c {
             '\t' | '\n' | '\r' => Some(' '),

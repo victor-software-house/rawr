@@ -5,10 +5,12 @@
 //! pane's identity. `record` remembers which Claude sessions ran in a pane, and
 //! `pick` offers them again in that pane after a restart.
 
+mod catalog;
 mod index;
 mod picker;
 mod session;
 
+use std::collections::HashSet;
 use std::io::IsTerminal;
 
 use anyhow::{Context, Result};
@@ -16,6 +18,8 @@ use ctl_core::prelude::*;
 use serde::Serialize;
 
 use crate::index::{BlockId, HookInput, PaneIndex};
+use crate::picker::Start;
+use crate::session::Agent;
 
 /// Rex Agents: Wake and Resume.
 #[derive(Debug, Parser)]
@@ -40,6 +44,16 @@ enum Command {
     /// exit status is non-zero with nothing printed when there is nothing to
     /// offer or the picker is dismissed.
     Pick,
+    /// Search every resumable local session and print the command that
+    /// resumes the chosen one.
+    ///
+    /// Works in or out of a Rex pane; in one, the pane's own sessions come
+    /// first. Prints and exits as `pick` does.
+    Find {
+        /// Words to search for; each must occur in a session's prompts,
+        /// folder or ID.
+        words: Vec<String>,
+    },
 }
 
 /// What a command leaves for the shell.
@@ -48,9 +62,9 @@ enum Command {
 enum Outcome {
     /// `record` stored the session, or had no pane to store it for.
     Recorded,
-    /// `pick` chose a session; the shell evaluates `command`.
+    /// `pick` or `find` chose a session; the shell evaluates `command`.
     Resume { command: String },
-    /// `pick` had nothing to offer, or the user dismissed it.
+    /// There was nothing to offer, or the user dismissed the picker.
     Nothing,
 }
 
@@ -74,6 +88,7 @@ fn main() -> ExitCode {
     App::<Cli>::new("rawr").run(|cli| match cli.command {
         Command::Record => record().map(|()| Outcome::Recorded),
         Command::Pick => pick(),
+        Command::Find { words } => find(&words),
     })
 }
 
@@ -100,6 +115,25 @@ fn record() -> Result<()> {
     index::prune(&dir)
 }
 
+/// This pane's resumable sessions, newest first; none outside Rex.
+fn pane_agents(live: &HashSet<String>) -> Result<Vec<Agent>> {
+    let Some(block) = current_block()? else {
+        return Ok(Vec::new());
+    };
+    let pane = PaneIndex::load(&index::state_dir()?, &block)?;
+    Ok(session::resumable(pane.entries(), live))
+}
+
+/// Opens the picker over `pane` and turns the choice into an outcome.
+fn choose(pane: &[Agent], start: Start, live: HashSet<String>) -> Result<Outcome> {
+    let load = move || catalog::load(&session::claude_dir()?, &live);
+    Ok(
+        picker::choose(pane, start, load)?.map_or(Outcome::Nothing, |agent| Outcome::Resume {
+            command: agent.resume_command(),
+        }),
+    )
+}
+
 /// Shows this pane's agents and returns the chosen resume command, or
 /// [`Outcome::Nothing`] when there is nothing to offer or the user dismisses
 /// the picker.
@@ -107,20 +141,22 @@ fn pick() -> Result<Outcome> {
     if !std::io::stderr().is_terminal() {
         return Ok(Outcome::Nothing);
     }
-    let Some(block) = current_block()? else {
-        return Ok(Outcome::Nothing);
-    };
-    let pane = PaneIndex::load(&index::state_dir()?, &block)?;
     let live = session::live_sessions()?;
-    let agents = session::resumable(pane.entries(), &live);
+    let agents = pane_agents(&live)?;
     if agents.is_empty() {
         return Ok(Outcome::Nothing);
     }
-    Ok(picker::choose(&agents)?
-        .and_then(|n| agents.get(n))
-        .map_or(Outcome::Nothing, |agent| Outcome::Resume {
-            command: agent.resume_command(),
-        }))
+    choose(&agents, Start::Pane, live)
+}
+
+/// Opens the picker on the search line with `words` typed.
+fn find(words: &[String]) -> Result<Outcome> {
+    if !std::io::stderr().is_terminal() {
+        return Ok(Outcome::Nothing);
+    }
+    let live = session::live_sessions()?;
+    let agents = pane_agents(&live)?;
+    choose(&agents, Start::Search(words.join(" ")), live)
 }
 
 #[cfg(test)]

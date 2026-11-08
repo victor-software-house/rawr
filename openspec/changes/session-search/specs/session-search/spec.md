@@ -52,6 +52,11 @@ In the picker, `/` SHALL open a search line whose text filters the list on each 
 - **WHEN** the search line is open and the user presses `Esc`
 - **THEN** the search line closes and the list shows the pane's sessions; a second `Esc` closes the picker
 
+#### Scenario: Leaving the search line with no pane sessions
+
+- **WHEN** `rawr find` runs outside a Rex pane and the user presses `Esc`
+- **THEN** the picker closes, prints nothing and exits 1
+
 ### Requirement: Find from any shell
 
 `rawr find [WORDS…]` SHALL open the picker on the search line with `WORDS` as the query, inside or outside a Rex pane, and SHALL print the chosen command as `pick` does.

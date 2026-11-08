@@ -1,6 +1,6 @@
-//! How the picker looks: a header, one block per session, a scrollbar when
-//! the blocks overflow, and a key line. Drawing also reports which session
-//! each screen row shows, for mouse hits.
+//! How the picker looks: a header or the search line, one block per session,
+//! a scrollbar when the blocks overflow, and a key line. Drawing also reports
+//! which session each screen row shows, for mouse hits.
 //!
 //! Body text is the terminal's default foreground and secondary text is
 //! dimmed, so both read in light and dark colour themes. The selected session
@@ -108,18 +108,28 @@ fn follow(previous: usize, start: usize, end: usize, height: usize) -> usize {
 }
 
 /// The key line: as many hints as fit, most useful first.
-fn keys(width: usize) -> Line<'static> {
+fn keys(width: usize, searching: bool) -> Line<'static> {
     let dim = Style::new().add_modifier(Modifier::DIM);
-    let hints = [
-        ("↑↓", "select"),
-        ("⏎", "resume"),
-        ("1-9", "resume nth"),
-        ("click", "select, again resume"),
-        ("esc", "shell"),
-    ];
+    let hints: &[(&str, &str)] = if searching {
+        &[
+            ("↑↓", "select"),
+            ("⏎", "resume"),
+            ("esc", "close search"),
+            ("click", "select, again resume"),
+        ]
+    } else {
+        &[
+            ("↑↓", "select"),
+            ("⏎", "resume"),
+            ("/", "search"),
+            ("1-9", "resume nth"),
+            ("click", "select, again resume"),
+            ("esc", "shell"),
+        ]
+    };
     let mut spans = vec![Span::raw(" ")];
     let mut used = 1;
-    for (key, what) in hints {
+    for &(key, what) in hints {
         let hint_width = key.chars().count() + 1 + what.chars().count() + 2;
         if used + hint_width > width {
             break;
@@ -128,6 +138,36 @@ fn keys(width: usize) -> Line<'static> {
         spans.push(Span::raw(key));
         spans.push(Span::styled(format!(" {what}  "), dim));
     }
+    Line::from(spans)
+}
+
+/// The top line: the title, or the search line while it is open, then the
+/// count of sessions or matches.
+fn heading(state: &State, count: usize) -> Line<'static> {
+    let count = match (count, state.query().is_some()) {
+        (1, false) => "1 session".to_owned(),
+        (n, false) => format!("{n} sessions"),
+        (1, true) => "1 match".to_owned(),
+        (n, true) => format!("{n} matches"),
+    };
+    let mut spans = match state.query() {
+        Some(query) => vec![
+            Span::styled(" / ", Style::new().fg(ACCENT)),
+            Span::styled(query.to_owned(), Style::new().add_modifier(Modifier::BOLD)),
+            Span::styled("▏", Style::new().fg(ACCENT)),
+        ],
+        None => vec![
+            Span::styled(" ↻ ", Style::new().fg(ACCENT)),
+            Span::styled(
+                "Resume a Claude Code session",
+                Style::new().add_modifier(Modifier::BOLD),
+            ),
+        ],
+    };
+    spans.push(Span::styled(
+        format!("  {count}"),
+        Style::new().add_modifier(Modifier::DIM),
+    ));
     Line::from(spans)
 }
 
@@ -144,25 +184,25 @@ pub(crate) fn draw(frame: &mut Frame<'_>, agents: &[Agent], state: &State, offse
     ])
     .areas(area);
 
-    let count = match agents.len() {
-        1 => "1 session".to_owned(),
-        n => format!("{n} sessions"),
-    };
+    frame.render_widget(Paragraph::new(heading(state, agents.len())), header);
     frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(" ↻ ", Style::new().fg(ACCENT)),
-            Span::styled(
-                "Resume a Claude Code session",
-                Style::new().add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                format!("  {count}"),
-                Style::new().add_modifier(Modifier::DIM),
-            ),
-        ])),
-        header,
+        Paragraph::new(keys(usize::from(area.width), state.query().is_some())),
+        footer,
     );
-    frame.render_widget(Paragraph::new(keys(usize::from(area.width))), footer);
+    if agents.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Line::styled(
+                "   No session matches",
+                Style::new().add_modifier(Modifier::DIM),
+            )),
+            list,
+        );
+        return Drawn {
+            rows: vec![None; usize::from(area.height)],
+            page: 1,
+            offset: 0,
+        };
+    }
 
     // One column stays free for the scrollbar.
     let width = usize::from(list.width).saturating_sub(1);
@@ -361,6 +401,28 @@ mod tests {
         assert!(drawn.offset > 0);
         assert!(drawn.rows.contains(&Some(7)));
         assert!(!drawn.rows.contains(&Some(0)));
+    }
+
+    #[test]
+    fn the_search_line_replaces_the_header() {
+        let agents = [agent(1, "Fix the login redirect")];
+        let mut state = State::searching("login".to_owned());
+        state.set_len(1);
+        let (buffer, _) = render(&agents, &state, 60, 14);
+        assert_eq!(row(&buffer, 0), " / login▏  1 match");
+        assert!(
+            row(&buffer, 13).contains("close search"),
+            "{:?}",
+            rows(&buffer)
+        );
+    }
+
+    #[test]
+    fn no_match_says_so_and_offers_no_row() {
+        let state = State::searching("zzz".to_owned());
+        let (buffer, drawn) = render(&[], &state, 60, 14);
+        assert_eq!(row(&buffer, TOP), "   No session matches");
+        assert!(drawn.rows.iter().all(Option::is_none));
     }
 
     #[test]
