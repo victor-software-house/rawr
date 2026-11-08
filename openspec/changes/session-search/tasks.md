@@ -13,7 +13,7 @@
 ## 3. Commands and shell
 
 - [ ] 3.1 `rawr find [WORDS…]` opens the picker on the search line; proved by the maintainer's preview.
-- [ ] 3.2 The README's zsh integration evaluates `rawr find` through a `rawr` function; proved by the maintainer's preview resuming a session found by a word.
+- [ ] 3.2 `rawr find` resumes the chosen session itself, with no shell wrapper; proved by the maintainer's preview resuming a session found by a word.
 
 ## 4. Verify
 

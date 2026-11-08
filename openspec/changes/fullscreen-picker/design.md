@@ -70,6 +70,12 @@ The binary is built from [ratatui] 0.30 on its [crossterm] 0.29 backend.
    Alternative: show the ID on the selected session only.
    It lost: the selected block would grow and shrink as the selection moves, so the rows under it would jump.
 
+12. **rawr resumes the chosen session itself.**
+   On a choice it restores the terminal, then replaces its process with `claude --resume <session id>` in the session's folder, so the pane runs Claude Code with nothing in between.
+   Nothing resumes without a choice: the picker only offers.
+   Alternative: print a `cd` and `claude --resume` line for a shell hook to evaluate.
+   It lost: it needs a wrapper and a quoting rule per shell, and run without the hook the picker printed a line and did nothing.
+
 ## Risks / Trade-offs
 
 1. Mode 1003 makes the terminal report every pointer move; the picker redraws only when the hovered row changes.

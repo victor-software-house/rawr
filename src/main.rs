@@ -39,18 +39,16 @@ enum Command {
     /// A Claude Code `SessionStart` hook runs it. Outside a Rex pane it does
     /// nothing.
     Record,
-    /// Choose one of this pane's sessions and print the command that resumes
-    /// it.
+    /// Choose one of this pane's sessions and resume it.
     ///
-    /// The picker draws on stderr. stdout carries only the command, and the
-    /// exit status is non-zero with nothing printed when there is nothing to
-    /// offer or the picker is dismissed.
+    /// The picker draws on stderr. On a choice, rawr becomes `claude --resume`
+    /// in the session's folder. The exit status is non-zero with nothing
+    /// printed when there is nothing to offer or the picker is dismissed.
     Pick,
-    /// Search every resumable local session and print the command that
-    /// resumes the chosen one.
+    /// Search every resumable local session and resume the chosen one.
     ///
     /// Works in or out of a Rex pane; in one, the pane's own sessions come
-    /// first. Prints and exits as `pick` does.
+    /// first. Resumes and exits as `pick` does.
     Find {
         /// Words to search for; each must occur in a session's prompts,
         /// folder or ID.
@@ -77,14 +75,12 @@ enum Target {
     },
 }
 
-/// What a command leaves for the shell.
+/// What a command reports.
 #[derive(Debug, Serialize)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
 enum Outcome {
     /// `record` stored the session, or had no pane to store it for.
     Recorded,
-    /// `pick` or `find` chose a session; the shell evaluates `command`.
-    Resume { command: String },
     /// There was nothing to offer, or the user dismissed the picker.
     Nothing,
     /// `setup` checked or changed a settings file.
@@ -95,7 +91,6 @@ impl Present for Outcome {
     fn present(&self) -> Document {
         match self {
             Self::Recorded | Self::Nothing => Document::new(),
-            Self::Resume { command } => Document::new().verbatim(command.as_str()),
             Self::Setup { change, path } => Document::new().verbatim(match change {
                 Change::Added => format!("Added the `{}` hook to {path}", setup::RECORD),
                 Change::WouldAdd => format!("Would add the `{}` hook to {path}", setup::RECORD),
@@ -106,7 +101,7 @@ impl Present for Outcome {
 
     fn exit_code(&self) -> u8 {
         match self {
-            Self::Recorded | Self::Resume { .. } | Self::Setup { .. } => 0,
+            Self::Recorded | Self::Setup { .. } => 0,
             Self::Nothing => 1,
         }
     }
@@ -155,17 +150,17 @@ fn pane_agents(live: &HashSet<String>) -> Result<Vec<Agent>> {
     Ok(session::resumable(pane.entries(), live))
 }
 
-/// Opens the picker over `pane` and turns the choice into an outcome.
+/// Opens the picker over `pane` and resumes the chosen session, or returns
+/// [`Outcome::Nothing`] when the user dismisses the picker.
 fn choose(pane: &[Agent], start: Start, live: HashSet<String>) -> Result<Outcome> {
     let load = move || catalog::load(&session::claude_dir()?, &live);
-    Ok(
-        picker::choose(pane, start, load)?.map_or(Outcome::Nothing, |agent| Outcome::Resume {
-            command: agent.resume_command(),
-        }),
-    )
+    match picker::choose(pane, start, load)? {
+        Some(agent) => match agent.resume()? {},
+        None => Ok(Outcome::Nothing),
+    }
 }
 
-/// Shows this pane's agents and returns the chosen resume command, or
+/// Shows this pane's agents and resumes the chosen one, or returns
 /// [`Outcome::Nothing`] when there is nothing to offer or the user dismisses
 /// the picker.
 fn pick() -> Result<Outcome> {
@@ -212,16 +207,6 @@ mod tests {
             .capture(outcome)
             .expect("an outcome serializes");
         (captured.text().to_owned(), captured.stream())
-    }
-
-    #[test]
-    fn a_resume_prints_only_the_command_on_stdout() {
-        let command = "cd -- '/home/dev/code/it'\\''s shop' && claude --resume '6f1c2a90'";
-        let outcome = Outcome::Resume {
-            command: command.to_owned(),
-        };
-        assert_eq!(shown(&outcome), (format!("{command}\n"), Stream::Stdout));
-        assert_eq!(outcome.exit_code(), 0);
     }
 
     #[test]

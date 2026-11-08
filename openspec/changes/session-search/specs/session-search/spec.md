@@ -59,12 +59,12 @@ In the picker, `/` SHALL open a search line whose text filters the list on each 
 
 ### Requirement: Find from any shell
 
-`rawr find [WORDS…]` SHALL open the picker on the search line with `WORDS` as the query, inside or outside a Rex pane, and SHALL print the chosen command as `pick` does.
+`rawr find [WORDS…]` SHALL open the picker on the search line with `WORDS` as the query, inside or outside a Rex pane, and SHALL resume the chosen session as `pick` does.
 
 #### Scenario: Find outside Rex
 
 - **WHEN** `REX_BLOCK` is unset and the user runs `rawr find login`, then presses `Enter`
-- **THEN** stdout holds the first match's resume command and `find` exits 0
+- **THEN** the first match resumes in its folder, as `pick` resumes a session
 
 ### Requirement: Titles from the transcript's end
 

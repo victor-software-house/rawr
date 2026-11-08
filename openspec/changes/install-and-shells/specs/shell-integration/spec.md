@@ -8,7 +8,7 @@ Give each supported shell and Claude Code the hooks rawr needs, printed or writt
 
 ### Requirement: Print the shell integration
 
-`rawr init <SHELL>` SHALL print, for `bash`, `zsh` or `fish`, a script that runs `rawr pick --shell <SHELL>` once before the first prompt in a Rex pane and evaluates its output, and that defines a `rawr` function evaluating the output of `rawr find`.
+`rawr init <SHELL>` SHALL print, for `bash`, `zsh` or `fish`, a script that runs `rawr pick` once before the first prompt in a Rex pane.
 
 #### Scenario: zsh
 
@@ -19,15 +19,6 @@ Give each supported shell and Claude Code the hooks rawr needs, printed or writt
 
 - **WHEN** the user runs `rawr init tcsh`
 - **THEN** rawr prints a usage error naming `bash`, `zsh` and `fish`, and exits 2
-
-### Requirement: Quote for the shell
-
-`pick` and `find` SHALL quote the printed folder and session ID for the shell named by `--shell`, defaulting to POSIX quoting.
-
-#### Scenario: fish
-
-- **WHEN** the chosen session started in `/home/dev/code/it's shop` and the shell is `fish`
-- **THEN** the command reads `cd -- '/home/dev/code/it\'s shop' && claude --resume '<session id>'`
 
 ### Requirement: Add the Claude Code hook on request
 

@@ -33,9 +33,8 @@ Transcripts live at `~/.claude/projects/<folder slug>/<session id>.jsonl`, and C
    It lost: `j`, `k`, `q`, `g`, `G` and `1` to `9` are the picker's keys, and a restored pane should keep them.
 6. **The catalog loads on the first `/`, not at start.**
    `pick` runs in every new shell in a Rex pane, so it reads nothing it does not need; `find` loads the catalog at once because it starts on the search line.
-7. **`find` prints a command, as `pick` does.**
-   rawr starts only `rex`, never `claude`, so the shell runs the chosen command.
-   A zsh function named `rawr` evaluates the output of `rawr find` and passes every other command through.
+7. **`find` resumes the chosen session, as `pick` does.**
+   It replaces its process with `claude --resume` in the session's folder, so it works from any shell with no wrapper.
 
 ## Sources
 

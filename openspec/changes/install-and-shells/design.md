@@ -10,10 +10,10 @@ rawr follows the first camp.
 ## Decisions
 
 0. **ctl-core owns the shell syntax.**
-   `init`, per-shell quoting and `completion` come from ctl-core features that every ctl CLI shares.
-   rawr declares its two hooks, running `pick` once before the first prompt in a Rex pane and evaluating what `find` prints, and ctl-core renders them for each shell.
+   `init` and `completion` come from ctl-core features that every ctl CLI shares.
+   rawr declares its one hook, running `pick` once before the first prompt in a Rex pane, and ctl-core renders it for each shell.
    Alternative: rawr ships its own scripts for each shell.
-   It lost: every ctl CLI that hooks into a shell would repeat the same quoting and hook code, and fix the same bugs one CLI at a time.
+   It lost: every ctl CLI that hooks into a shell would repeat the same hook code, and fix the same bugs one CLI at a time.
 1. **`init` prints; nothing writes shell files.**
    The installers print `eval "$(rawr init zsh)"`, or the bash and fish forms, and stop.
    Alternative: append that line to `~/.zshrc`, `~/.bashrc` or `config.fish`.
@@ -25,9 +25,9 @@ rawr follows the first camp.
 3. **bash, zsh and fish.**
    These are the shells Homebrew installs completions for, and each has a hook that runs once before the first prompt: `PROMPT_COMMAND` in bash, `precmd` in zsh, the `fish_prompt` event in fish.
    Alternative: also nushell, PowerShell and others that mise supports.
-   It lost for now: their quoting and `eval` differ again, and nobody has asked for them.
-4. **Quoting follows the shell.**
-   bash and zsh get POSIX single quotes with each `'` written as `'\''`; fish gets single quotes with `\'` and `\\` escaped, since fish reads `'\''` differently.
+   It lost for now: their hooks differ again, and nobody has asked for them.
+4. **Nothing is quoted for a shell.**
+   `pick` and `find` resume the chosen session themselves (fullscreen-picker design, decision 12), so no shell evaluates a line rawr prints.
 5. **`setup claude` is explicit and idempotent.**
    It reads `$CLAUDE_CONFIG_DIR/settings.json` or `~/.claude/settings.json`, adds the hook only if no `SessionStart` hook already runs `rawr record`, keeps every other key as it was, and reports `added` or `unchanged`.
    This follows `rex skill setup`, which edits Claude Code settings only when run.
