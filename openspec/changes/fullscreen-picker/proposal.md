@@ -22,7 +22,7 @@ It had no mouse support, no hover, and lost the pane's restored output under its
 ### New Capabilities
 
 - `pane-index`: which Claude Code sessions ran in which Rex pane, and how that record stays one file per live pane.
-- `session-picker`: how a restored pane offers its sessions and hands the chosen one to the shell.
+- `session-picker`: how a restored pane offers its sessions and resumes the chosen one.
 
 ### Modified Capabilities
 
@@ -32,4 +32,4 @@ None.
 
 1. Modules: `src/index.rs` (pane index), `src/session.rs` (resumable sessions), `src/picker.rs` and its submodules (the full-screen picker).
 2. Dependencies: `ratatui` with its crossterm backend, and `textwrap`.
-3. Shell integration: a zsh snippet runs `rawr pick` once before the first prompt and evaluates what it prints.
+3. Shell integration: a zsh snippet runs `rawr pick` once before the first prompt; a choice resumes the session in place.

@@ -2,12 +2,14 @@
 //! it, its title, and how long ago it was active.
 
 use std::collections::HashSet;
+use std::convert::Infallible;
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom};
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use memchr::memmem;
 use rustix::process::{Pid, test_kill_process};
 use serde::Deserialize;
@@ -25,13 +27,22 @@ pub(crate) struct Agent {
 }
 
 impl Agent {
-    /// The shell line that resumes this session from its start folder.
-    pub(crate) fn resume_command(&self) -> String {
-        format!(
-            "cd -- {} && claude --resume {}",
-            shell_quote(&self.cwd),
-            shell_quote(&self.session_id)
-        )
+    /// Resumes this session in its start folder: the process becomes
+    /// `claude --resume <session id>` and returns only when that fails.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the start folder is gone or `claude` cannot start.
+    pub(crate) fn resume(&self) -> Result<Infallible> {
+        if !Path::new(&self.cwd).is_dir() {
+            bail!("{} no longer exists", self.cwd);
+        }
+        let error = std::process::Command::new("claude")
+            .arg("--resume")
+            .arg(&self.session_id)
+            .current_dir(&self.cwd)
+            .exec();
+        Err(error).context("start claude")
     }
 
     /// The start folder with the home directory written as `~`.
@@ -46,12 +57,6 @@ impl Agent {
             None => self.cwd.clone(),
         }
     }
-}
-
-/// Quotes a word for POSIX shells and zsh: single quotes, with each `'`
-/// written as `'\''`.
-fn shell_quote(word: &str) -> String {
-    format!("'{}'", word.replace('\'', r"'\''"))
 }
 
 /// The record Claude Code keeps per running process.
@@ -241,11 +246,9 @@ mod tests {
     }
 
     #[test]
-    fn resume_command_quotes_the_folder() {
-        assert_eq!(
-            agent("/home/dev/code/it's shop").resume_command(),
-            r"cd -- '/home/dev/code/it'\''s shop' && claude --resume '6f1c2a90-3b7e-4d21-9c55-0a8e4f7b1d33'"
-        );
+    fn a_gone_folder_is_named_instead_of_resumed() {
+        let error = agent("/home/dev/code/gone").resume().unwrap_err();
+        assert_eq!(error.to_string(), "/home/dev/code/gone no longer exists");
     }
 
     #[test]

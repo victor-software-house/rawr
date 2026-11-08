@@ -8,13 +8,12 @@ Installing must not touch the user's shell files or settings unasked, and must n
 
 ## What Changes
 
-1. `rawr init <bash|zsh|fish>` prints the shell integration for that shell: the one-time offer in a restored Rex pane and a `rawr` function that runs what `rawr find` chooses.
+1. `rawr init <bash|zsh|fish>` prints the shell integration for that shell: the one-time offer in a restored Rex pane.
    The text is fixed for a given rawr version, so it can be evaluated at start or saved once into a dotfiles repository.
-2. `pick` and `find` take `--shell <bash|zsh|fish>` and quote the printed command for that shell.
-3. `rawr setup claude` adds the `SessionStart` hook that runs `rawr record` to Claude Code's user settings, and only when the user runs it; `--dry-run` shows the change.
-4. `rawr completion <bash|zsh|fish>` prints static completions, from ctl-core's shared completion verb.
-5. Releases ship `darwin-arm64`, `linux-x64` and `linux-arm64` tarballs, each with a `.sha256`.
-6. Three ways to install, none of which edits a shell file:
+2. `rawr setup claude` adds the `SessionStart` hook that runs `rawr record` to Claude Code's user settings, and only when the user runs it; `--dry-run` shows the change.
+3. `rawr completion <bash|zsh|fish>` prints static completions, from ctl-core's shared completion verb.
+4. Releases ship `darwin-arm64`, `linux-x64` and `linux-arm64` tarballs, each with a `.sha256`.
+5. Three ways to install, none of which edits a shell file:
    - `curl -fsSL https://github.com/victor-software-house/rawr/releases/latest/download/install.sh | sh`
    - `brew install victor-software-house/tap/rawr`
    - `mise use -g github:victor-software-house/rawr`

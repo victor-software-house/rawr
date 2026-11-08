@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Offer a restored Rex pane's Claude Code sessions in a full-screen picker, and hand the chosen one to the shell as a command.
+Offer a restored Rex pane's Claude Code sessions in a full-screen picker, and resume the one the user chooses.
 
 ## ADDED Requirements
 
@@ -20,19 +20,24 @@ Offer a restored Rex pane's Claude Code sessions in a full-screen picker, and ha
 - **WHEN** every listed session is running or its transcript is gone
 - **THEN** `pick` draws nothing, prints nothing and exits 1
 
-### Requirement: Hand the choice to the shell
+### Requirement: Resume the chosen session
 
-`pick` SHALL write only the chosen session's command to stdout, as `cd -- '<folder>' && claude --resume '<session id>'` with each value single-quoted, and SHALL draw everything else on stderr.
+On a choice, `pick` SHALL restore the terminal, then replace its own process with `claude --resume <session id>` running in the session's folder; it SHALL draw only on stderr and write nothing to stdout.
 
 #### Scenario: The user resumes a session
 
 - **WHEN** the user chooses the session `6f1c2a90-3b7e-4d21-9c55-0a8e4f7b1d33` that started in `/home/dev/code/it's shop`
-- **THEN** stdout holds exactly `cd -- '/home/dev/code/it'\''s shop' && claude --resume '6f1c2a90-3b7e-4d21-9c55-0a8e4f7b1d33'` and a newline, and `pick` exits 0
+- **THEN** the main screen is back, and the pane's process is `claude --resume 6f1c2a90-3b7e-4d21-9c55-0a8e4f7b1d33` with `/home/dev/code/it's shop` as its folder
+
+#### Scenario: The folder is gone
+
+- **WHEN** the user chooses a session whose folder no longer exists
+- **THEN** `pick` prints an error naming the folder on stderr, starts nothing, and exits non-zero
 
 #### Scenario: The user dismisses the picker
 
 - **WHEN** the user presses Esc, `q` or Ctrl+C
-- **THEN** stdout is empty and `pick` exits 1
+- **THEN** nothing is resumed, stdout is empty and `pick` exits 1
 
 ### Requirement: Full screen, restored on exit
 
@@ -50,7 +55,7 @@ The picker SHALL move the selection with Up, Down, `k`, `j`, Home, End, `g`, `G`
 #### Scenario: Pick by number
 
 - **WHEN** the picker offers four sessions and the user presses `3`
-- **THEN** `pick` prints the third session's command
+- **THEN** `pick` resumes the third session
 
 ### Requirement: Mouse control
 
@@ -64,7 +69,7 @@ The picker SHALL select the row under a left click when that row is not selected
 #### Scenario: Click the selected row
 
 - **WHEN** the second row is selected and the user clicks it
-- **THEN** `pick` prints the second session's command
+- **THEN** `pick` resumes the second session
 
 #### Scenario: Wheel
 

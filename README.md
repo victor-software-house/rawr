@@ -42,39 +42,25 @@ Rex keeps a pane's block ID across a server restart, so the block ID is the pane
 | Command | Run by | Does |
 | --- | --- | --- |
 | `rawr record` | A Claude Code `SessionStart` hook | Adds the session to the pane's index, then deletes the indexes of panes the Rex server no longer lists |
-| `rawr pick` | The shell, when it starts in a Rex pane | Offers the pane's sessions that no running Claude Code holds, and prints the chosen `cd` and `claude --resume` line |
-| `rawr find [WORDS…]` | You, from any shell | Opens the picker on the search line, and prints the chosen line as `pick` does |
+| `rawr pick` | The shell, when it starts in a Rex pane | Offers the pane's sessions that no running Claude Code holds, and resumes the chosen one in its folder |
+| `rawr find [WORDS…]` | You, from any shell | Opens the picker on the search line, and resumes the chosen session as `pick` does |
 | `rawr setup claude [--dry-run]` | You, once | Adds the `SessionStart` hook that runs `rawr record` to Claude Code's user settings |
 
 ## Shell integration
 
-`pick` draws on the terminal through stderr and writes only the chosen command to stdout, so the shell can run it.
-In zsh, run it once before the first prompt:
+On a choice, `pick` and `find` restore the terminal and become `claude --resume` in the session's folder; when Claude Code exits, the pane's shell prompt is back.
+They need no wrapper, so `rawr find` works as typed in any shell.
+In zsh, offer a restored pane its sessions once, before the first prompt:
 
 ```zsh
 if [[ -n $REX_BLOCK ]] && (( $+commands[rawr] )); then
   autoload -Uz add-zsh-hook
   _rawr_once() {
     add-zsh-hook -d precmd _rawr_once
-    local cmd
-    cmd=$(rawr pick) || return 0
-    print -s -- "$cmd"
-    eval "$cmd"
+    rawr pick
   }
   add-zsh-hook precmd _rawr_once
 fi
-
-# Run what `rawr find` chooses; pass every other command through.
-rawr() {
-  if [[ $1 == find ]]; then
-    local cmd
-    cmd=$(command rawr "$@") || return 0
-    print -s -- "$cmd"
-    eval "$cmd"
-  else
-    command rawr "$@"
-  fi
-}
 ```
 
 `record` runs from a Claude Code `SessionStart` hook.
