@@ -29,10 +29,11 @@ commit-msg:
 pre-push:
   commands:
     # Fails when a mise lockfile no longer matches its config
-    # (mise-tasks/hooks/lockfile.sh). It runs in the dev profile, which reads
-    # the committed mise.lock and mise.dev.lock: under any other profile, such
-    # as the hooks one, mise assigns the pinned catalogs' task tools to that
-    # profile's lockfile, which nothing writes, and reports it stale.
+    # (mise-tasks/hooks/lockfile.sh). It runs in the profiles .miserc.toml
+    # loads, from the same list, so it checks each of their committed locks
+    # whatever MISE_ENV the shell exports. Under the hooks profile, mise
+    # assigns the pinned catalogs' task tools to that profile's lockfile, which
+    # nothing writes, and reports it stale.
     lockfile:
       env: { MISE_ENV: "dev" }
       run: mise run hooks:lockfile

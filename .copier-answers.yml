@@ -1,5 +1,5 @@
 # Changes here will be overwritten by Copier; edit with `copier update --data`.
-_commit: v0.0.70
+_commit: v0.0.72
 _src_path: https://github.com/victor-software-house/templates.git
 ci_runner: github-hosted
 clippy_disallowed_methods: []
@@ -40,6 +40,7 @@ published: false
 repository_visibility: public
 rust_nightly: nightly-2026-11-01
 rust_version: 1.99.1
+test_profiles: []
 tokio: false
 verify_timeout: 8
 workflow_policy:

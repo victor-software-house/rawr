@@ -30,7 +30,7 @@ render=$(pwd)
 cd "$(git rev-parse --show-toplevel)" || exit 1
 files=$(git ls-files ':(glob).github/workflows/*.yml' ':(glob).github/workflows/*.yaml') || exit 1
 [ -n "$files" ] || exit 0
-policy=$(git rev-parse --git-path 'workflow-policy/ca84425f5597bc5fd59e5614d0cf1f2f06194377') || exit 1
+policy=$(git rev-parse --git-path 'workflow-policy/9eb809757e973495c62ab316f5bbb858ae87747e') || exit 1
 texts=$(git rev-parse --git-path "workflow-texts.$$.yaml") || exit 1
 trap 'rm -f "$texts"' EXIT
 if [ ! -d "$policy" ]; then
@@ -48,7 +48,7 @@ if [ ! -d "$policy" ]; then
   trap 'exit 143' TERM
   if [ ! -d "$policy" ]; then
     rm -rf "${policy:?}.part"
-    if conftest pull --absolute-paths -p "$policy.part" 'git::https://github.com/victor-software-house/actions.git//policy?ref=ca84425f5597bc5fd59e5614d0cf1f2f06194377'; then mv "$policy.part" "$policy"; fi
+    if conftest pull --absolute-paths -p "$policy.part" 'git::https://github.com/victor-software-house/actions.git//policy?ref=9eb809757e973495c62ab316f5bbb858ae87747e'; then mv "$policy.part" "$policy"; fi
   fi
   trap 'rm -f "$texts"' EXIT
   trap - HUP INT QUIT TERM

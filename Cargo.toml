@@ -90,3 +90,15 @@ mod_module_files = "deny"
 # Duplicate versions come from transitive dependencies the crate does not
 # control; cargo-deny reports them (`bans.multiple-versions`).
 multiple_crate_versions = "allow"
+
+# The smallest binary that keeps its speed (TPL-031). Against opt-level 3 with
+# thin LTO, a ctl CLI came out 35% smaller and 4% slower. opt-level "z" takes
+# another 25% off but runs a ledger parse 51% slower: a repository whose run
+# time does not matter sets it here. Cargo ignores the profiles of a
+# dependency, so a library's consumers see none of this.
+[profile.release]
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"

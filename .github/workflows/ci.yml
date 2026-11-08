@@ -20,7 +20,7 @@ concurrency:
 jobs:
   verify:
     if: ${{ !github.event.pull_request.draft }}
-    uses: victor-software-house/actions/.github/workflows/rust-ci.yml@ca84425f5597bc5fd59e5614d0cf1f2f06194377 # main, 2026-11-05
+    uses: victor-software-house/actions/.github/workflows/rust-ci.yml@9eb809757e973495c62ab316f5bbb858ae87747e # main, 2026-11-08
     with:
       mise-version: 2026.11.2
       advisories: true
