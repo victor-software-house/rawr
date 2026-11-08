@@ -22,6 +22,17 @@ pub(crate) enum Step {
     Dismiss,
 }
 
+impl Step {
+    /// This step, or `other` when this one changes nothing; one event can
+    /// both move the hover and change the selection.
+    fn or(self, other: Self) -> Self {
+        match self {
+            Self::Ignore => other,
+            Self::Redraw | Self::Filter | Self::Resume(_) | Self::Dismiss => self,
+        }
+    }
+}
+
 /// The picker's selection, hovered row and search line over `len` sessions.
 #[derive(Debug)]
 pub(crate) struct State {
@@ -198,11 +209,11 @@ impl State {
     pub(crate) fn on_mouse(&mut self, mouse: MouseEvent, hit: Option<usize>) -> Step {
         let hovered = self.set_hover(hit);
         match mouse.kind {
-            MouseEventKind::ScrollUp => self.select(self.selected.saturating_sub(1)),
-            MouseEventKind::ScrollDown => self.select(self.selected.saturating_add(1)),
+            MouseEventKind::ScrollUp => self.select(self.selected.saturating_sub(1)).or(hovered),
+            MouseEventKind::ScrollDown => self.select(self.selected.saturating_add(1)).or(hovered),
             MouseEventKind::Down(MouseButton::Left) => match hit {
                 Some(index) if index == self.selected => Step::Resume(index),
-                Some(index) => self.select(index),
+                Some(index) => self.select(index).or(hovered),
                 None => hovered,
             },
             _ => hovered,
@@ -331,6 +342,14 @@ mod tests {
         state.on_mouse(down, None);
         assert_eq!(state.selected(), 2);
         assert_eq!(state.on_mouse(down, None), Step::Ignore);
+    }
+
+    #[test]
+    fn a_wheel_at_the_end_still_draws_the_new_hover() {
+        let mut state = State::new(1);
+        let down = mouse(MouseEventKind::ScrollDown);
+        assert_eq!(state.on_mouse(down, Some(0)), Step::Redraw);
+        assert_eq!(state.hover(), Some(0));
     }
 
     #[test]

@@ -5,6 +5,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::SystemTime;
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -17,12 +18,10 @@ const KEEP: usize = 5;
 pub(crate) struct BlockId(String);
 
 impl BlockId {
-    /// Parses a block ID, refusing anything that could escape the index
-    /// directory as a file name.
+    /// Parses a block ID, with or without its `block:` prefix, refusing
+    /// anything that could escape the index directory as a file name.
     pub(crate) fn try_new(raw: &str) -> Result<Self> {
-        let Some(id) = raw.strip_prefix("block:") else {
-            bail!("not a Rex block id: {raw}");
-        };
+        let id = raw.strip_prefix("block:").unwrap_or(raw);
         if id.is_empty() || !id.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-') {
             bail!("not a Rex block id: {raw}");
         }
@@ -167,7 +166,12 @@ fn live_blocks() -> Result<HashSet<BlockId>> {
 }
 
 /// Deletes the index files of blocks the Rex server no longer has.
+///
+/// A file written after the listing began is kept: it belongs to a pane the
+/// listing may have missed, such as one created while another pane's
+/// `record` ran.
 pub(crate) fn prune(dir: &Path) -> Result<()> {
+    let listed = SystemTime::now();
     let live = live_blocks()?;
     let keep: HashSet<String> = live.iter().map(BlockId::file_name).collect();
     for entry in fs::read_dir(dir).with_context(|| format!("list {}", dir.display()))? {
@@ -179,7 +183,11 @@ pub(crate) fn prune(dir: &Path) -> Result<()> {
         let is_index = name
             .strip_suffix(".json")
             .is_some_and(|stem| BlockId::try_new(&format!("block:{stem}")).is_ok());
-        if is_index && !keep.contains(name) {
+        let written_since = entry
+            .metadata()
+            .and_then(|meta| meta.modified())
+            .is_ok_and(|modified| modified >= listed);
+        if is_index && !keep.contains(name) && !written_since {
             fs::remove_file(entry.path())
                 .with_context(|| format!("remove {}", entry.path().display()))?;
         }
@@ -209,10 +217,19 @@ mod tests {
     }
 
     #[test]
+    fn block_id_takes_the_prefix_as_optional() {
+        assert_eq!(
+            BlockId::try_new("0190f3a2-7c41").unwrap(),
+            BlockId::try_new("block:0190f3a2-7c41").unwrap()
+        );
+    }
+
+    #[test]
     fn block_id_refuses_paths() {
         assert!(BlockId::try_new("block:../../etc").is_err());
-        assert!(BlockId::try_new("01a1acdf").is_err());
+        assert!(BlockId::try_new("../../etc").is_err());
         assert!(BlockId::try_new("block:").is_err());
+        assert!(BlockId::try_new("").is_err());
     }
 
     #[test]

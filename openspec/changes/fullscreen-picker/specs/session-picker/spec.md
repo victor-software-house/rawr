@@ -91,7 +91,7 @@ The picker SHALL wrap a title, folder or session ID that does not fit the pane's
 
 ### Requirement: Safe titles
 
-The picker SHALL drop control characters from a title, and turn its tabs and line breaks into spaces, before drawing it.
+The picker SHALL drop control characters from a title, folder and session ID, and turn their tabs and line breaks into spaces, before drawing them.
 
 #### Scenario: A title holds an escape sequence
 

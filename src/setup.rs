@@ -1,8 +1,9 @@
 //! `setup claude`: add the `SessionStart` hook that runs `rawr record` to
 //! Claude Code's user settings, once, and only when asked.
 
-use std::fs;
-use std::io::ErrorKind;
+use std::fs::{self, OpenOptions, Permissions};
+use std::io::{ErrorKind, Write};
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
@@ -107,23 +108,49 @@ fn runs_record(entry: &Value) -> bool {
 /// dotfile managers make, stays a symlink, and the file keeps its
 /// permissions.
 fn write(path: &Path, settings: &Value) -> Result<()> {
-    let target = match fs::canonicalize(path) {
-        Ok(target) => target,
-        Err(error) if error.kind() == ErrorKind::NotFound => path.to_owned(),
-        Err(error) => return Err(error).with_context(|| format!("resolve {}", path.display())),
-    };
+    let target = resolve(path)?;
     if let Some(dir) = target.parent() {
         fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
     }
     let mut text = serde_json::to_string_pretty(settings).context("encode the settings")?;
     text.push('\n');
-    let staged = target.with_extension("json.rawr");
-    fs::write(&staged, text).with_context(|| format!("write {}", staged.display()))?;
-    if let Ok(meta) = fs::metadata(&target) {
-        fs::set_permissions(&staged, meta.permissions())
-            .with_context(|| format!("set the permissions of {}", staged.display()))?;
+    let mode = fs::metadata(&target).map_or(0o600, |meta| meta.permissions().mode() & 0o7777);
+    let staged = target.with_extension(format!("json.rawr-{}", std::process::id()));
+    let written = stage(&staged, &text, mode).and_then(|()| {
+        fs::rename(&staged, &target).with_context(|| format!("replace {}", target.display()))
+    });
+    if written.is_err() {
+        fs::remove_file(&staged).ok();
     }
-    fs::rename(&staged, &target).with_context(|| format!("replace {}", target.display()))
+    written
+}
+
+/// The file the settings live in: `path`, or what a symlink at `path` points
+/// to, even when that file does not exist yet.
+fn resolve(path: &Path) -> Result<PathBuf> {
+    match fs::canonicalize(path) {
+        Ok(target) => Ok(target),
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            let dir = path.parent().unwrap_or_else(|| Path::new(""));
+            Ok(fs::read_link(path).map_or_else(|_| path.to_owned(), |link| dir.join(link)))
+        }
+        Err(error) => Err(error).with_context(|| format!("resolve {}", path.display())),
+    }
+}
+
+/// Writes `text` to a new file at `staged` that only `mode` lets anyone read,
+/// from its first byte: the settings can hold API keys.
+fn stage(staged: &Path, text: &str, mode: u32) -> Result<()> {
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(mode)
+        .open(staged)
+        .with_context(|| format!("create {}", staged.display()))?;
+    file.write_all(text.as_bytes())
+        .with_context(|| format!("write {}", staged.display()))?;
+    file.set_permissions(Permissions::from_mode(mode))
+        .with_context(|| format!("set the permissions of {}", staged.display()))
 }
 
 #[cfg(test)]
@@ -209,6 +236,37 @@ mod tests {
                 .is_symlink()
         );
         assert!(fs::read_to_string(&real).unwrap().contains(RECORD));
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn a_dangling_symlink_stays_a_symlink() {
+        let path = fixture("dangling", None);
+        let real = path.with_file_name("not-yet.json");
+        std::os::unix::fs::symlink("not-yet.json", &path).unwrap();
+        assert_eq!(claude(&path, Mode::Write).unwrap(), Change::Added);
+        assert!(
+            fs::symlink_metadata(&path)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert!(fs::read_to_string(&real).unwrap().contains(RECORD));
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn a_private_file_stays_private_and_leaves_no_copy() {
+        let path = fixture("mode", Some(SETTINGS));
+        fs::set_permissions(&path, Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(claude(&path, Mode::Write).unwrap(), Change::Added);
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        let names: Vec<_> = fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(names, ["settings.json"]);
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
