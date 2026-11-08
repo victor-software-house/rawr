@@ -17,7 +17,7 @@ The picker SHALL search the sessions named in `~/.claude/history.jsonl` whose tr
 
 ### Requirement: Match every word
 
-A session SHALL match a query when each whitespace-separated word of the query, ignoring case, occurs in one of its prompts, its folder or its session ID.
+A session SHALL match a query when each whitespace-separated word of the query, ignoring case, occurs in one of its prompts, its title, its folder or its session ID.
 
 #### Scenario: Two words in different prompts
 
@@ -66,11 +66,17 @@ In the picker, `/` SHALL open a search line whose text filters the list on each 
 - **WHEN** `REX_BLOCK` is unset and the user runs `rawr find login`, then presses `Enter`
 - **THEN** stdout holds the first match's resume command and `find` exits 0
 
-### Requirement: Search without opening transcripts
+### Requirement: Titles from the transcript's end
 
-Searching SHALL read only `~/.claude/history.jsonl`, the session records under `~/.claude/sessions/` and one listing of `~/.claude/projects/*/`, and SHALL open no transcript.
+Searching SHALL read `~/.claude/history.jsonl`, the session records under `~/.claude/sessions/`, one listing of `~/.claude/projects/*/`, and at most the last 1 MiB of each listed session's transcript, once per catalog load.
+A row's title SHALL be the last title the user set in its transcript, else the last one Claude Code generated, else the session's first prompt that is not a slash command.
 
 #### Scenario: A large transcript
 
-- **WHEN** a matching session's transcript is 50 MB
-- **THEN** the search reads none of it, and the row's title is the session's first prompt that is not a slash command
+- **WHEN** a matching session's transcript is 50 MB and its last 64 KiB hold a generated title `Weekly notes draft`
+- **THEN** the search reads only that end of it, and the row's title is `Weekly notes draft`
+
+#### Scenario: A transcript with no title row
+
+- **WHEN** a session's transcript holds no title row and its first prompts are `/config` and `Fix the login page`
+- **THEN** the row's title is `Fix the login page`

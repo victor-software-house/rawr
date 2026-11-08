@@ -80,18 +80,27 @@ The picker SHALL show the row under the pointer in the default foreground instea
 - **WHEN** the pointer moves onto an unselected row
 - **THEN** that row's folder and age turn from dim to the default foreground and the pointer shape becomes `pointer`
 
+### Requirement: A title, then the folder and age
+
+The picker SHALL show each session as its title, then its folder and how long ago it was last active, and SHALL NOT draw its session ID.
+
+#### Scenario: One session's rows
+
+- **WHEN** the picker offers a session titled `Fix the login redirect` that started in `/srv/code/shop` and was last active two hours ago
+- **THEN** its rows read `Fix the login redirect` and `/srv/code/shop · 2 h ago`, and no row shows its session ID
+
 ### Requirement: Nothing is cut
 
-The picker SHALL wrap a title, folder or session ID that does not fit the pane's width at spaces, never at a hyphen, and break a word only when it is wider than the row.
+The picker SHALL wrap a title or folder that does not fit the pane's width at spaces, never at a hyphen, and break a word only when it is wider than the row.
 
 #### Scenario: A long title in a narrow pane
 
 - **WHEN** a title of 70 characters is shown in a pane 40 columns wide
-- **THEN** every word of the title appears, across two or more rows, and the session ID appears whole on one row
+- **THEN** every word of the title appears, across two or more rows, and the folder and age appear whole on the row below them
 
 ### Requirement: Safe titles
 
-The picker SHALL drop control characters from a title, folder and session ID, and turn their tabs and line breaks into spaces, before drawing them.
+The picker SHALL drop control characters from a title and a folder, and turn their tabs and line breaks into spaces, before drawing them.
 
 #### Scenario: A title holds an escape sequence
 
