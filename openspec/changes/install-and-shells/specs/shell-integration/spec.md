@@ -40,7 +40,7 @@ Give each supported shell and Claude Code the hooks rawr needs, printed or writt
 
 ### Requirement: Print completions
 
-`rawr completion <SHELL>` SHALL print a static completion script for `bash`, `zsh` or `fish`.
+`rawr completion <SHELL>` SHALL print ctl-core's completion script for `bash`, `zsh` or `fish`.
 
 #### Scenario: bash
 
