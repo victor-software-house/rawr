@@ -9,6 +9,7 @@ mod catalog;
 mod index;
 mod picker;
 mod session;
+mod setup;
 
 use std::collections::HashSet;
 use std::io::IsTerminal;
@@ -20,6 +21,7 @@ use serde::Serialize;
 use crate::index::{BlockId, HookInput, PaneIndex};
 use crate::picker::Start;
 use crate::session::Agent;
+use crate::setup::{Change, Mode};
 
 /// Rex Agents: Wake and Resume.
 #[derive(Debug, Parser)]
@@ -54,6 +56,25 @@ enum Command {
         /// folder or ID.
         words: Vec<String>,
     },
+    /// Add rawr's hook to another tool's settings.
+    Setup {
+        #[command(subcommand)]
+        target: Target,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum Target {
+    /// Add a `SessionStart` hook that runs `rawr record` to Claude Code's user
+    /// settings, unless one is there.
+    ///
+    /// Reads `$CLAUDE_CONFIG_DIR/settings.json`, or `~/.claude/settings.json`,
+    /// and keeps every other setting as it was.
+    Claude {
+        /// Report what would change, and change nothing.
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 /// What a command leaves for the shell.
@@ -66,6 +87,8 @@ enum Outcome {
     Resume { command: String },
     /// There was nothing to offer, or the user dismissed the picker.
     Nothing,
+    /// `setup` checked or changed a settings file.
+    Setup { change: Change, path: String },
 }
 
 impl Present for Outcome {
@@ -73,12 +96,17 @@ impl Present for Outcome {
         match self {
             Self::Recorded | Self::Nothing => Document::new(),
             Self::Resume { command } => Document::new().verbatim(command.as_str()),
+            Self::Setup { change, path } => Document::new().verbatim(match change {
+                Change::Added => format!("Added the `{}` hook to {path}", setup::RECORD),
+                Change::WouldAdd => format!("Would add the `{}` hook to {path}", setup::RECORD),
+                Change::Unchanged => format!("{path} already runs `{}`", setup::RECORD),
+            }),
         }
     }
 
     fn exit_code(&self) -> u8 {
         match self {
-            Self::Recorded | Self::Resume { .. } => 0,
+            Self::Recorded | Self::Resume { .. } | Self::Setup { .. } => 0,
             Self::Nothing => 1,
         }
     }
@@ -89,6 +117,9 @@ fn main() -> ExitCode {
         Command::Record => record().map(|()| Outcome::Recorded),
         Command::Pick => pick(),
         Command::Find { words } => find(&words),
+        Command::Setup {
+            target: Target::Claude { dry_run },
+        } => setup_claude(if dry_run { Mode::DryRun } else { Mode::Write }),
     })
 }
 
@@ -159,11 +190,22 @@ fn find(words: &[String]) -> Result<Outcome> {
     choose(&agents, Start::Search(words.join(" ")), live)
 }
 
+/// Adds the `rawr record` hook to Claude Code's user settings, or reports
+/// that it is there.
+fn setup_claude(mode: Mode) -> Result<Outcome> {
+    let path = setup::settings_path(&session::claude_dir()?);
+    let change = setup::claude(&path, mode)?;
+    Ok(Outcome::Setup {
+        change,
+        path: path.display().to_string(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use ctl_core::prelude::*;
 
-    use super::Outcome;
+    use super::{Cli, Outcome};
 
     fn shown(outcome: &Outcome) -> (String, Stream) {
         let captured = View::new(OutputFormat::Pretty, ColorMode::Never)
@@ -180,6 +222,12 @@ mod tests {
         };
         assert_eq!(shown(&outcome), (format!("{command}\n"), Stream::Stdout));
         assert_eq!(outcome.exit_code(), 0);
+    }
+
+    #[test]
+    fn the_command_line_is_well_formed() {
+        use clap::CommandFactory;
+        Cli::command().debug_assert();
     }
 
     #[test]

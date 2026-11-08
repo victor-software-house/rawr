@@ -21,7 +21,8 @@ ratatui = { version = "=0.30.2", default-features = false, features = [
 ] }
 rustix = { version = "1.1.6", features = ["process"] }
 serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1.0.154"
+# preserve_order: `setup claude` keeps the order of the user's settings.
+serde_json = { version = "1.0.154", features = ["preserve_order"] }
 textwrap = { version = "0.16.4", default-features = false, features = [
   "unicode-width",
 ] }
