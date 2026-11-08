@@ -5,13 +5,20 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
 /// How many sessions a pane remembers.
 const KEEP: usize = 5;
+
+/// How far before its listing `prune` starts keeping new files. Linux stamps
+/// a file's mtime from a coarse clock that can lag the clock
+/// [`SystemTime::now`] reads by a few milliseconds, so a file saved just after
+/// the listing could otherwise look older than it. A stale file written in
+/// this second goes at the next prune.
+const MTIME_SLACK: Duration = Duration::from_secs(1);
 
 /// A Rex block ID, such as `block:0190f3a2-7c41-7e10-8b2d-5d9e6a4c1f08`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -167,11 +174,13 @@ fn live_blocks() -> Result<HashSet<BlockId>> {
 
 /// Deletes the index files of blocks the Rex server no longer has.
 ///
-/// A file written after the listing began is kept: it belongs to a pane the
-/// listing may have missed, such as one created while another pane's
-/// `record` ran.
+/// A file written after the listing began, less [`MTIME_SLACK`], is kept: it
+/// belongs to a pane the listing may have missed, such as one created while
+/// another pane's `record` ran.
 pub(crate) fn prune(dir: &Path) -> Result<()> {
-    let listed = SystemTime::now();
+    let listed = SystemTime::now()
+        .checked_sub(MTIME_SLACK)
+        .unwrap_or(SystemTime::UNIX_EPOCH);
     let live = live_blocks()?;
     let keep: HashSet<String> = live.iter().map(BlockId::file_name).collect();
     for entry in fs::read_dir(dir).with_context(|| format!("list {}", dir.display()))? {
