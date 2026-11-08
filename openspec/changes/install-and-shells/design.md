@@ -9,6 +9,11 @@ rawr follows the first camp.
 
 ## Decisions
 
+0. **ctl-core owns the shell syntax.**
+   `init`, per-shell quoting and `completion` come from ctl-core features that every ctl CLI shares.
+   rawr declares its two hooks, running `pick` once before the first prompt in a Rex pane and evaluating what `find` prints, and ctl-core renders them for each shell.
+   Alternative: rawr ships its own scripts for each shell.
+   It lost: every ctl CLI that hooks into a shell would repeat the same quoting and hook code, and fix the same bugs one CLI at a time.
 1. **`init` prints; nothing writes shell files.**
    The installers print `eval "$(rawr init zsh)"`, or the bash and fish forms, and stop.
    Alternative: append that line to `~/.zshrc`, `~/.bashrc` or `config.fish`.
@@ -26,9 +31,9 @@ rawr follows the first camp.
 5. **`setup claude` is explicit and idempotent.**
    It reads `$CLAUDE_CONFIG_DIR/settings.json` or `~/.claude/settings.json`, adds the hook only if no `SessionStart` hook already runs `rawr record`, keeps every other key as it was, and reports `added` or `unchanged`.
    This follows `rex skill setup`, which edits Claude Code settings only when run.
-6. **Completions are static scripts from ctl-core.**
-   rawr has no dynamic values to complete, so a generated file is enough, and Homebrew installs it with no shell configuration.
-   The verb lives in ctl-core so every ctl tool offers the same `completion` command.
+6. **Completions come from ctl-core's `completion` verb.**
+   It prints a short registration script that asks the installed binary for candidates at each TAB, so completions always match the installed version.
+   Homebrew installs it with `generate_completions_from_executable`, with no shell configuration.
 7. **The install script installs one binary and checks it.**
    It detects the OS and CPU, downloads the matching tarball and its `.sha256` from the release, verifies the digest, and installs `rawr` into `~/.local/bin`, or `RAWR_INSTALL_DIR`.
    It needs only `sh`, `curl` or `wget`, `tar`, and `shasum` or `sha256sum`.

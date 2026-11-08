@@ -40,6 +40,9 @@ queue:
       - rawr init <bash|zsh|fish> prints a static script, and pick and find quote for that shell.
       - rawr setup claude adds the SessionStart hook once and reports added or unchanged; --dry-run changes nothing.
     plan: openspec/changes/install-and-shells/proposal.md
+    notes:
+      - 2026-11-07, ctl-core owns init and per-shell quoting as a shared shell-integration feature, stacked on ctl-core PR 180; rawr adopts it after a ctl-core release.
+      - 2026-11-07, setup claude stays in rawr, since it edits Claude Code settings only.
 
   - id: RAWR-007
     title: Ship macOS arm64 and Linux glibc binaries with an install script

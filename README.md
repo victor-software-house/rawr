@@ -46,6 +46,7 @@ Rex keeps a pane's block ID across a server restart, so the block ID is the pane
 | `rawr record` | A Claude Code `SessionStart` hook | Adds the session to the pane's index, then deletes the indexes of panes the Rex server no longer lists |
 | `rawr pick` | The shell, when it starts in a Rex pane | Offers the pane's sessions that no running Claude Code holds, and prints the chosen `cd` and `claude --resume` line |
 | `rawr find [WORDS…]` | You, from any shell | Opens the picker on the search line, and prints the chosen line as `pick` does |
+| `rawr setup claude [--dry-run]` | You, once | Adds the `SessionStart` hook that runs `rawr record` to Claude Code's user settings |
 
 ## Shell integration
 
@@ -78,7 +79,11 @@ rawr() {
 }
 ```
 
-`record` runs from a Claude Code `SessionStart` hook in `~/.claude/settings.json`:
+`record` runs from a Claude Code `SessionStart` hook.
+`rawr setup claude` adds it to `~/.claude/settings.json`, or to `$CLAUDE_CONFIG_DIR/settings.json`, and keeps every other setting in its order; `--dry-run` reports what it would do and changes nothing.
+A second run reports the hook is there and changes nothing.
+It edits the file only when you run it.
+The hook it adds:
 
 ```json
 {
