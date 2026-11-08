@@ -31,12 +31,17 @@ A pane index SHALL hold at most five sessions, newest first, with no session lis
 
 ### Requirement: One index file per live pane
 
-After recording, `record` SHALL delete the index files of blocks the Rex server no longer lists, and SHALL delete nothing when any Rex listing fails.
+After recording, `record` SHALL delete the index files of blocks the Rex server no longer lists, SHALL keep a file written after its listing began, and SHALL delete nothing when any Rex listing fails.
 
 #### Scenario: A pane was closed
 
 - **WHEN** the Rex server lists every session and block, and one index file names a block it does not list
 - **THEN** that file is deleted and the others stay
+
+#### Scenario: A pane records while another prunes
+
+- **WHEN** a pane created after one `record` listed the blocks saves its index before that `record` deletes stale files
+- **THEN** the new pane's index file stays
 
 #### Scenario: The Rex server does not answer
 

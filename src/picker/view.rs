@@ -14,7 +14,7 @@ use ratatui::widgets::{Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarStat
 use textwrap::{Options, WordSplitter};
 
 use crate::picker::state::State;
-use crate::session::{Agent, ago};
+use crate::session::{Agent, ago, sanitize};
 
 /// Bright blue, ANSI colour 12: the selection's pointer and title.
 const ACCENT: Color = Color::LightBlue;
@@ -82,8 +82,9 @@ fn block(agent: &Agent, look: Look, width: usize) -> Vec<Line<'static>> {
             Span::styled(part, title),
         ]));
     }
-    let place = format!("{} · {}", agent.short_cwd(), ago(agent.idle));
-    for text in [place.as_str(), agent.session_id.as_str()] {
+    let place = sanitize(&format!("{} · {}", agent.short_cwd(), ago(agent.idle)));
+    let id = sanitize(&agent.session_id);
+    for text in [place.as_str(), id.as_str()] {
         for part in wrapped(text, text_width) {
             lines.push(Line::from(vec![
                 Span::raw(" ".repeat(GUTTER)),
@@ -337,6 +338,14 @@ mod tests {
             rows(&buffer)
         );
         assert!(row(&buffer, 13).contains("resume"), "{:?}", rows(&buffer));
+    }
+
+    #[test]
+    fn an_escape_in_a_folder_never_reaches_the_terminal() {
+        let mut shop = agent(1, "Fix the login redirect");
+        shop.cwd = "/srv/code/\u{1b}[2Jshop".to_owned();
+        let (buffer, _) = render(&[shop], &State::new(1), 60, 10);
+        assert_eq!(row(&buffer, TOP + 1), "   /srv/code/[2Jshop · 2 h ago");
     }
 
     #[test]

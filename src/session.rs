@@ -3,7 +3,7 @@
 
 use std::collections::HashSet;
 use std::fs::{self, File};
-use std::io::{BufRead, BufReader};
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
@@ -136,31 +136,44 @@ struct TitleRow {
     ai: Option<String>,
 }
 
+/// How much of a transcript's end [`transcript_title`] reads. Transcripts
+/// reach hundreds of megabytes, and Claude Code writes the title rows again
+/// every few dozen kilobytes, the user's title next to each generated one, so
+/// the end holds the current title.
+const TITLE_TAIL: u64 = 1 << 20;
+
 /// The session's title: the last title the user set, else the last one
-/// Claude generated.
+/// Claude generated, from the transcript's last [`TITLE_TAIL`] bytes.
 fn transcript_title(path: &Path) -> Option<String> {
     let custom_marker = memmem::Finder::new(br#""type":"custom-title""#);
     let ai_marker = memmem::Finder::new(br#""type":"ai-title""#);
-    let mut reader = BufReader::new(File::open(path).ok()?);
-    let mut line = Vec::new();
+    let mut file = File::open(path).ok()?;
+    let start = file.metadata().ok()?.len().saturating_sub(TITLE_TAIL);
+    file.seek(SeekFrom::Start(start)).ok()?;
+    let mut tail = Vec::new();
+    file.take(TITLE_TAIL).read_to_end(&mut tail).ok()?;
+    let whole = if start == 0 {
+        tail.as_slice()
+    } else {
+        let cut = memchr::memchr(b'\n', &tail)?;
+        &tail[cut + 1..]
+    };
     let (mut custom, mut ai) = (None, None);
-    loop {
-        line.clear();
-        match reader.read_until(b'\n', &mut line) {
-            Ok(0) | Err(_) => break,
-            Ok(_) => {}
-        }
-        let is_custom = custom_marker.find(&line).is_some();
-        if !is_custom && ai_marker.find(&line).is_none() {
+    for line in whole.rsplit(|&byte| byte == b'\n') {
+        let is_custom = custom_marker.find(line).is_some();
+        if !is_custom && (ai.is_some() || ai_marker.find(line).is_none()) {
             continue;
         }
-        let Ok(row) = serde_json::from_slice::<TitleRow>(&line) else {
+        let Ok(row) = serde_json::from_slice::<TitleRow>(line) else {
             continue;
         };
         if is_custom {
-            custom = row.custom.or(custom);
+            if let Some(title) = row.custom {
+                custom = Some(title);
+                break;
+            }
         } else {
-            ai = row.ai.or(ai);
+            ai = row.ai;
         }
     }
     custom.or(ai).filter(|title| !title.trim().is_empty())
@@ -233,6 +246,26 @@ mod tests {
         )
         .unwrap();
         assert_eq!(transcript_title(&path).as_deref(), Some("Named by me"));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_title_comes_from_the_transcript_s_end() {
+        let dir = std::env::temp_dir().join(format!("rawr-tail-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("t.jsonl");
+        let filler = format!(
+            "{{\"type\":\"user\",\"message\":\"{}\"}}\n",
+            "x".repeat(1000)
+        );
+        let mut text =
+            String::from("{\"type\":\"custom-title\",\"customTitle\":\"Too far back\"}\n");
+        for _ in 0..2000 {
+            text.push_str(&filler);
+        }
+        text.push_str("{\"type\":\"ai-title\",\"aiTitle\":\"Near the end\"}\n");
+        fs::write(&path, text).unwrap();
+        assert_eq!(transcript_title(&path).as_deref(), Some("Near the end"));
         fs::remove_dir_all(&dir).unwrap();
     }
 

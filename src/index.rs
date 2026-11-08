@@ -5,6 +5,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -12,17 +13,22 @@ use serde::{Deserialize, Serialize};
 /// How many sessions a pane remembers.
 const KEEP: usize = 5;
 
+/// How far before its listing `prune` starts keeping new files. Linux stamps
+/// a file's mtime from a coarse clock that can lag the clock
+/// [`SystemTime::now`] reads by a few milliseconds, so a file saved just after
+/// the listing could otherwise look older than it. A stale file written in
+/// this second goes at the next prune.
+const MTIME_SLACK: Duration = Duration::from_secs(1);
+
 /// A Rex block ID, such as `block:0190f3a2-7c41-7e10-8b2d-5d9e6a4c1f08`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct BlockId(String);
 
 impl BlockId {
-    /// Parses a block ID, refusing anything that could escape the index
-    /// directory as a file name.
+    /// Parses a block ID, with or without its `block:` prefix, refusing
+    /// anything that could escape the index directory as a file name.
     pub(crate) fn try_new(raw: &str) -> Result<Self> {
-        let Some(id) = raw.strip_prefix("block:") else {
-            bail!("not a Rex block id: {raw}");
-        };
+        let id = raw.strip_prefix("block:").unwrap_or(raw);
         if id.is_empty() || !id.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-') {
             bail!("not a Rex block id: {raw}");
         }
@@ -167,7 +173,14 @@ fn live_blocks() -> Result<HashSet<BlockId>> {
 }
 
 /// Deletes the index files of blocks the Rex server no longer has.
+///
+/// A file written after the listing began, less [`MTIME_SLACK`], is kept: it
+/// belongs to a pane the listing may have missed, such as one created while
+/// another pane's `record` ran.
 pub(crate) fn prune(dir: &Path) -> Result<()> {
+    let listed = SystemTime::now()
+        .checked_sub(MTIME_SLACK)
+        .unwrap_or(SystemTime::UNIX_EPOCH);
     let live = live_blocks()?;
     let keep: HashSet<String> = live.iter().map(BlockId::file_name).collect();
     for entry in fs::read_dir(dir).with_context(|| format!("list {}", dir.display()))? {
@@ -179,7 +192,11 @@ pub(crate) fn prune(dir: &Path) -> Result<()> {
         let is_index = name
             .strip_suffix(".json")
             .is_some_and(|stem| BlockId::try_new(&format!("block:{stem}")).is_ok());
-        if is_index && !keep.contains(name) {
+        let written_since = entry
+            .metadata()
+            .and_then(|meta| meta.modified())
+            .is_ok_and(|modified| modified >= listed);
+        if is_index && !keep.contains(name) && !written_since {
             fs::remove_file(entry.path())
                 .with_context(|| format!("remove {}", entry.path().display()))?;
         }
@@ -209,10 +226,19 @@ mod tests {
     }
 
     #[test]
+    fn block_id_takes_the_prefix_as_optional() {
+        assert_eq!(
+            BlockId::try_new("0190f3a2-7c41").unwrap(),
+            BlockId::try_new("block:0190f3a2-7c41").unwrap()
+        );
+    }
+
+    #[test]
     fn block_id_refuses_paths() {
         assert!(BlockId::try_new("block:../../etc").is_err());
-        assert!(BlockId::try_new("01a1acdf").is_err());
+        assert!(BlockId::try_new("../../etc").is_err());
         assert!(BlockId::try_new("block:").is_err());
+        assert!(BlockId::try_new("").is_err());
     }
 
     #[test]
