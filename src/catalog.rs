@@ -29,6 +29,8 @@ pub(crate) struct Found {
     text: String,
     /// When its latest prompt was typed, in milliseconds since the epoch.
     latest: u64,
+    /// Whether the title came from a typed prompt rather than a slash command.
+    titled: bool,
 }
 
 /// One line of `history.jsonl`.
@@ -92,7 +94,12 @@ pub(crate) fn load(claude: &Path, live: &HashSet<String>) -> Result<Vec<Found>> 
             },
             text: format!("{}\n{}\n", prompt.project.to_lowercase(), id.to_lowercase()),
             latest: 0,
+            titled: false,
         });
+        if !found.titled && !is_command(&prompt.display) {
+            found.agent.title = title(&prompt.display);
+            found.titled = true;
+        }
         found.text.push_str(&prompt.display.to_lowercase());
         found.text.push('\n');
         found.latest = found.latest.max(prompt.timestamp);
@@ -127,6 +134,12 @@ fn transcripts(projects: &Path) -> Result<HashMap<String, Option<SystemTime>>> {
         }
     }
     Ok(found)
+}
+
+/// Whether a prompt is a slash command, such as `/config`, which says
+/// nothing about what the session was for.
+fn is_command(prompt: &str) -> bool {
+    prompt.trim_start().starts_with('/')
 }
 
 /// The first non-blank line of a prompt, safe to draw, cut at
@@ -203,6 +216,7 @@ mod tests {
             dir.join("history.jsonl"),
             formatdoc!(
                 r#"
+                    {{"display":"/config","pastedContents":{{}},"timestamp":90,"project":"/home/dev/code/shop","sessionId":"{shop}"}}
                     {{"display":"Fix the login page\nand more","pastedContents":{{}},"timestamp":100,"project":"/home/dev/code/shop","sessionId":"{shop}"}}
                     {{"display":"old prompt","pastedContents":{{}},"timestamp":150,"project":"/home/dev/code/shop","sessionId":"{gone}"}}
                     {{"display":"Draft the weekly notes","pastedContents":{{}},"timestamp":200,"project":"/home/dev/notes","sessionId":"{notes}"}}

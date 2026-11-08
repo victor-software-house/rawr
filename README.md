@@ -32,7 +32,7 @@ The picker opens on the alternate screen, so the pane's restored output is back 
 
 Search matches every word typed, ignoring case, against the prompts typed in a session, its folder and its ID.
 It reads Claude Code's prompt history, `~/.claude/history.jsonl`, and lists `~/.claude/projects/` once to keep only sessions whose transcript is still there; it opens no transcript.
-Search rows take their title from the session's first prompt.
+Search rows take their title from the session's first prompt that is not a slash command such as `/config`.
 
 Hovering a session brightens it and shows the hand pointer in terminals that support OSC 22.
 Long titles, folders and session IDs wrap; nothing is cut.

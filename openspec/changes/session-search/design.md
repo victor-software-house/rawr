@@ -16,7 +16,7 @@ Transcripts live at `~/.claude/projects/<folder slug>/<session id>.jsonl`, and C
    Alternative: derive each transcript's path from the folder slug.
    It lost: the slug rule belongs to Claude Code and shortens long paths, and a listing finds the file whatever the rule.
 3. **A session's title is its first prompt.**
-   Search rows show the first line of the first prompt, up to 120 characters, ending in `…` when cut.
+   Search rows show the first line of the first prompt that is not a slash command such as `/config`, up to 120 characters, ending in `…` when cut.
    The pane's own sessions keep the title from their transcript, as before.
    Alternative: read the generated title from each matching transcript.
    It lost: it opens transcripts on every key press, and a first prompt says what the session was for.

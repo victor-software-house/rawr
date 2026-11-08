@@ -73,4 +73,4 @@ Searching SHALL read only `~/.claude/history.jsonl`, the session records under `
 #### Scenario: A large transcript
 
 - **WHEN** a matching session's transcript is 50 MB
-- **THEN** the search reads none of it, and the row's title is the session's first prompt
+- **THEN** the search reads none of it, and the row's title is the session's first prompt that is not a slash command

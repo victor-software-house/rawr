@@ -2,7 +2,7 @@
 
 ## 1. Catalog
 
-- [ ] 1.1 `src/catalog.rs` reads the prompt history and one projects listing into resumable sessions with their prompts, folder, first prompt and latest time; proved by unit tests over fixture files in CI.
+- [ ] 1.1 `src/catalog.rs` reads the prompt history and one projects listing into resumable sessions with their prompts, folder, title prompt and latest time; proved by unit tests over fixture files in CI.
 - [ ] 1.2 Matching takes every word, ignores case, and orders pane sessions first; proved by unit tests in CI.
 
 ## 2. Picker
@@ -18,4 +18,6 @@
 ## 4. Verify
 
 - [ ] 4.1 `mise run verify` passes in the pull request's CI.
-- [ ] 4.2 `openspec validate --all --strict` passes.
+- [x] 4.2 `openspec validate --all --strict` passes.
+  - 2026-11-07 BRT: `openspec validate --all --strict` reported 3 passed, 0 failed.
+  - Not verified: tasks 1.1 to 2.2 pass their unit tests on a maintainer's Mac (30 passed), but the pull request is a draft, so CI has not run them.
