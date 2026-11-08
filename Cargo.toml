@@ -27,6 +27,12 @@ textwrap = { version = "0.16.4", default-features = false, features = [
   "unicode-width",
 ] }
 
+# clap's derive output names `::clap`, so the derives need clap as a direct
+# dependency even where the source imports Parser and Subcommand through
+# ctl-core's prelude; cargo-machete reads only the source.
+[package.metadata.cargo-machete]
+ignored = ["clap"]
+
 [dev-dependencies]
 indoc = "2.0.8"
 
