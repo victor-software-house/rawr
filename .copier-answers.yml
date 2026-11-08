@@ -1,0 +1,52 @@
+# Changes here will be overwritten by Copier; edit with `copier update --data`.
+_commit: v0.0.70
+_src_path: https://github.com/victor-software-house/templates.git
+ci_runner: github-hosted
+clippy_disallowed_methods: []
+clippy_disallowed_types: []
+default_branch: main
+deny_bans: []
+deny_ignore: []
+deny_licenses:
+-   license: Zlib
+    reason: foldhash, through hashbrown
+deny_skip: []
+feature_sets: []
+github_owner: victor-software-house
+layout: crate
+library: false
+max_width: 100
+merge_queue: false
+mise_version: 2026.11.2
+nightly_fmt: true
+pieces:
+- hooks
+- lint_markdown
+- lint_toml
+- lint_typos
+- openspec
+- ci
+- drift_check
+- rust_tasks
+- rustfmt
+- clippy
+- cargo_lints
+- deny
+pieces_extra:
+- lint_workflows
+- machete
+project: rust-crate
+published: false
+repository_visibility: public
+rust_nightly: nightly-2026-11-01
+rust_version: 1.99.1
+tokio: false
+verify_timeout: 8
+workflow_policy:
+- drafts
+- concurrency
+- labels
+- permissions
+- pins
+- mise_env
+workflow_policy_namespaces: []

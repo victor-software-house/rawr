@@ -1,0 +1,25 @@
+# Markdown lint, checked by `mise run lint:md`.
+[global]
+# A release tool writes CHANGELOG.md; nobody edits it by hand.
+# OpenSpec schema templates hold placeholders, not Markdown to render, so
+# their links and anchors point nowhere yet.
+exclude = ["target/**", "CHANGELOG.md", "openspec/schemas/**"]
+# Prose uses semantic line breaks, so line length is not linted.
+disable = ["MD013"]
+# Heading anchors (MD051), reference labels (MD052) and relative links to
+# files (MD057) must resolve. MD052 catches a full or collapsed reference,
+# such as [0011][d11], whose definition a tool dropped. rumdl 0.3.2 skips a
+# label of digits only ([0011][0011]) with no option to check it, so such
+# references need a label with a letter, such as d11. All three are in
+# rumdl's default set; naming them keeps them on if a later release moves
+# them to the opt-in rules.
+extend-enable = ["MD051", "MD052", "MD057"]
+
+[per-file-ignores]
+# A one-line import of AGENTS.md.
+"CLAUDE.md" = ["MD041"]
+# A changeset is one release-note paragraph under YAML frontmatter, in the
+# Bun kinds (Changesets) and the Rust kinds (verctl reads the same format).
+".changeset/*.md" = ["MD041"]
+# OpenSpec delta specs start with their operation heading, not a title.
+"openspec/changes/*/specs/**/spec.md" = ["MD041"]

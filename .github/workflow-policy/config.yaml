@@ -1,0 +1,32 @@
+# This repository's settings for the shared workflow policy, which
+# `mise run lint:workflow-policy` checks. A starter: the template writes this
+# file once and never rewrites it.
+#
+# Turn a rule off with its copier answer, not here:
+#   copier update --defaults --data 'workflow_policy=[drafts, pins]'
+#
+# A parameter replaces the policy's default of the same name whole, so restate
+# a list in full. The defaults, with a comment on each, are in the actions
+# repository's policy/defaults.yaml at the pinned commit.
+#
+# An exception names the rule, the workflow file and a reason, and optionally a
+# job, and within that job a step by its id or name. Without a job it covers
+# the whole file. An entry with no reason excepts nothing, and an excepted
+# finding is reported as a warning that names the reason.
+workflow_policy:
+  # mise_env:
+  #   profiles: [ci, release]
+  # labels:
+  #   allowed: [corp-runner-large]
+  # concurrency:
+  #   endings: ["${{ github.ref }}"]
+  exceptions: []
+  # exceptions:
+  #   - rule: permissions
+  #     file: release.yml
+  #     reason: publishes the release with the workflow token
+  #   - rule: mise_env
+  #     file: ci.yml
+  #     job: bench
+  #     step: probe
+  #     reason: measures the dev profile's install

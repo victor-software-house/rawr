@@ -1,0 +1,75 @@
+name: Template
+
+on:
+  # A draft pull request runs no check; marking it ready starts the run.
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  # A merge queue entry reports the check without running it: the shared
+  # workflow skips the job, and the skip satisfies a required check.
+  merge_group:
+  # A tag reaches the repository through this daily run's issue, not through
+  # a failing pull request. A push to the default branch runs nothing: its pull
+  # request already ran the check.
+  schedule:
+    - cron: "17 9 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  # A draft run gets a group of its own, so it never cancels the ready run.
+  group: template-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref_name }}${{ github.event.pull_request.draft && '-draft' || '' }}
+  cancel-in-progress: true
+
+jobs:
+  # Fails an update pull request that does not reach the newest template tag.
+  # Any other pull request gets a notice; the daily run keeps an issue
+  # open while the newest tag would change this repository. The shared
+  # workflow reads the template with the organization's reader App, so it
+  # takes that App's key and no other secret.
+  template:
+    if: ${{ !github.event.pull_request.draft }}
+    uses: victor-software-house/actions/.github/workflows/template-check.yml@ca84425f5597bc5fd59e5614d0cf1f2f06194377 # main, 2026-11-05
+    permissions:
+      contents: read
+      issues: write
+    with:
+      mise-version: 2026.11.2
+      runner: ubuntu-latest
+      # A pull request that changes none of these files skips the check, which
+      # still reports. They are every file the template renders, whole or in
+      # part; check:template-paths keeps the list covering every file a
+      # render keeps in step, the starters left out.
+      paths: |
+        .copier-answers.yml
+        .changeset/config.json
+        .envrc
+        .github/actionlint.yaml
+        .github/workflows/ci.yml
+        .github/workflows/secrets.yml
+        .github/workflows/template.yml
+        .miserc.toml
+        .oxfmtrc.json
+        .rumdl.toml
+        .taplo.toml
+        .typos.toml
+        Cargo.toml
+        bunfig.toml
+        clippy.toml
+        committed.toml
+        deny.toml
+        knip.jsonc
+        lefthook.yml
+        mise-tasks/**
+        mise.ci.toml
+        mise.dev.toml
+        mise.hooks.toml
+        mise.toml
+        oxlint.config.ts
+        rust-toolchain.toml
+        rustfmt.toml
+        stylex.plugin.ts
+        tsconfig.json
+        tsdown.config.ts
+    secrets:
+      TEMPLATES_APP_PRIVATE_KEY: ${{ secrets.TEMPLATES_APP_PRIVATE_KEY }}

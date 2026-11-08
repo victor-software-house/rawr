@@ -1,0 +1,15 @@
+# Loaded when MISE_ENV contains `ci` (GitHub Actions). The toolchain comes from
+# mise.toml; this file holds only the CI environment.
+
+[env]
+# Explicit homes make mise provision rustup instead of using the runner's
+# provider. Keep its toolchains and Cargo state inside mise-action's cache.
+CARGO_HOME = "{{ env.MISE_DATA_DIR | default(value=xdg_data_home ~ '/mise') }}/cargo"
+RUSTUP_HOME = "{{ env.MISE_DATA_DIR | default(value=xdg_data_home ~ '/mise') }}/rustup"
+# Only mise install may fetch toolchains; compiler proxies fail if one is missing.
+RUSTUP_AUTO_INSTALL = "0"
+CARGO_INCREMENTAL = "0"
+CARGO_TERM_COLOR = "always"
+# On ext4 mbx restores cache hits as read-only hard links to its store, which
+# cargo package's verify build cannot rewrite; restored outputs get a copy.
+MBX_RESTORE_HARDLINK = "0"

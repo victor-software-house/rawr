@@ -1,0 +1,3 @@
+# Local work loads the dev profile by default. CI never loads it: workflows
+# set MISE_ENV=ci, or ci,release for release jobs.
+env = ["dev"]

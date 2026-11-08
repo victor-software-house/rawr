@@ -1,0 +1,92 @@
+[package]
+name = "rawr"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.99.1"
+description = "Bring Claude Code agents back into their Rex panes after a Rex server restart"
+license = "MIT"
+repository = "https://github.com/victor-software-house/rawr"
+readme = "README.md"
+keywords = ["rex", "claude", "terminal", "resume", "tui"]
+categories = ["command-line-utilities"]
+publish = false
+
+[dependencies]
+anyhow = "1.0.104"
+clap = { version = "4.6.7", features = ["derive"] }
+ctl-core = { version = "=0.6.28", default-features = false, features = ["app"] }
+memchr = "2.8.3"
+ratatui = { version = "=0.30.2", default-features = false, features = [
+  "crossterm_0_29",
+] }
+rustix = { version = "1.1.6", features = ["process"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+textwrap = { version = "0.16.4", default-features = false, features = [
+  "unicode-width",
+] }
+
+[dev-dependencies]
+indoc = "2.0.8"
+
+# A CLI: abort on panic, and ship one small binary.
+[profile.release]
+codegen-units = 1
+lto = true
+panic = "abort"
+strip = true
+
+[profile.dev]
+debug = "line-tables-only"
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "deny"
+missing_debug_implementations = "deny"
+unreachable_pub = "deny"
+rust_2018_idioms = { level = "deny", priority = -1 }
+
+[lints.rustdoc]
+broken_intra_doc_links = "deny"
+private_intra_doc_links = "deny"
+invalid_html_tags = "deny"
+invalid_codeblock_attributes = "deny"
+# Allow-by-default, so a -D warnings rustdoc build never fires it: an unbalanced
+# backtick renders the rest of the paragraph as code.
+unescaped_backticks = "deny"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+cargo = { level = "deny", priority = -1 }
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"
+unwrap_used = "deny"
+expect_used = "deny"
+disallowed_macros = "deny"
+wildcard_enum_match_arm = "deny"
+match_wildcard_for_single_variants = "deny"
+allow_attributes = "deny"
+allow_attributes_without_reason = "deny"
+# A function that returns Result reports failure through it, not a panic.
+panic_in_result_fn = "deny"
+# map_err(|_| ...) drops the cause; wrap it as a source instead. A site whose
+# error carries nothing carries #[expect(clippy::map_err_ignore, reason = "...")].
+map_err_ignore = "deny"
+# format! or push_str, not + on a String.
+string_add = "deny"
+# From and TryFrom, not as, which can silently truncate or wrap. A site that
+# truly needs as carries #[expect(clippy::as_conversions, reason = "...")].
+as_conversions = "deny"
+# Rc<str> and Rc<[T]>, not Rc<String> or Rc<Vec<T>>.
+rc_buffer = "deny"
+# Rc::clone(&x), so a cheap pointer clone reads apart from a deep copy.
+clone_on_ref_ptr = "deny"
+# foo.rs beside foo/, never foo/mod.rs. The Rust Book calls the first the
+# idiomatic path and mod.rs the older style, whose many same-named files blur
+# together in an editor (ch07-05, "Alternate File Paths").
+mod_module_files = "deny"
+# Duplicate versions come from transitive dependencies the crate does not
+# control; cargo-deny reports them (`bans.multiple-versions`).
+multiple_crate_versions = "allow"

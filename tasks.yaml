@@ -1,0 +1,110 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/victor-software-house/qctl/main/schema/tasks.schema.json
+schema_version: 5
+prefix: RAWR
+active: RAWR-001
+queue:
+  - id: RAWR-001
+    title: Offer a restored pane its sessions in a full-screen picker
+    scope: picker
+    outcome: >-
+      A restored Rex pane offers its Claude Code sessions in a full-screen picker
+      that takes keys and the mouse.
+    blocked_by: []
+    acceptance:
+      - Every task in the fullscreen-picker change is checked off with evidence.
+      - The maintainer's preview in a Rex pane resumes a session by key and by click.
+    plan: openspec/changes/fullscreen-picker/proposal.md
+
+  - id: RAWR-003
+    title: Find any local Claude Code session from the picker
+    scope: picker
+    outcome: >-
+      Typing in the picker searches every resumable local Claude Code session, not
+      only the pane's own.
+    blocked_by: []
+    acceptance:
+      - Typing filters the list on each key press, matching titles, folders, prompts and session IDs.
+      - Search reads one prompt-history file and stats transcripts; it opens no transcript it does not show.
+    notes:
+      - Local sessions only; older sessions are a horizon row.
+    plan: openspec/changes/session-search/proposal.md
+
+  - id: RAWR-006
+    title: Print shell integration and add the Claude hook on request
+    scope: cli
+    outcome: >-
+      bash, zsh and fish users get rawr working from one printed line, and Claude
+      Code records sessions after one explicit command.
+    blocked_by: []
+    acceptance:
+      - rawr init <bash|zsh|fish> prints a static script, and pick and find quote for that shell.
+      - rawr setup claude adds the SessionStart hook once and reports added or unchanged; --dry-run changes nothing.
+    plan: openspec/changes/install-and-shells/proposal.md
+
+  - id: RAWR-007
+    title: Ship macOS arm64 and Linux glibc binaries with an install script
+    scope: release
+    outcome: >-
+      A release carries darwin-arm64, linux-x64 and linux-arm64 tarballs with
+      digests, and install.sh installs the right one without editing shell files.
+    blocked_by: []
+    acceptance:
+      - verctl assets prints the three targets.
+      - install.sh verifies the digest, installs into RAWR_INSTALL_DIR or ~/.local/bin, and prints the rawr init line.
+    plan: openspec/changes/install-and-shells/proposal.md
+
+  - id: RAWR-008
+    title: Install from the organization Homebrew tap
+    scope: release
+    outcome: >-
+      brew install victor-software-house/tap/rawr installs the binary and its
+      completions, and each release updates the formula.
+    blocked_by: []
+    acceptance:
+      - victor-software-house/homebrew-tap holds a rawr formula whose brew test passes.
+      - A release updates the formula version and digests without a hand edit.
+    plan: openspec/changes/install-and-shells/proposal.md
+
+  - id: RAWR-009
+    title: Offer shell completions through ctl-core
+    scope: cli
+    outcome: >-
+      rawr completion <bash|zsh|fish> prints static completions from the shared
+      ctl-core verb.
+    blocked_by: []
+    acceptance:
+      - rawr depends on a ctl-core release with the completion verb, and the bash script names every command.
+    plan: openspec/changes/install-and-shells/proposal.md
+    notes:
+      - ctl-core owns the verb; its research and OpenSpec change come first, in that repository.
+archive:
+  - id: RAWR-002
+    title: Parse and report through ctl-core
+    scope: cli
+    outcome: >-
+      rawr parses its commands, prints help and reports errors through ctl-core, as
+      the other ctl tools do.
+    completed: 2026-11-07T23:28:32
+    evidence:
+      - 0b96b8df65e246b95ff6416f3a4203b0987c9fda
+    disposition: completed
+horizon:
+  - id: RAWR-004
+    title: One shared process for every pane's picker
+    scope: architecture
+    outcome: >-
+      One long-lived process holds the session list and serves the picker in every
+      pane, so no pane rescans on its own.
+    kind: deferred
+    open: >-
+      A per-pane scan is fast enough today, and a daemon adds lifecycle, sockets and
+      upgrades that a small public tool would have to own.
+
+  - id: RAWR-005
+    title: Search older sessions through session-lake
+    scope: picker
+    outcome: >-
+      The picker also finds sessions whose local transcripts were pruned, through
+      session-lake.
+    kind: deferred
+    open: session-lake has no public interface rawr can depend on.

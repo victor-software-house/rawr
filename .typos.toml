@@ -1,0 +1,7 @@
+# Spelling, checked by `mise run lint:typos`.
+[files]
+extend-exclude = ["*.lock"]
+
+[default.extend-words]
+# The terminal UI crate the picker draws with.
+ratatui = "ratatui"
