@@ -56,13 +56,20 @@ The binary is built from [ratatui] 0.30 on its [crossterm] 0.29 backend.
 8. **Pure state, pure view, thin loop.**
    `picker/state.rs` turns a key or mouse event into a state change, `picker/view.rs` draws the state into a frame and returns which screen row belongs to which session, and `picker.rs` only reads events and draws.
    Tests drive the state with events and draw the view on ratatui's `TestBackend`.
-9. **Titles, folders and IDs are sanitized before drawing.**
+9. **Titles and folders are sanitized before drawing.**
    They come from transcripts, hook input and the prompt history, so control characters are dropped and tabs and line breaks become spaces before any of them reaches the terminal.
-10. **A title comes from the transcript's last megabyte.**
+10. **A title comes from the transcript's end.**
    Transcripts reach hundreds of megabytes, and Claude Code writes the title rows again every few dozen kilobytes, the user's title next to each generated one.
-   Reading the last 1 MiB finds the current title without reading the rest.
+   rawr reads the last 64 KiB, then the last 1 MiB when those hold no title row.
+   Of 162 local transcripts, 139 had a title row, and 99% of those had their last one within 33 KB of the end.
    Alternative: read the whole transcript.
    It lost: the picker runs as a shell starts, and local transcripts measured up to 417 MB, each read whole at every start.
+
+11. **A session shows two lines: its title, then its folder and age.**
+   The session ID drew a third line under every session, and nobody reads it to choose: the title and folder say which session it is.
+   Search still matches the ID, and the resume still uses it.
+   Alternative: show the ID on the selected session only.
+   It lost: the selected block would grow and shrink as the selection moves, so the rows under it would jump.
 
 ## Risks / Trade-offs
 

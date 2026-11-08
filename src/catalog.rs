@@ -3,20 +3,20 @@
 //! Claude Code appends one line per typed prompt to `history.jsonl`, naming
 //! the session and the folder it started in. That one file is the search
 //! index: it holds the words a user remembers a session by. One listing of
-//! `projects/*/` says which sessions still have a transcript. No transcript
-//! is opened.
+//! `projects/*/` says which sessions still have a transcript, and each found
+//! session's title comes from its transcript's end, read once per load.
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, ErrorKind};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
-use crate::session::{Agent, sanitize};
+use crate::session::{Agent, sanitize, transcript_title};
 
 /// The longest title drawn from a first prompt, in characters.
 const TITLE_CHARS: usize = 120;
@@ -25,12 +25,20 @@ const TITLE_CHARS: usize = 120;
 #[derive(Debug, Clone)]
 pub(crate) struct Found {
     pub(crate) agent: Agent,
-    /// Its prompts, folder and ID, lowercase, one per line.
+    /// Its prompts, folder, ID and title, lowercase, one per line.
     text: String,
     /// When its latest prompt was typed, in milliseconds since the epoch.
     latest: u64,
     /// Whether the title came from a typed prompt rather than a slash command.
     titled: bool,
+}
+
+/// A session's transcript, as one listing of `projects/*/` finds it.
+#[derive(Debug)]
+struct Transcript {
+    path: PathBuf,
+    /// When it was last written.
+    modified: Option<SystemTime>,
 }
 
 /// One line of `history.jsonl`.
@@ -82,7 +90,7 @@ pub(crate) fn load(claude: &Path, live: &HashSet<String>) -> Result<Vec<Found>> 
         if live.contains(id) {
             continue;
         }
-        let Some(modified) = transcripts.get(id) else {
+        let Some(transcript) = transcripts.get(id) else {
             continue;
         };
         let found = sessions.entry(id.to_owned()).or_insert_with(|| Found {
@@ -90,7 +98,9 @@ pub(crate) fn load(claude: &Path, live: &HashSet<String>) -> Result<Vec<Found>> 
                 session_id: id.to_owned(),
                 cwd: prompt.project.as_ref().to_owned(),
                 title: title(&prompt.display),
-                idle: modified.and_then(|at| now.duration_since(at).ok()),
+                idle: transcript
+                    .modified
+                    .and_then(|at| now.duration_since(at).ok()),
             },
             text: format!("{}\n{}\n", prompt.project.to_lowercase(), id.to_lowercase()),
             latest: 0,
@@ -104,14 +114,23 @@ pub(crate) fn load(claude: &Path, live: &HashSet<String>) -> Result<Vec<Found>> 
         found.text.push('\n');
         found.latest = found.latest.max(prompt.timestamp);
     }
+    for found in sessions.values_mut() {
+        if let Some(title) = transcripts
+            .get(&found.agent.session_id)
+            .and_then(|transcript| transcript_title(&transcript.path))
+        {
+            found.agent.title = sanitize(&title);
+            found.text.push_str(&title.to_lowercase());
+            found.text.push('\n');
+        }
+    }
     let mut found: Vec<Found> = sessions.into_values().collect();
     found.sort_by_key(|found| std::cmp::Reverse(found.latest));
     Ok(found)
 }
 
-/// Every `projects/*/<session id>.jsonl`, by session ID, with the time it was
-/// last written.
-fn transcripts(projects: &Path) -> Result<HashMap<String, Option<SystemTime>>> {
+/// Every `projects/*/<session id>.jsonl`, by session ID.
+fn transcripts(projects: &Path) -> Result<HashMap<String, Transcript>> {
     let mut found = HashMap::new();
     let folders = match fs::read_dir(projects) {
         Ok(folders) => folders,
@@ -127,10 +146,12 @@ fn transcripts(projects: &Path) -> Result<HashMap<String, Option<SystemTime>>> {
             if path.extension().is_none_or(|ext| ext != "jsonl") {
                 continue;
             }
-            if let Some(id) = path.file_stem().and_then(|stem| stem.to_str()) {
-                let modified = file.metadata().and_then(|meta| meta.modified()).ok();
-                found.insert(id.to_owned(), modified);
-            }
+            let Some(id) = path.file_stem().and_then(|stem| stem.to_str()) else {
+                continue;
+            };
+            let id = id.to_owned();
+            let modified = file.metadata().and_then(|meta| meta.modified()).ok();
+            found.insert(id, Transcript { path, modified });
         }
     }
     Ok(found)
@@ -211,7 +232,11 @@ mod tests {
         fs::create_dir_all(&shop).unwrap();
         fs::create_dir_all(&notes).unwrap();
         fs::write(shop.join(format!("{SHOP}.jsonl")), "{}\n").unwrap();
-        fs::write(notes.join(format!("{NOTES}.jsonl")), "{}\n").unwrap();
+        fs::write(
+            notes.join(format!("{NOTES}.jsonl")),
+            "{\"type\":\"ai-title\",\"aiTitle\":\"Weekly notes draft\"}\n",
+        )
+        .unwrap();
         fs::write(
             dir.join("history.jsonl"),
             formatdoc!(
@@ -246,6 +271,7 @@ mod tests {
         let agents: Vec<Agent> = found.iter().map(|found| found.agent.clone()).collect();
         assert_eq!(ids(&agents), [SHOP, NOTES]);
         assert_eq!(agents[0].title, "Fix the login page");
+        assert_eq!(agents[1].title, "Weekly notes draft");
         assert_eq!(agents[0].cwd, "/home/dev/code/shop");
         fs::remove_dir_all(&dir).unwrap();
     }
@@ -270,6 +296,7 @@ mod tests {
         );
         assert_eq!(search(&[], &catalog, &terms("login checkout")), Vec::new());
         assert_eq!(ids(&search(&[], &catalog, &terms("notes"))), [NOTES]);
+        assert_eq!(ids(&search(&[], &catalog, &terms("draft"))), [NOTES]);
         assert_eq!(ids(&search(&[], &catalog, &terms(""))), [SHOP, NOTES]);
         fs::remove_dir_all(&dir).unwrap();
     }

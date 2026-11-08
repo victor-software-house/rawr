@@ -2,7 +2,7 @@
 
 ## 1. Catalog
 
-- [ ] 1.1 `src/catalog.rs` reads the prompt history and one projects listing into resumable sessions with their prompts, folder, title prompt and latest time; proved by unit tests over fixture files in CI.
+- [ ] 1.1 `src/catalog.rs` reads the prompt history and one projects listing into resumable sessions with their prompts, folder, title and latest time, the title read from the transcript's end, else the first prompt; proved by unit tests over fixture files in CI.
 - [ ] 1.2 Matching takes every word, ignores case, and orders pane sessions first; proved by unit tests in CI.
 
 ## 2. Picker

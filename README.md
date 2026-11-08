@@ -30,12 +30,12 @@ The picker opens on the alternate screen, so the pane's restored output is back 
 | Search every local session | `/`, then type; `Backspace`, `Ctrl+U` to clear, `Esc` to close | |
 | Leave a plain shell | `Esc`, `q`, `Ctrl+C` | |
 
-Search matches every word typed, ignoring case, against the prompts typed in a session, its folder and its ID.
-It reads Claude Code's prompt history, `~/.claude/history.jsonl`, and lists `~/.claude/projects/` once to keep only sessions whose transcript is still there; it opens no transcript.
-Search rows take their title from the session's first prompt that is not a slash command such as `/config`.
+Search matches every word typed, ignoring case, against the prompts typed in a session, its title, its folder and its ID.
+It reads Claude Code's prompt history, `~/.claude/history.jsonl`, and lists `~/.claude/projects/` once to keep only sessions whose transcript is still there.
+Each row's title is the one Claude Code shows, read from the end of the session's transcript; a session with none takes its first prompt that is not a slash command such as `/config`.
 
 Hovering a session brightens it and shows the hand pointer in terminals that support OSC 22.
-Long titles, folders and session IDs wrap; nothing is cut.
+Each session shows its title, then its folder and how long ago it was active; long ones wrap, and nothing is cut.
 
 ## How it works
 
