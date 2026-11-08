@@ -69,7 +69,6 @@ The binary is built from [ratatui] 0.30 on its [crossterm] 0.29 backend.
    Search still matches the ID, and the resume still uses it.
    Alternative: show the ID on the selected session only.
    It lost: the selected block would grow and shrink as the selection moves, so the rows under it would jump.
-
 12. **rawr resumes the chosen session itself.**
    On a choice it restores the terminal, then replaces its process with `claude --resume <session id>` in the session's folder, so the pane runs Claude Code with nothing in between.
    Nothing resumes without a choice: the picker only offers.
