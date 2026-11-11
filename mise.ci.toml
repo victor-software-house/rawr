@@ -10,6 +10,7 @@ RUSTUP_HOME = "{{ env.MISE_DATA_DIR | default(value=xdg_data_home ~ '/mise') }}/
 RUSTUP_AUTO_INSTALL = "0"
 CARGO_INCREMENTAL = "0"
 CARGO_TERM_COLOR = "always"
-# On ext4 mbx restores cache hits as read-only hard links to its store, which
-# cargo package's verify build cannot rewrite; restored outputs get a copy.
+# On ext4 mbx restores cache hits as read-only hard links to its store.
+# cargo package's verify build cannot rewrite those, so restored outputs get a
+# copy.
 MBX_RESTORE_HARDLINK = "0"

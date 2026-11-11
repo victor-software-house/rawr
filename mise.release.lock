@@ -2,23 +2,6 @@
 
 lockfile_version = 4
 
-[[tools.actionlint]]
-version = "1.7.12"
-backend = "aqua:rhysd/actionlint"
-specifiers = ["1.7.12"]
-
-[tools.actionlint."platforms.linux-x64"]
-checksum = "sha256:8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
-url = "https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz"
-url_api = "https://api.github.com/repos/rhysd/actionlint/releases/assets/384924896"
-provenance = "github-attestations"
-
-[tools.actionlint."platforms.macos-arm64"]
-checksum = "sha256:aba9ced2dee8d27fecca3dc7feb1a7f9a52caefa1eb46f3271ea66b6e0e6953f"
-url = "https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_darwin_arm64.tar.gz"
-url_api = "https://api.github.com/repos/rhysd/actionlint/releases/assets/384924893"
-provenance = "github-attestations"
-
 [[tools.conftest]]
 version = "0.71.1"
 backend = "aqua:open-policy-agent/conftest"
@@ -53,6 +36,23 @@ url = "https://github.com/Fission-AI/OpenSpec/releases/download/v1.16.0/openspec
 url_api = "https://api.github.com/repos/Fission-AI/OpenSpec/releases/assets/693785649"
 provenance = "github-attestations"
 
+[[tools."github:victor-software-house/qctl"]]
+version = "0.6.0"
+backend = "github:victor-software-house/qctl"
+specifiers = ["0.6.0"]
+
+[tools."github:victor-software-house/qctl"."platforms.linux-x64"]
+checksum = "sha256:1f175c10b26a4f756b837fa781a5bfd06e8d0c3ffce3f05f5513a7b644a5a91d"
+checksum_source = "mise-versions"
+url = "https://github.com/victor-software-house/qctl/releases/download/v0.6.0/qctl_0.6.0_linux_x64.tar.gz"
+url_api = "https://api.github.com/repos/victor-software-house/qctl/releases/assets/671129124"
+
+[tools."github:victor-software-house/qctl"."platforms.macos-arm64"]
+checksum = "sha256:407793b3a811d4d25f0da008bcead5e3ce9eab18c4554002714c6c288bc662f3"
+checksum_source = "mise-versions"
+url = "https://github.com/victor-software-house/qctl/releases/download/v0.6.0/qctl_0.6.0_macos_arm64.tar.gz"
+url_api = "https://api.github.com/repos/victor-software-house/qctl/releases/assets/671129358"
+
 [[tools."github:victor-software-house/verctl"]]
 version = "0.7.2"
 backend = "github:victor-software-house/verctl"
@@ -69,6 +69,23 @@ checksum = "sha256:8b4e48104bd6dcff2d6d15d51c53a5140a733cb78795b8f4ba9f041d45b89
 checksum_source = "mise-versions"
 url = "https://github.com/victor-software-house/verctl/releases/download/v0.7.2/verctl_0.7.2_macos_arm64.tar.gz"
 url_api = "https://api.github.com/repos/victor-software-house/verctl/releases/assets/703921271"
+
+[[tools.jactionlint]]
+version = "2.5.0"
+backend = "packslip:github.com/jdx/jactionlint"
+specifiers = ["2.5.0"]
+
+[tools.jactionlint."platforms.linux-x64"]
+checksum = "sha256:5ac307b0499bb0eab45ae99c23e8e0790874fbc667c75224410954e0e3c6e0f5"
+url = "https://github.com/jdx/jactionlint/releases/download/v2.5.0/jactionlint_2.5.0_linux_amd64.tar.gz"
+signer = "sigstore-oidc:https://github.com/jdx/jactionlint/.github/workflows/release.yaml"
+repository_ids = { repository = "1404951382" }
+
+[tools.jactionlint."platforms.macos-arm64"]
+checksum = "sha256:15b47d53e3b1aafbd674cca0e8fff0d5952f3cf2a7d7501a8f67576ef76397b4"
+url = "https://github.com/jdx/jactionlint/releases/download/v2.5.0/jactionlint_2.5.0_darwin_arm64.tar.gz"
+signer = "sigstore-oidc:https://github.com/jdx/jactionlint/.github/workflows/release.yaml"
+repository_ids = { repository = "1404951382" }
 
 [[tools.python]]
 version = "3.15.2"

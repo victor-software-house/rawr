@@ -1,6 +1,6 @@
 # Hooks call mise tasks, so a hook runs the same command as CI. mise.dev.toml
-# installs them through its postinstall hook; CI never loads that file, so no
-# runner has them and no hook needs a CI skip.
+# installs the hooks through its postinstall hook. CI never loads that file,
+# so no runner has them and no hook needs a CI skip.
 #
 # Every command runs with MISE_ENV=dev,hooks, from the hookenv anchor on the
 # first command, except lockfile below. MISE_ENV replaces the .miserc.toml
@@ -27,20 +27,24 @@ commit-msg:
 # Hooks are the cheap local tier: no build, test, typecheck or type-aware
 # lint. The pull request's CI is the gate and runs all of them.
 pre-push:
-  commands:
+  # Each job is a script, .lefthook/pre-push/<name>, that runs one mise
+  # task. lefthook skips a pre-push command when `git diff HEAD @{push}` is
+  # empty, so a push of a branch other than the checked-out one ran no
+  # command; a script has no such skip.
+  scripts:
     # Fails when a mise lockfile no longer matches its config
-    # (mise-tasks/hooks/lockfile.sh). It runs in the dev profile, which reads
-    # the committed mise.lock and mise.dev.lock: under any other profile, such
-    # as the hooks one, mise assigns the pinned catalogs' task tools to that
-    # profile's lockfile, which nothing writes, and reports it stale.
-    lockfile:
+    # (mise-tasks/hooks/lockfile.sh). The task checks each committed
+    # mise.<profile>.toml's lock in turn, except the hooks profile's, in a
+    # worktree of each pushed commit, from git's pre-push lines on stdin; the
+    # env here only sets the profiles mise runs the task itself in.
+    lockfile.sh:
+      runner: sh
       env: { MISE_ENV: "dev" }
-      run: mise run hooks:lockfile
-    # Lints each pushed commit the remote does not have yet, and scans those
-    # commits, not the whole history, for credentials
-    # (mise-tasks/hooks/pushed.sh). git's pre-push lines reach the task on
-    # stdin.
-    commits:
+      use_stdin: true
+    # Lints each pushed commit the remote does not have yet. It also scans
+    # those commits for credentials, instead of the whole history. The task,
+    # mise-tasks/hooks/pushed.sh, reads git's pre-push lines on stdin.
+    commits.sh:
+      runner: sh
       env: *hookenv
       use_stdin: true
-      run: mise run hooks:pushed
