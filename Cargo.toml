@@ -37,12 +37,6 @@ ignored = ["clap"]
 indoc = "2.0.8"
 
 # A CLI: abort on panic, and ship one small binary.
-[profile.release]
-codegen-units = 1
-lto = true
-panic = "abort"
-strip = true
-
 [profile.dev]
 debug = "line-tables-only"
 
