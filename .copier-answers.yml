@@ -1,5 +1,5 @@
 # Changes here will be overwritten by Copier; edit with `copier update --data`.
-_commit: v0.0.70
+_commit: v0.0.99
 _src_path: https://github.com/victor-software-house/templates.git
 ci_runner: github-hosted
 clippy_disallowed_methods: []
@@ -12,12 +12,14 @@ deny_licenses:
     reason: foldhash, through hashbrown
 deny_skip: []
 feature_sets: []
+generated_paths: []
 github_owner: victor-software-house
 layout: crate
 library: false
 max_width: 100
 merge_queue: false
-mise_version: 2026.11.2
+merge_queue_cancel_lower: true
+mise_version: 2026.11.6
 nightly_fmt: true
 pieces:
 - hooks
@@ -35,11 +37,15 @@ pieces:
 pieces_extra:
 - lint_workflows
 - machete
+platforms:
+- linux-x64
+- macos-arm64
 project: rust-crate
 published: false
 repository_visibility: public
 rust_nightly: nightly-2026-11-01
 rust_version: 1.99.1
+test_profiles: []
 tokio: false
 verify_timeout: 8
 workflow_policy:

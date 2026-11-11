@@ -1,1 +1,3 @@
-{}
+# jactionlint reads this file under actionlint's name. Without a profile it
+# applies its default profile and prints a note on every run.
+profile: default

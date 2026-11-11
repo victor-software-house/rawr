@@ -37,17 +37,15 @@ ignored = ["clap"]
 indoc = "2.0.8"
 
 # A CLI: abort on panic, and ship one small binary.
-[profile.release]
-codegen-units = 1
-lto = true
-panic = "abort"
-strip = true
-
 [profile.dev]
 debug = "line-tables-only"
 
 [lints.rust]
-unsafe_code = "forbid"
+# deny instead of forbid, because forbid refuses the item-level
+# #[expect(unsafe_code, reason = "...")] that a justified exception carries.
+unsafe_code = "deny"
+# Each unsafe operation inside an unsafe fn sits in its own unsafe block.
+unsafe_op_in_unsafe_fn = "deny"
 missing_docs = "deny"
 missing_debug_implementations = "deny"
 unreachable_pub = "deny"
@@ -76,24 +74,41 @@ wildcard_enum_match_arm = "deny"
 match_wildcard_for_single_variants = "deny"
 allow_attributes = "deny"
 allow_attributes_without_reason = "deny"
-# A function that returns Result reports failure through it, not a panic.
+# A function that returns Result reports failure through it instead of a panic.
 panic_in_result_fn = "deny"
 # map_err(|_| ...) drops the cause; wrap it as a source instead. A site whose
 # error carries nothing carries #[expect(clippy::map_err_ignore, reason = "...")].
 map_err_ignore = "deny"
-# format! or push_str, not + on a String.
+# `format!` or `push_str` instead of `+` on a String.
 string_add = "deny"
-# From and TryFrom, not as, which can silently truncate or wrap. A site that
-# truly needs as carries #[expect(clippy::as_conversions, reason = "...")].
+# From and TryFrom instead of as, which can silently truncate or wrap. A site
+# that truly needs as carries #[expect(clippy::as_conversions, reason = "...")].
 as_conversions = "deny"
-# Rc<str> and Rc<[T]>, not Rc<String> or Rc<Vec<T>>.
+# Rc<str> and Rc<[T]> instead of Rc<String> or Rc<Vec<T>>.
 rc_buffer = "deny"
 # Rc::clone(&x), so a cheap pointer clone reads apart from a deep copy.
 clone_on_ref_ptr = "deny"
-# foo.rs beside foo/, never foo/mod.rs. The Rust Book calls the first the
-# idiomatic path and mod.rs the older style, whose many same-named files blur
-# together in an editor (ch07-05, "Alternate File Paths").
+# Every unsafe block carries a // SAFETY: comment and holds one unsafe
+# operation, so each comment justifies exactly one call.
+undocumented_unsafe_blocks = "deny"
+multiple_unsafe_ops_per_block = "deny"
+# foo.rs beside foo/, never foo/mod.rs. The Rust Book calls foo.rs the
+# idiomatic path and mod.rs the older style (ch07-05, "Alternate File Paths").
+# Many files named mod.rs blur together in an editor.
 mod_module_files = "deny"
 # Duplicate versions come from transitive dependencies the crate does not
 # control; cargo-deny reports them (`bans.multiple-versions`).
 multiple_crate_versions = "allow"
+
+# The smallest binary that keeps its speed. Against opt-level 3 with thin LTO,
+# a ctl CLI came out 35% smaller and 4% slower.
+#
+# opt-level "z" takes another 25% off but runs a ledger parse 51% slower. A
+# repository whose run time does not matter sets it here. Cargo ignores the
+# profiles of a dependency, so a library's consumers see none of this.
+[profile.release]
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"

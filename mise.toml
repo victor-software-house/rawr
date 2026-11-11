@@ -1,19 +1,24 @@
 # The latest stable mise is the floor; CI pins the same version.
-min_version = "2026.11.2"
+min_version = "2026.11.6"
 
 [settings]
-# mise loads git:: task includes only in experimental mode.
+# Every tool, whether a config file, a task or the command line asks for it,
+# comes from the locks; one with no entry fails instead of being looked up.
+locked = true
+# mise loads git:: task includes, and runs [deps] providers, only in
+# experimental mode.
 experimental = true
 lockfile = true
-# The platforms CI and contributors use. Without it, mise install fills every
-# tool up to the platforms any tool already records, and rewrites the locks.
+# The platforms CI and contributors use, from the platforms answer. Without
+# it, mise install fills every tool up to the platforms any tool already
+# records, and rewrites the locks.
 lockfile_platforms = ["linux-x64", "macos-arm64"]
 
 # Every tool this root declares must match mise.lock or mise.<env>.lock.
 [tool_config]
 locked = true
 
-# The toolchain lives here, not in mise.dev.toml, because CI loads only
+# The toolchain lives here instead of in mise.dev.toml, because CI loads only
 # MISE_ENV=ci. The stable pin equals rust-toolchain.toml and rust-version.
 [tools]
 rust = [
@@ -63,8 +68,8 @@ includes = [
   "git::https://github.com/victor-software-house/verctl.git//tasks/ver?ref=v0.7.2",
   # `mise run q`, the work queue in tasks.yaml.
   "git::https://github.com/victor-software-house/qctl.git//tasks/q?ref=v0.6.0",
-  # The shared Rust tasks, at actions main, 2026-11-05.
-  "git::https://github.com/victor-software-house/actions.git//tasks/rust.toml?ref=ca84425f5597bc5fd59e5614d0cf1f2f06194377",
-  # template:check, template:off, and template:on, at actions main, 2026-11-05.
-  "git::https://github.com/victor-software-house/actions.git//tasks/template.toml?ref=ca84425f5597bc5fd59e5614d0cf1f2f06194377",
+  # The shared Rust tasks, at actions main, 2026-11-11.
+  "git::https://github.com/victor-software-house/actions.git//tasks/rust.toml?ref=4168002fe58fd0b310bd2b65f9db2262fc0e21d3",
+  # template:check, template:off, and template:on, at actions main, 2026-11-11.
+  "git::https://github.com/victor-software-house/actions.git//tasks/template.toml?ref=4168002fe58fd0b310bd2b65f9db2262fc0e21d3",
 ]
