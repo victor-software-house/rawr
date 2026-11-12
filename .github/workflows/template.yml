@@ -19,9 +19,10 @@ permissions:
 concurrency:
   # Every merge queue entry shares one group, so a newer entry's run cancels the
   # runs of the entries ahead of it: the queue merges on the newest entry's
-  # result, whose merge-group commit holds every entry ahead of it. Outside the
-  # queue, a draft run gets a group of its own, so it never cancels the ready
-  # run.
+  # result, whose merge-group commit holds every entry ahead of it. That holds
+  # only while the queue groups HEADGREEN; under ALLGREEN a cancelled entry
+  # fails. Outside the queue, a draft run gets a group of its own, so it never
+  # cancels the ready run.
   group: >-
     template-${{ github.event_name == 'merge_group' && format('queue-{0}',
     github.event.merge_group.base_ref) || format('{0}-{1}{2}', github.event_name,
@@ -37,7 +38,7 @@ jobs:
   # installs its tools through the release mirror with a session token.
   template:
     if: ${{ !github.event.pull_request.draft }}
-    uses: victor-software-house/actions/.github/workflows/template-check.yml@4168002fe58fd0b310bd2b65f9db2262fc0e21d3 # main, 2026-11-11
+    uses: victor-software-house/actions/.github/workflows/template-check.yml@bead5c01b61e14ecf1e923a5bcff97e8c421f151 # main, 2026-11-11
     permissions:
       contents: read
       # The mise action exchanges it for the mirror's session token.
@@ -45,7 +46,7 @@ jobs:
       issues: write
     with:
       mise-version: 2026.11.6
-      runner: ubuntu-latest
+      runner: ubuntu-26.04
       # A pull request that changes none of these files skips the check, which
       # still reports. The list holds every file the template renders, whole
       # or in part. check:template-paths keeps it covering every file a render

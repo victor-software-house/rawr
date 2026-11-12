@@ -69,7 +69,7 @@ includes = [
   # `mise run q`, the work queue in tasks.yaml.
   "git::https://github.com/victor-software-house/qctl.git//tasks/q?ref=v0.6.0",
   # The shared Rust tasks, at actions main, 2026-11-11.
-  "git::https://github.com/victor-software-house/actions.git//tasks/rust.toml?ref=4168002fe58fd0b310bd2b65f9db2262fc0e21d3",
+  "git::https://github.com/victor-software-house/actions.git//tasks/rust.toml?ref=bead5c01b61e14ecf1e923a5bcff97e8c421f151",
   # template:check, template:off, and template:on, at actions main, 2026-11-11.
-  "git::https://github.com/victor-software-house/actions.git//tasks/template.toml?ref=4168002fe58fd0b310bd2b65f9db2262fc0e21d3",
+  "git::https://github.com/victor-software-house/actions.git//tasks/template.toml?ref=bead5c01b61e14ecf1e923a5bcff97e8c421f151",
 ]

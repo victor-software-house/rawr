@@ -42,7 +42,7 @@ render=$(pwd)
 cd "$(git rev-parse --show-toplevel)" || exit 1
 files=$(git ls-files ':(glob).github/workflows/*.yml' ':(glob).github/workflows/*.yaml') || exit 1
 [ -n "$files" ] || exit 0
-commit=4168002fe58fd0b310bd2b65f9db2262fc0e21d3
+commit=bead5c01b61e14ecf1e923a5bcff97e8c421f151
 policy=$(git rev-parse --git-path "workflow-policy/$commit") || exit 1
 texts=$(git rev-parse --git-path "workflow-texts.$$.yaml") || exit 1
 trap 'rm -f "$texts"' EXIT
@@ -64,7 +64,7 @@ if [ ! -d "$policy" ]; then
   trap 'rm -rf "${policy:?}.part"; rmdir "$policy.lock" 2>/dev/null; rm -f "$texts"' EXIT
   if [ ! -d "$policy" ]; then
     rm -rf "${policy:?}.part"
-    url='git::https://github.com/victor-software-house/actions.git//policy?ref=4168002fe58fd0b310bd2b65f9db2262fc0e21d3'
+    url='git::https://github.com/victor-software-house/actions.git//policy?ref=bead5c01b61e14ecf1e923a5bcff97e8c421f151'
     if conftest pull --absolute-paths -p "$policy.part" "$url"; then
       mv "$policy.part" "$policy"
     fi
