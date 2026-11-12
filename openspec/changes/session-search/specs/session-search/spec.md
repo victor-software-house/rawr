@@ -66,15 +66,24 @@ In the picker, `/` SHALL open a search line whose text filters the list on each 
 - **WHEN** `REX_BLOCK` is unset and the user runs `rawr find login`, then presses `Enter`
 - **THEN** the first match resumes in its folder, as `pick` resumes a session
 
-### Requirement: Titles from the transcript's end
+### Requirement: Reads from each transcript
 
-Searching SHALL read `~/.claude/history.jsonl`, the session records under `~/.claude/sessions/`, one listing of `~/.claude/projects/*/`, and the last 64 KiB of each listed session's transcript, or its last 1 MiB when those 64 KiB hold no title and end in a line over 32 KiB, once per catalog load.
-A row's title SHALL be the last title the user set in its transcript, else the last one Claude Code generated, else the session's first prompt that is not a slash command.
+Searching SHALL read `~/.claude/history.jsonl`, the session records under `~/.claude/sessions/`, one listing of `~/.claude/projects/*/`, the first and last 64 KiB of each listed session's transcript, and its `custom-title.json`, once per catalog load.
 
 #### Scenario: A large transcript
 
 - **WHEN** a matching session's transcript is 50 MB and its last 64 KiB hold a generated title `Weekly notes draft`
-- **THEN** the search reads only that end of it, and the row's title is `Weekly notes draft`
+- **THEN** the search reads only its ends, and the row's title is `Weekly notes draft`
+
+### Requirement: Titles in Claude Code's order
+
+A row's title SHALL be the last title the user set, from the transcript's last 64 KiB, else its `custom-title.json`, else the first 64 KiB.
+Failing that, it SHALL be the last title Claude Code generated, from the last 64 KiB, else the first, and then the session's first prompt that is not a slash command.
+
+#### Scenario: A title in the session's title file
+
+- **WHEN** a session's last 64 KiB hold only a generated title `Draft notes`, and its `custom-title.json` holds `Release checklist`
+- **THEN** the row's title is `Release checklist`
 
 #### Scenario: A transcript with no title row
 

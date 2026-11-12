@@ -141,91 +141,109 @@ struct TitleRow {
     ai: Option<String>,
 }
 
-/// How much of a transcript's end [`transcript_title`] reads. Transcripts
-/// reach hundreds of megabytes, and Claude Code writes the title rows again
-/// every few dozen kilobytes, the user's title next to each generated one, so
-/// the end holds the current title. Of 167 local transcripts, 144 had a title
-/// row: the last user title always sat within 31.6 KB of the end, and the
-/// last generated title within 33.5 KB, but for one 2.6 MB transcript whose
-/// only title row was its first line. Of 272 later transcripts, 99 had no
-/// title row in their last 64 KiB; reading their last 1 MiB as well found no
-/// title and read 59.3 MB more on every load.
+/// How much [`transcript_title`] reads from each end of a transcript: Claude
+/// Code's own session list reads the same 64 KiB at each end
+/// (`LITE_READ_BUF_SIZE`). Its writer appends the session's title rows again
+/// once 32 KiB have been written since the last time, and again at exit, so
+/// the last 64 KiB hold the current titles even after a long line. A title
+/// row anywhere else in the middle is not read.
 const TITLE_WINDOW: u64 = 64 << 10;
 
-/// A final line longer than this leaves too little of [`TITLE_WINDOW`] for
-/// the lines before it, so [`transcript_title`] reads [`LONG_LINE_WINDOW`]
-/// when the window holds no title. Such a line is a large tool result or
-/// message, and the title rows sit before it.
-const LONG_LINE: usize = 32 << 10;
+/// Which title row [`last_row`] looks for.
+#[derive(Debug, Clone, Copy)]
+enum Title {
+    /// A title the user set: `{"type":"custom-title","customTitle":...}`.
+    User,
+    /// A title Claude Code generated: `{"type":"ai-title","aiTitle":...}`.
+    Generated,
+}
 
-/// The read [`transcript_title`] falls back to after a long final line. Of 272
-/// local transcripts, none would have needed it, and the longest line in any
-/// transcript's last 1 MiB was 674,647 bytes.
-const LONG_LINE_WINDOW: u64 = 1 << 20;
+impl Title {
+    const fn marker(self) -> &'static [u8] {
+        match self {
+            Self::User => br#""type":"custom-title""#,
+            Self::Generated => br#""type":"ai-title""#,
+        }
+    }
+}
 
-/// The session's title: the last title the user set, else the last one
-/// Claude generated, both read from the transcript's last 64 KiB, skipping
-/// the partial line the window starts in. When those 64 KiB hold no title and
-/// the final line is longer than [`LONG_LINE`], the last 1 MiB is read
-/// instead. A title row further back is not read.
+/// The `custom-title.json` file Claude Code keeps beside a session's
+/// transcript, at `<project dir>/<session id>/custom-title.json`.
+#[derive(Debug, Deserialize)]
+struct TitleFile {
+    #[serde(rename = "customTitle")]
+    custom: String,
+}
+
+/// The session's title, found as Claude Code's session list finds it. The
+/// title the user set comes from the transcript's last 64 KiB, else from its
+/// `custom-title.json` file, else from the first 64 KiB. Failing that, the
+/// generated title comes from the last 64 KiB, else the first. Each window
+/// skips the partial line at its cut.
 pub(crate) fn transcript_title(path: &Path) -> Option<String> {
     let mut file = File::open(path).ok()?;
     let len = file.metadata().ok()?.len();
-    let tail = read_tail(&mut file, len, TITLE_WINDOW)?;
+    let tail = read_at(&mut file, len.saturating_sub(TITLE_WINDOW))?;
     if len <= TITLE_WINDOW {
-        return last_title(&tail);
+        return last_row(&tail, Title::User)
+            .or_else(|| title_file(path))
+            .or_else(|| last_row(&tail, Title::Generated));
     }
-    let body = tail.strip_suffix(b"\n").unwrap_or(&tail);
-    let final_line = body.len() - memchr::memrchr(b'\n', body).map_or(0, |at| at + 1);
-    let title = whole_lines(body).and_then(last_title);
-    if title.is_some() || final_line <= LONG_LINE {
-        return title;
+    let tail_lines = after_first_break(&tail);
+    if let Some(title) = last_row(tail_lines, Title::User).or_else(|| title_file(path)) {
+        return Some(title);
     }
-    let wide = read_tail(&mut file, len, LONG_LINE_WINDOW)?;
-    if len <= LONG_LINE_WINDOW {
-        return last_title(&wide);
-    }
-    whole_lines(wide.strip_suffix(b"\n").unwrap_or(&wide)).and_then(last_title)
+    let head = read_at(&mut file, 0)?;
+    let head_lines = before_last_break(&head);
+    last_row(head_lines, Title::User)
+        .or_else(|| last_row(tail_lines, Title::Generated))
+        .or_else(|| last_row(head_lines, Title::Generated))
 }
 
-/// The last `window` bytes of `file`, whose length is `len`.
-fn read_tail(file: &mut File, len: u64, window: u64) -> Option<Vec<u8>> {
-    file.seek(SeekFrom::Start(len.saturating_sub(window)))
+/// Up to [`TITLE_WINDOW`] bytes of `file` from `offset`.
+fn read_at(file: &mut File, offset: u64) -> Option<Vec<u8>> {
+    file.seek(SeekFrom::Start(offset)).ok()?;
+    let mut bytes = Vec::new();
+    file.by_ref()
+        .take(TITLE_WINDOW)
+        .read_to_end(&mut bytes)
         .ok()?;
-    let mut tail = Vec::new();
-    file.by_ref().take(window).read_to_end(&mut tail).ok()?;
-    Some(tail)
+    Some(bytes)
 }
 
-/// `body` after the partial line it starts in, or `None` when it holds no
-/// line break.
-fn whole_lines(body: &[u8]) -> Option<&[u8]> {
-    memchr::memchr(b'\n', body).map(|cut| &body[cut + 1..])
+/// `tail` after the partial line it starts in; empty when it holds no other
+/// line break than the one ending the file.
+fn after_first_break(tail: &[u8]) -> &[u8] {
+    let body = tail.strip_suffix(b"\n").unwrap_or(tail);
+    memchr::memchr(b'\n', body).map_or(&[], |cut| &body[cut + 1..])
 }
 
-/// The last user title in `lines`, else the last generated one.
-fn last_title(lines: &[u8]) -> Option<String> {
-    let custom_marker = memmem::Finder::new(br#""type":"custom-title""#);
-    let ai_marker = memmem::Finder::new(br#""type":"ai-title""#);
-    let (mut custom, mut ai) = (None, None);
-    for line in lines.rsplit(|&byte| byte == b'\n') {
-        let is_custom = custom_marker.find(line).is_some();
-        if !is_custom && (ai.is_some() || ai_marker.find(line).is_none()) {
-            continue;
-        }
-        let Ok(row) = serde_json::from_slice::<TitleRow>(line) else {
-            continue;
-        };
-        if is_custom {
-            if let Some(title) = row.custom {
-                custom = Some(title);
-                break;
+/// `head` before the partial line it ends in.
+fn before_last_break(head: &[u8]) -> &[u8] {
+    memchr::memrchr(b'\n', head).map_or(&[], |cut| &head[..cut])
+}
+
+/// The title in the last `kind` row of `lines` that parses, unless blank.
+fn last_row(lines: &[u8], kind: Title) -> Option<String> {
+    let marker = memmem::Finder::new(kind.marker());
+    lines
+        .rsplit(|&byte| byte == b'\n')
+        .filter(|line| marker.find(line).is_some())
+        .find_map(|line| {
+            let row = serde_json::from_slice::<TitleRow>(line).ok()?;
+            match kind {
+                Title::User => row.custom,
+                Title::Generated => row.ai,
             }
-        } else {
-            ai = row.ai;
-        }
-    }
-    custom.or(ai).filter(|title| !title.trim().is_empty())
+        })
+        .filter(|title| !title.trim().is_empty())
+}
+
+/// The title in the session's `custom-title.json`, unless missing or blank.
+fn title_file(transcript: &Path) -> Option<String> {
+    let bytes = fs::read(transcript.with_extension("").join("custom-title.json")).ok()?;
+    let file = serde_json::from_slice::<TitleFile>(&bytes).ok()?;
+    Some(file.custom).filter(|title| !title.trim().is_empty())
 }
 
 /// `text` safe to draw: control characters dropped, tabs and line breaks
@@ -297,7 +315,7 @@ mod tests {
     }
 
     #[test]
-    fn the_title_comes_from_the_transcript_s_end() {
+    fn a_user_title_in_the_head_beats_a_generated_one_in_the_tail() {
         let dir = std::env::temp_dir().join(format!("rawr-tail-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("t.jsonl");
@@ -306,13 +324,13 @@ mod tests {
             "x".repeat(1000)
         );
         let mut text =
-            String::from("{\"type\":\"custom-title\",\"customTitle\":\"Too far back\"}\n");
+            String::from("{\"type\":\"custom-title\",\"customTitle\":\"Named first\"}\n");
         for _ in 0..2000 {
             text.push_str(&filler);
         }
         text.push_str("{\"type\":\"ai-title\",\"aiTitle\":\"Near the end\"}\n");
         fs::write(&path, text).unwrap();
-        assert_eq!(transcript_title(&path).as_deref(), Some("Near the end"));
+        assert_eq!(transcript_title(&path).as_deref(), Some("Named first"));
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -336,53 +354,56 @@ mod tests {
     }
 
     #[test]
-    fn a_title_beyond_the_window_is_not_read() {
-        let dir = std::env::temp_dir().join(format!("rawr-window-{}", std::process::id()));
+    fn a_title_between_the_windows_is_not_read() {
+        let dir = std::env::temp_dir().join(format!("rawr-middle-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("t.jsonl");
         let filler = format!(
             "{{\"type\":\"user\",\"message\":\"{}\"}}\n",
             "x".repeat(1000)
         );
-        let mut text = String::from("{\"type\":\"ai-title\",\"aiTitle\":\"Further back\"}\n");
-        text.push_str(&filler.repeat(200));
+        let mut text = filler.repeat(100);
+        text.push_str("{\"type\":\"ai-title\",\"aiTitle\":\"In the middle\"}\n");
+        text.push_str(&filler.repeat(100));
         fs::write(&path, text).unwrap();
         assert_eq!(transcript_title(&path), None);
         fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
-    fn a_title_before_a_line_longer_than_the_window_is_found() {
-        let dir = std::env::temp_dir().join(format!("rawr-long-{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("t.jsonl");
-        let text = format!(
-            "{{\"type\":\"custom-title\",\"customTitle\":\"Named by me\"}}\n\
-             {{\"type\":\"user\",\"message\":\"{}\"}}\n",
-            "x".repeat(100_000)
+    fn a_title_file_beats_a_generated_title_in_the_tail() {
+        let dir = std::env::temp_dir().join(format!("rawr-file-{}", std::process::id()));
+        fs::create_dir_all(dir.join("7c2e5a10-4b8d-4f61-9a3e-2d5b8c1f6e04")).unwrap();
+        let path = dir.join("7c2e5a10-4b8d-4f61-9a3e-2d5b8c1f6e04.jsonl");
+        fs::write(&path, "{\"type\":\"ai-title\",\"aiTitle\":\"A guess\"}\n").unwrap();
+        fs::write(
+            dir.join("7c2e5a10-4b8d-4f61-9a3e-2d5b8c1f6e04/custom-title.json"),
+            r#"{"customTitle":"Named in the file"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            transcript_title(&path).as_deref(),
+            Some("Named in the file")
         );
-        fs::write(&path, text).unwrap();
-        assert_eq!(transcript_title(&path).as_deref(), Some("Named by me"));
         fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
-    fn a_title_before_a_long_line_under_the_window_is_found() {
-        let dir = std::env::temp_dir().join(format!("rawr-under-{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("t.jsonl");
-        let filler = format!(
-            "{{\"type\":\"user\",\"message\":\"{}\"}}\n",
-            "x".repeat(1000)
-        );
-        let text = format!(
-            "{{\"type\":\"custom-title\",\"customTitle\":\"Named by me\"}}\n{}\
-             {{\"type\":\"user\",\"message\":\"{}\"}}\n",
-            filler.repeat(20),
-            "x".repeat(55_000)
-        );
-        fs::write(&path, text).unwrap();
-        assert_eq!(transcript_title(&path).as_deref(), Some("Named by me"));
+    fn a_user_title_in_the_tail_beats_the_title_file() {
+        let dir = std::env::temp_dir().join(format!("rawr-both-{}", std::process::id()));
+        fs::create_dir_all(dir.join("0b9d4e2a-6c71-4f3e-8a52-9e1c7d3b5f20")).unwrap();
+        let path = dir.join("0b9d4e2a-6c71-4f3e-8a52-9e1c7d3b5f20.jsonl");
+        fs::write(
+            &path,
+            "{\"type\":\"custom-title\",\"customTitle\":\"Named later\"}\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("0b9d4e2a-6c71-4f3e-8a52-9e1c7d3b5f20/custom-title.json"),
+            r#"{"customTitle":"Named earlier"}"#,
+        )
+        .unwrap();
+        assert_eq!(transcript_title(&path).as_deref(), Some("Named later"));
         fs::remove_dir_all(&dir).unwrap();
     }
 

@@ -58,16 +58,14 @@ The binary is built from [ratatui] 0.30 on its [crossterm] 0.29 backend.
    Tests drive the state with events and draw the view on ratatui's `TestBackend`.
 9. **Titles and folders are sanitized before drawing.**
    They come from transcripts, hook input and the prompt history, so control characters are dropped and tabs and line breaks become spaces before any of them reaches the terminal.
-10. **A title comes from the transcript's end.**
-   Transcripts reach hundreds of megabytes, and Claude Code writes the title rows again every few dozen kilobytes, the user's title next to each generated one.
-   rawr reads the last 64 KiB, and the user's title wins over a generated one anywhere inside it.
-   When those 64 KiB hold no title and end in a line over 32 KiB, such as a large tool result, rawr reads the last 1 MiB instead, because the title rows sit before that line.
-   Of 272 local transcripts, none needed that read, and no line in a transcript's last 1 MiB passed 675 KB.
-   Alternative: read the last 1 MiB whenever the 64 KiB hold no title.
-   It lost: 99 of the 272 had no title there, the wider read found none for them, and it read 59.3 MB more on every load.
-   Of 167 local transcripts, 144 had a title row: the last user title always sat within 31.6 KB of the end, and the last generated one within 33.5 KB, but for one 2.6 MB transcript whose only title row was its first line.
-   Alternative: read the last 1 MiB too when the 64 KiB hold no title row.
-   It lost: it found no title the 64 KiB missed, and read 11.8 MB more on every load, all of it from the 23 untitled transcripts.
+10. **A title is found as Claude Code's own session list finds it.**
+   Its list reads 64 KiB at each end of a transcript and never parses the rest.
+   The user's title comes from the last 64 KiB, else from the session's `custom-title.json`, else from the first 64 KiB.
+   A generated title comes from the last 64 KiB, else the first, and a user title wins over it.
+   Claude Code's writer appends the title rows again once 32 KiB have been written since, and at exit, so a long line such as a large tool result is followed by fresh title rows.
+   Of 272 local transcripts, this order titles 174, and the last 64 KiB alone 173: one transcript's only title row is its first line.
+   Alternative: read the last 1 MiB when the last 64 KiB hold no title.
+   It lost: 99 of the 272 hold no title there, the wider read found none, and it read 59.3 MB more on every load.
    Alternative: read the whole transcript.
    It lost: the picker runs as a shell starts, and local transcripts measured up to 417 MB, each read whole at every start.
 11. **A session shows two lines: its title, then its folder and age.**

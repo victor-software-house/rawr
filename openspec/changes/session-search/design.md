@@ -16,12 +16,12 @@ Transcripts live at `~/.claude/projects/<folder slug>/<session id>.jsonl`, and C
    Alternative: derive each transcript's path from the folder slug.
    It lost: the slug rule belongs to Claude Code and shortens long paths, and a listing finds the file whatever the rule.
 3. **A session's title is Claude Code's title, else its first prompt.**
-   Search rows show the title the pane rows show: the last one the user set, else the last one Claude Code generated, read from the transcript's end once when the catalog loads.
+   Search rows show the title the pane rows show: the last one the user set, else the last one Claude Code generated, found in Claude Code's order once when the catalog loads (fullscreen-picker design, decision 10).
    A session whose transcript holds no title row shows the first line of its first prompt that is not a slash command such as `/config`, up to 120 characters, ending in `…` when cut.
    The title is searched as well as the prompts.
    Alternative: always the first prompt.
    It lost: first prompts such as `hi` or a line pointing at a brief file say nothing about the session, and they made the list hard to read.
-   Reading the ends costs 64 KiB per session, once per catalog load, not per key press: 10.7 MB for 167 local transcripts, read in about 3 ms from a warm cache.
+   Reading the ends costs at most 64 KiB at each end per session, once per catalog load, not per key press: 17.2 MB for the last 64 KiB of 272 local transcripts, read in about 5 ms from a warm cache.
    Alternative: read titles only for the rows on screen, or cache them by path and modification time.
    It lost: a title found only for shown rows could not be searched, and 3 ms does not repay a cache.
 4. **Words match by substring, all of them, ignoring case.**
