@@ -64,7 +64,6 @@ The binary is built from [ratatui] 0.30 on its [crossterm] 0.29 backend.
    Of 162 local transcripts, 139 had a title row, and 99% of those had their last one within 33 KB of the end.
    Alternative: read the whole transcript.
    It lost: the picker runs as a shell starts, and local transcripts measured up to 417 MB, each read whole at every start.
-
 11. **A session shows two lines: its title, then its folder and age.**
    The session ID drew a third line under every session, and nobody reads it to choose: the title and folder say which session it is.
    Search still matches the ID, and the resume still uses it.
