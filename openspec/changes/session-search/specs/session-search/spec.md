@@ -68,7 +68,7 @@ In the picker, `/` SHALL open a search line whose text filters the list on each 
 
 ### Requirement: Titles from the transcript's end
 
-Searching SHALL read `~/.claude/history.jsonl`, the session records under `~/.claude/sessions/`, one listing of `~/.claude/projects/*/`, and the last 64 KiB of each listed session's transcript, or its last 1 MiB when those 64 KiB hold no line break, once per catalog load.
+Searching SHALL read `~/.claude/history.jsonl`, the session records under `~/.claude/sessions/`, one listing of `~/.claude/projects/*/`, and the last 64 KiB of each listed session's transcript, or its last 1 MiB when those 64 KiB hold no title and end in a line over 32 KiB, once per catalog load.
 A row's title SHALL be the last title the user set in its transcript, else the last one Claude Code generated, else the session's first prompt that is not a slash command.
 
 #### Scenario: A large transcript

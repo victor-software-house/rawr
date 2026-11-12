@@ -147,40 +147,60 @@ struct TitleRow {
 /// the end holds the current title. Of 167 local transcripts, 144 had a title
 /// row: the last user title always sat within 31.6 KB of the end, and the
 /// last generated title within 33.5 KB, but for one 2.6 MB transcript whose
-/// only title row was its first line. Reading the last 1 MiB of every
-/// untitled transcript as well found nothing more, and read 11.8 MB more on
-/// every load.
+/// only title row was its first line. Of 272 later transcripts, 99 had no
+/// title row in their last 64 KiB; reading their last 1 MiB as well found no
+/// title and read 59.3 MB more on every load.
 const TITLE_WINDOW: u64 = 64 << 10;
 
-/// The read [`transcript_title`] falls back to when [`TITLE_WINDOW`] holds no
-/// line break, because the transcript ends in one line longer than the window,
-/// such as a large tool result. The title rows then sit before that line. Of
-/// 272 local transcripts, none ended on such a line, and the longest line in
-/// any transcript's last 1 MiB was 674,647 bytes.
+/// A final line longer than this leaves too little of [`TITLE_WINDOW`] for
+/// the lines before it, so [`transcript_title`] reads [`LONG_LINE_WINDOW`]
+/// when the window holds no title. Such a line is a large tool result or
+/// message, and the title rows sit before it.
+const LONG_LINE: usize = 32 << 10;
+
+/// The read [`transcript_title`] falls back to after a long final line. Of 272
+/// local transcripts, none would have needed it, and the longest line in any
+/// transcript's last 1 MiB was 674,647 bytes.
 const LONG_LINE_WINDOW: u64 = 1 << 20;
 
 /// The session's title: the last title the user set, else the last one
 /// Claude generated, both read from the transcript's last 64 KiB, skipping
-/// the partial line the window starts in. When those 64 KiB hold no line
-/// break, the last 1 MiB is read instead. A title row further back is not
-/// read.
+/// the partial line the window starts in. When those 64 KiB hold no title and
+/// the final line is longer than [`LONG_LINE`], the last 1 MiB is read
+/// instead. A title row further back is not read.
 pub(crate) fn transcript_title(path: &Path) -> Option<String> {
     let mut file = File::open(path).ok()?;
     let len = file.metadata().ok()?.len();
-    for window in [TITLE_WINDOW, LONG_LINE_WINDOW] {
-        let start = len.saturating_sub(window);
-        file.seek(SeekFrom::Start(start)).ok()?;
-        let mut tail = Vec::new();
-        file.by_ref().take(window).read_to_end(&mut tail).ok()?;
-        if start == 0 {
-            return last_title(&tail);
-        }
-        let body = tail.strip_suffix(b"\n").unwrap_or(&tail);
-        if let Some(cut) = memchr::memchr(b'\n', body) {
-            return last_title(&body[cut + 1..]);
-        }
+    let tail = read_tail(&mut file, len, TITLE_WINDOW)?;
+    if len <= TITLE_WINDOW {
+        return last_title(&tail);
     }
-    None
+    let body = tail.strip_suffix(b"\n").unwrap_or(&tail);
+    let final_line = body.len() - memchr::memrchr(b'\n', body).map_or(0, |at| at + 1);
+    let title = whole_lines(body).and_then(last_title);
+    if title.is_some() || final_line <= LONG_LINE {
+        return title;
+    }
+    let wide = read_tail(&mut file, len, LONG_LINE_WINDOW)?;
+    if len <= LONG_LINE_WINDOW {
+        return last_title(&wide);
+    }
+    whole_lines(wide.strip_suffix(b"\n").unwrap_or(&wide)).and_then(last_title)
+}
+
+/// The last `window` bytes of `file`, whose length is `len`.
+fn read_tail(file: &mut File, len: u64, window: u64) -> Option<Vec<u8>> {
+    file.seek(SeekFrom::Start(len.saturating_sub(window)))
+        .ok()?;
+    let mut tail = Vec::new();
+    file.by_ref().take(window).read_to_end(&mut tail).ok()?;
+    Some(tail)
+}
+
+/// `body` after the partial line it starts in, or `None` when it holds no
+/// line break.
+fn whole_lines(body: &[u8]) -> Option<&[u8]> {
+    memchr::memchr(b'\n', body).map(|cut| &body[cut + 1..])
 }
 
 /// The last user title in `lines`, else the last generated one.
@@ -340,6 +360,26 @@ mod tests {
             "{{\"type\":\"custom-title\",\"customTitle\":\"Named by me\"}}\n\
              {{\"type\":\"user\",\"message\":\"{}\"}}\n",
             "x".repeat(100_000)
+        );
+        fs::write(&path, text).unwrap();
+        assert_eq!(transcript_title(&path).as_deref(), Some("Named by me"));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_title_before_a_long_line_under_the_window_is_found() {
+        let dir = std::env::temp_dir().join(format!("rawr-under-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("t.jsonl");
+        let filler = format!(
+            "{{\"type\":\"user\",\"message\":\"{}\"}}\n",
+            "x".repeat(1000)
+        );
+        let text = format!(
+            "{{\"type\":\"custom-title\",\"customTitle\":\"Named by me\"}}\n{}\
+             {{\"type\":\"user\",\"message\":\"{}\"}}\n",
+            filler.repeat(20),
+            "x".repeat(55_000)
         );
         fs::write(&path, text).unwrap();
         assert_eq!(transcript_title(&path).as_deref(), Some("Named by me"));

@@ -28,5 +28,5 @@ None.
 
 1. Modules: a new `src/catalog.rs` (every resumable local session), `src/picker/state.rs` (the query and the filtered rows), `src/picker/view.rs` (the search line), `src/main.rs` (the `find` command).
 2. Data read: Claude Code's prompt history, `~/.claude/history.jsonl`, and one listing of `~/.claude/projects/*/`.
-   Each listed transcript's last 64 KiB is read once per load, for its title, or its last 1 MiB when it ends in a longer line.
+   Each listed transcript's last 64 KiB is read once per load, for its title, or its last 1 MiB when those hold no title and end in a line over 32 KiB.
 3. Dependencies: none.
