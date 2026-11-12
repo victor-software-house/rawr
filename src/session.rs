@@ -147,31 +147,48 @@ struct TitleRow {
 /// the end holds the current title. Of 167 local transcripts, 144 had a title
 /// row: the last user title always sat within 31.6 KB of the end, and the
 /// last generated title within 33.5 KB, but for one 2.6 MB transcript whose
-/// only title row was its first line. A wider second read found nothing more,
-/// and read 11.8 MB more on every load, all of it from untitled transcripts.
+/// only title row was its first line. Reading the last 1 MiB of every
+/// untitled transcript as well found nothing more, and read 11.8 MB more on
+/// every load.
 const TITLE_WINDOW: u64 = 64 << 10;
+
+/// The read [`transcript_title`] falls back to when [`TITLE_WINDOW`] holds no
+/// line break, because the transcript ends in one line longer than the window,
+/// such as a large tool result. The title rows then sit before that line. Of
+/// 272 local transcripts, none ended on such a line, and the longest line in
+/// any transcript's last 1 MiB was 674,647 bytes.
+const LONG_LINE_WINDOW: u64 = 1 << 20;
 
 /// The session's title: the last title the user set, else the last one
 /// Claude generated, both read from the transcript's last 64 KiB, skipping
-/// the partial line the window starts in. A title row further back is not
+/// the partial line the window starts in. When those 64 KiB hold no line
+/// break, the last 1 MiB is read instead. A title row further back is not
 /// read.
 pub(crate) fn transcript_title(path: &Path) -> Option<String> {
     let mut file = File::open(path).ok()?;
     let len = file.metadata().ok()?.len();
+    for window in [TITLE_WINDOW, LONG_LINE_WINDOW] {
+        let start = len.saturating_sub(window);
+        file.seek(SeekFrom::Start(start)).ok()?;
+        let mut tail = Vec::new();
+        file.by_ref().take(window).read_to_end(&mut tail).ok()?;
+        if start == 0 {
+            return last_title(&tail);
+        }
+        let body = tail.strip_suffix(b"\n").unwrap_or(&tail);
+        if let Some(cut) = memchr::memchr(b'\n', body) {
+            return last_title(&body[cut + 1..]);
+        }
+    }
+    None
+}
+
+/// The last user title in `lines`, else the last generated one.
+fn last_title(lines: &[u8]) -> Option<String> {
     let custom_marker = memmem::Finder::new(br#""type":"custom-title""#);
     let ai_marker = memmem::Finder::new(br#""type":"ai-title""#);
-    let start = len.saturating_sub(TITLE_WINDOW);
-    file.seek(SeekFrom::Start(start)).ok()?;
-    let mut tail = Vec::new();
-    file.take(TITLE_WINDOW).read_to_end(&mut tail).ok()?;
-    let whole = if start == 0 {
-        tail.as_slice()
-    } else {
-        let cut = memchr::memchr(b'\n', &tail)?;
-        &tail[cut + 1..]
-    };
     let (mut custom, mut ai) = (None, None);
-    for line in whole.rsplit(|&byte| byte == b'\n') {
+    for line in lines.rsplit(|&byte| byte == b'\n') {
         let is_custom = custom_marker.find(line).is_some();
         if !is_custom && (ai.is_some() || ai_marker.find(line).is_none()) {
             continue;
@@ -311,6 +328,21 @@ mod tests {
         text.push_str(&filler.repeat(200));
         fs::write(&path, text).unwrap();
         assert_eq!(transcript_title(&path), None);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_title_before_a_line_longer_than_the_window_is_found() {
+        let dir = std::env::temp_dir().join(format!("rawr-long-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("t.jsonl");
+        let text = format!(
+            "{{\"type\":\"custom-title\",\"customTitle\":\"Named by me\"}}\n\
+             {{\"type\":\"user\",\"message\":\"{}\"}}\n",
+            "x".repeat(100_000)
+        );
+        fs::write(&path, text).unwrap();
+        assert_eq!(transcript_title(&path).as_deref(), Some("Named by me"));
         fs::remove_dir_all(&dir).unwrap();
     }
 

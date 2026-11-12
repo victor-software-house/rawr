@@ -61,6 +61,8 @@ The binary is built from [ratatui] 0.30 on its [crossterm] 0.29 backend.
 10. **A title comes from the transcript's end.**
    Transcripts reach hundreds of megabytes, and Claude Code writes the title rows again every few dozen kilobytes, the user's title next to each generated one.
    rawr reads the last 64 KiB, and the user's title wins over a generated one anywhere inside it.
+   When those 64 KiB hold no line break, because the transcript ends in one longer line such as a large tool result, rawr reads the last 1 MiB instead.
+   Of 272 local transcripts, none ended on such a line, and no line in a transcript's last 1 MiB passed 675 KB.
    Of 167 local transcripts, 144 had a title row: the last user title always sat within 31.6 KB of the end, and the last generated one within 33.5 KB, but for one 2.6 MB transcript whose only title row was its first line.
    Alternative: read the last 1 MiB too when the 64 KiB hold no title row.
    It lost: it found no title the 64 KiB missed, and read 11.8 MB more on every load, all of it from the 23 untitled transcripts.
