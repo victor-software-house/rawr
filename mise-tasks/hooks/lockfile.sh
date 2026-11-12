@@ -3,11 +3,18 @@
 #MISE raw=true
 # pre-push runs this with git's pre-push lines on stdin, one
 # `<local ref> <local sha> <remote ref> <remote sha>` per ref; raw connects
-# that stdin to the task. For each pushed commit it runs `mise lock` for the
-# lockfile_platforms entries in a detached worktree of that commit, and fails
-# when a lockfile then differs from the commit, so the pusher reviews and
-# commits the change. A delete (all-zero local sha, 40 zeros under SHA-1
-# and 64 under SHA-256) pushes nothing, and a ref whose commits a
+# that stdin to the task. For each pushed commit that changes a lock input
+# (mise.toml, mise.*.toml, a mise lock, .miserc.toml, or mise-tasks/, whose
+# task tools the locks record), and each pushed merge commit, it runs
+# `mise lock` for the lockfile_platforms entries in a detached worktree of
+# that commit, and fails when a lockfile then differs from the commit, so the
+# pusher reviews and commits the change. A commit that is not a merge and
+# changes no lock input reuses its parent's result with no lock run of its
+# own: it locks the same as that parent, which this push or an earlier one
+# checked. A commit whose lock inputs match, file for file, those of a commit
+# this push already checked reuses that result too, so a long first push
+# locks once per distinct set of inputs. A delete (all-zero
+# local sha, 40 zeros under SHA-1 and 64 under SHA-256) pushes nothing, and a ref whose commits a
 # remote-tracking ref or the remote sha already holds, such as a tag on a
 # pushed commit, was checked when those commits were pushed. The worktree
 # is checked out with no hooks, so a checkout hook of the repository's own
@@ -50,7 +57,13 @@ scratch=$(mktemp -d) || { echo "✘ mktemp failed; see its error above"; exit 1;
 trap 'rm -rf "$scratch"; git worktree prune' EXIT
 # sh runs the EXIT trap on a signal only when a trap for it exits.
 trap 'exit 130' INT TERM HUP
-mkdir "$scratch/config" || { echo "✘ mkdir failed; see its error above"; exit 1; }
+mkdir "$scratch/config" "$scratch/seen" || { echo "✘ mkdir failed; see its error above"; exit 1; }
+
+# inputs ARGS runs git ARGS on the files a lock depends on: the mise configs
+# and locks, .miserc.toml, and mise-tasks/, whose task tools the locks record.
+inputs() {
+  git "$@" -- mise.toml 'mise.*.toml' mise.lock 'mise.*.lock' .miserc.toml mise-tasks
+}
 
 # check DIR locks each committed profile of the tree in DIR for the
 # platforms lockfile_platforms lists in that tree under that profile, and
@@ -130,6 +143,9 @@ if [ -z "$lines" ]; then
   fi
   exit 0
 fi
+# The empty tree in this repository's object format, the base of each key.
+empty=$(git hash-object -t tree /dev/null) ||
+  { echo "✘ git hash-object failed; see its error above"; exit 1; }
 status=0
 printf '%s\n' "$lines" | {
   while read -r ref sha _ rsha; do
@@ -137,30 +153,47 @@ printf '%s\n' "$lines" | {
     known=""
     case $rsha in *[!0]*) git cat-file -e "$rsha^{commit}" 2>/dev/null && known=$rsha ;; esac
     # shellcheck disable=SC2086 # an empty $known adds no revision
-    new=$(git rev-list -n 1 "$sha" --not --remotes $known) ||
+    commits=$(git rev-list --reverse --parents "$sha" --not --remotes $known) ||
       { echo "✘ git rev-list failed for $ref; see its error above"; exit 1; }
-    [ -n "$new" ] || continue
-    tree="$scratch/$sha"
-    # The same commit pushed under a second ref was checked already.
-    [ -d "$tree" ] && continue
-    git -c core.hooksPath=/dev/null worktree add --quiet --detach "$tree" "$sha" </dev/null ||
-      { echo "✘ git worktree add failed for $ref; see its error above"; exit 1; }
-    # git runs pre-push with GIT_DIR set in a linked worktree, and a caller
-    # can also export GIT_WORK_TREE or GIT_INDEX_FILE. Each names the
-    # pusher's checkout, so git in the scratch worktree would compare it with
-    # the pusher's index. The substitution's subshell unsets them, so git
-    # finds that worktree's repository from its path. A run by hand keeps
-    # the caller's own layout.
-    changed=$(
-      unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
-      check "$tree" </dev/null
-    ) || exit 1
-    if [ -n "$changed" ]; then
-      printf '%s\n' "$changed"
-      echo "✘ $ref: these lockfiles differ from its commit after mise lock:" \
-        "run mise run hooks:lockfile on it, review the change and commit it"
-      status=1
-    fi
+    while read -r commit parent second; do
+      [ -n "$commit" ] || continue
+      if [ -z "${second:-}" ] && [ -n "${parent:-}" ]; then
+        touched=$(inputs diff-tree --no-commit-id --name-only -r "$parent" "$commit") ||
+          { echo "✘ git diff-tree failed for $commit; see its error above"; exit 1; }
+        [ -n "$touched" ] || continue
+      fi
+      # ls-tree reads a pathspec literally, so mise.*.toml would match nothing;
+      # a diff against the empty tree expands it as diff-tree does above.
+      listing=$(inputs diff-tree -r --no-commit-id "$empty" "$commit") ||
+        { echo "✘ git diff-tree failed for $commit; see its error above"; exit 1; }
+      key=$(printf '%s\n' "$listing" | git hash-object --stdin) ||
+        { echo "✘ git hash-object failed for $commit; see its error above"; exit 1; }
+      # Commits whose mise inputs match one this push checked lock the same.
+      [ -e "$scratch/seen/$key" ] && continue
+      : >"$scratch/seen/$key" || { echo "✘ marking $commit checked failed"; exit 1; }
+      tree="$scratch/$commit"
+      git -c core.hooksPath=/dev/null worktree add --quiet --detach "$tree" "$commit" </dev/null ||
+        { echo "✘ git worktree add failed for $ref; see its error above"; exit 1; }
+      # git runs pre-push with GIT_DIR set in a linked worktree, and a caller
+      # can also export GIT_WORK_TREE or GIT_INDEX_FILE. Each names the
+      # pusher's checkout, so git in the scratch worktree would compare it
+      # with the pusher's index. The substitution's subshell unsets them, so
+      # git finds that worktree's repository from its path. A run by hand
+      # keeps the caller's own layout.
+      changed=$(
+        unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
+        check "$tree" </dev/null
+      ) || exit 1
+      if [ -n "$changed" ]; then
+        printf '%s\n' "$changed"
+        short=$(git rev-parse --short "$commit")
+        echo "✘ $ref: these lockfiles differ from commit $short after mise lock:" \
+          "run mise run hooks:lockfile on it, review the change and commit it"
+        status=1
+      fi
+    done <<EOF_COMMITS
+$commits
+EOF_COMMITS
   done
   exit "$status"
 }

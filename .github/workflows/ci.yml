@@ -30,15 +30,15 @@ jobs:
       contents: read
       id-token: write
       pull-requests: read
-    uses: victor-software-house/actions/.github/workflows/rust-ci.yml@4168002fe58fd0b310bd2b65f9db2262fc0e21d3 # main, 2026-11-11
+    uses: victor-software-house/actions/.github/workflows/rust-ci.yml@bead5c01b61e14ecf1e923a5bcff97e8c421f151 # main, 2026-11-11
     with:
       mise-version: 2026.11.6
       advisories: true
       semver: false
       timeout-minutes: 8
-      build-runner: '["ubuntu-latest"]'
-      read-only-runner: '["ubuntu-latest"]'
-      light-runner: ubuntu-latest
+      build-runner: '["ubuntu-26.04"]'
+      read-only-runner: '["ubuntu-26.04"]'
+      light-runner: ubuntu-26.04
       cache-volume: false
     secrets:
       RELEASE_MIRROR_URL: ${{ secrets.RELEASE_MIRROR_URL }}
