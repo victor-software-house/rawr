@@ -11,7 +11,9 @@
 # pusher reviews and commits the change. A commit that is not a merge and
 # changes no lock input reuses its parent's result with no lock run of its
 # own: it locks the same as that parent, which this push or an earlier one
-# checked. A commit whose lock inputs match, file for file, those of a commit
+# checked. The ref's tip is checked even then, since its parent may be on the
+# remote already, pushed before this check or with --no-verify. A commit
+# whose lock inputs match, file for file, those of a commit
 # this push already checked reuses that result too, so a long first push
 # locks once per distinct set of inputs. A delete (all-zero
 # local sha, 40 zeros under SHA-1 and 64 under SHA-256) pushes nothing, and a ref whose commits a
@@ -155,9 +157,14 @@ printf '%s\n' "$lines" | {
     # shellcheck disable=SC2086 # an empty $known adds no revision
     commits=$(git rev-list --reverse --parents "$sha" --not --remotes $known) ||
       { echo "✘ git rev-list failed for $ref; see its error above"; exit 1; }
+    # An annotated tag's local sha names the tag object; rev-list lists its
+    # commit, so the tip is compared as a commit.
+    tip=$(git rev-parse --verify --quiet "$sha^{commit}") || continue
     while read -r commit parent second; do
       [ -n "$commit" ] || continue
-      if [ -z "${second:-}" ] && [ -n "${parent:-}" ]; then
+      # The ref's tip is always checked: its parent may be a remote commit
+      # this hook never saw, pushed before the check or past it.
+      if [ -z "${second:-}" ] && [ -n "${parent:-}" ] && [ "$commit" != "$tip" ]; then
         touched=$(inputs diff-tree --no-commit-id --name-only -r "$parent" "$commit") ||
           { echo "✘ git diff-tree failed for $commit; see its error above"; exit 1; }
         [ -n "$touched" ] || continue
@@ -184,6 +191,10 @@ printf '%s\n' "$lines" | {
         unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
         check "$tree" </dev/null
       ) || exit 1
+      # One checkout at a time: a long push would otherwise keep one per
+      # checked commit on disk until the EXIT trap.
+      git worktree remove --force "$tree" </dev/null ||
+        { echo "✘ git worktree remove failed for $ref; see its error above"; exit 1; }
       if [ -n "$changed" ]; then
         printf '%s\n' "$changed"
         short=$(git rev-parse --short "$commit")
