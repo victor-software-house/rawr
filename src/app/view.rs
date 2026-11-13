@@ -27,6 +27,10 @@ use crate::app::theme;
 use crate::session::Agent;
 use crate::status::Status;
 
+/// How many columns past a drawer's edge the pointer may go before the
+/// drawer shuts.
+const SLACK: u16 = 2;
+
 /// How many columns a view slides in from in the single arrangement.
 const SLIDE: f32 = 10.0;
 
@@ -38,8 +42,11 @@ pub(crate) struct Hits {
     lists: Vec<(Rect, Focus)>,
     /// The folded columns, which draw out when the pointer comes over them.
     rails: Vec<(Rect, Focus)>,
-    /// The drawn-out column, over the others.
-    drawer: Option<Rect>,
+    /// Where the pointer keeps the drawer out: as wide as it opens, and a
+    /// little past its edge, so a pointer that slips over the edge stays.
+    keep: Option<Rect>,
+    /// The rail the drawer comes out of.
+    drawer_rail: Option<Rect>,
     /// The screen's size.
     pub(crate) width: u16,
     pub(crate) height: u16,
@@ -71,7 +78,8 @@ impl Hits {
             target: self.target(column, row),
             list: find(&self.lists),
             rail: find(&self.rails),
-            drawer: self.drawer.is_some_and(|area| area.contains(at)),
+            keep: self.keep.is_some_and(|area| area.contains(at)),
+            on_rail: self.drawer_rail.is_some_and(|area| area.contains(at)),
             size: (self.width, self.height),
         }
     }
@@ -217,10 +225,16 @@ fn rails(frame: &mut Frame<'_>, app: &App, area: Rect, shown: Shown<'_>, hits: &
             view(frame, app, column, below(rect, 2), shown, hits);
         }
     }
-    if let Some((column, out)) = app.drawn()
+    // A drawer that has shut keeps its area a moment, so a pointer that
+    // slipped out can bring it back.
+    if let Some(column) = app.drawer.map(|drawer| drawer.column)
         && let Some(rail) = rects.get(column.column()).filter(|rail| rail.width < FULL)
     {
-        drawer(frame, app, (area, *rail), (column, out), shown, hits);
+        if let Some((_, out)) = app.drawn() {
+            drawer(frame, app, (area, *rail), (column, out), shown, hits);
+        }
+        hits.keep = Some(keep_area(app, area, *rail, column));
+        hits.drawer_rail = Some(*rail);
     }
 }
 
@@ -281,7 +295,26 @@ fn drawer(
         rightward,
     };
     edge_line(frame, app, edge, Some(grip), hits);
-    hits.drawer = Some(whole);
+}
+
+/// Where the pointer keeps the drawer of `column` out: the open drawer's
+/// area and a little past its edge, whatever the animation has drawn, so a
+/// pointer that was in it stays in it as it shuts.
+fn keep_area(app: &App, area: Rect, rail: Rect, column: Focus) -> Rect {
+    let reach = app.drawer_full(column) + 1 + SLACK;
+    if column.column() < app.at().column() {
+        Rect {
+            width: reach.min(area.right().saturating_sub(rail.x)),
+            ..rail
+        }
+    } else {
+        let x = rail.right().saturating_sub(reach).max(area.x);
+        Rect {
+            x,
+            width: rail.right() - x,
+            ..rail
+        }
+    }
 }
 
 /// A column's edge: a thin rule, which lights while hovered or dragged

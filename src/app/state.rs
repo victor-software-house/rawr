@@ -157,8 +157,10 @@ pub(crate) struct Under {
     pub(crate) list: Option<Focus>,
     /// The folded column there.
     pub(crate) rail: Option<Focus>,
-    /// Whether the pointer is over the open drawer.
-    pub(crate) drawer: bool,
+    /// Whether the pointer is where it keeps the drawer out.
+    pub(crate) keep: bool,
+    /// Whether the pointer is over the rail the drawer comes out of.
+    pub(crate) on_rail: bool,
     /// The screen's width and height.
     pub(crate) size: (u16, u16),
 }
@@ -168,6 +170,10 @@ pub(crate) const RAIL: u16 = 5;
 
 /// The narrowest a column draws in full; narrower, it draws as a rail.
 pub(crate) const FULL: u16 = 28;
+
+/// How soon after a drawer starts to shut the pointer may come back into
+/// it and have it open again.
+const GRACE: Duration = Duration::from_millis(400);
 
 /// How fast a column's edge moves on screen, in columns a second, so a
 /// long move and a short one go at the same speed.
@@ -262,6 +268,8 @@ pub(crate) struct App {
     /// session column takes the rest when it has focus.
     pub(crate) wants: [u16; 3],
     pub(crate) drawer: Option<Drawer>,
+    /// When the pointer left the drawer.
+    left: Option<Instant>,
     /// The screen's width as last drawn, which sets how far a move goes.
     pub(crate) cols: u16,
     /// The edge being dragged.
@@ -328,6 +336,7 @@ impl App {
             scrolls: [Scroll::default(); 4],
             wants: [48, 60, 72],
             drawer: None,
+            left: None,
             cols: 0,
             dragging: None,
         }
@@ -814,21 +823,7 @@ impl App {
                 // A folded column draws out while the pointer is on it, and
                 // goes back when the pointer leaves it.
                 if self.focus != Focus::Search {
-                    let open = self
-                        .drawer
-                        .filter(|drawer| drawer.open)
-                        .map(|drawer| drawer.column);
-                    if edge {
-                        self.draw_out(None);
-                    } else if let Some(column) = under.rail {
-                        self.draw_out(Some(column));
-                    } else if under.drawer {
-                        // Back over a drawer that was shutting: it opens again.
-                        let column = self.drawer.map(|drawer| drawer.column);
-                        self.draw_out(column);
-                    } else if open.is_some() {
-                        self.draw_out(None);
-                    }
+                    self.follow_pointer(edge, under);
                 }
                 Action::None
             }
@@ -868,6 +863,33 @@ impl App {
                 Action::None
             }
             _ => Action::None,
+        }
+    }
+
+    /// Opens or shuts the drawer as the pointer moves. It opens on a rail,
+    /// and shuts once the pointer is past its edge by a little slack; a
+    /// pointer back in it soon after, or on its rail, opens it again.
+    fn follow_pointer(&mut self, edge: bool, under: Under) {
+        let Some(drawer) = self.drawer else {
+            if !edge && let Some(column) = under.rail {
+                self.draw_out(Some(column));
+            }
+            return;
+        };
+        if edge {
+            self.left = None;
+            self.draw_out(None);
+        } else if let Some(column) = under.rail {
+            self.draw_out(Some(column));
+        } else if drawer.open {
+            if !under.keep {
+                self.left = Some(Instant::now());
+                self.draw_out(None);
+            }
+        } else if under.on_rail
+            || (under.keep && self.left.is_some_and(|left| left.elapsed() < GRACE))
+        {
+            self.draw_out(Some(drawer.column));
         }
     }
 
