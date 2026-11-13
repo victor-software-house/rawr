@@ -162,10 +162,14 @@ The closest first-party models are Claude Code's own supervisor, which defers it
     - Rule 4: the binary also talks to Claude Code's plugin commands during `rawr setup`.
       Nothing resumes without a choice, as before.
 
-13. **rawr speaks the Rex server's socket, behind one client interface.**
+13. **rawr speaks Rex's documented control protocol, behind one client interface.**
+    - The Rex server documents its own API and serves the documentation from the same socket: `GET /llms.txt` describes the protocol, and `GET /api/help` lists every method with the JSON Schema of its arguments and result.
+    - The control connection is a WebSocket at `GET /api/control` with the subprotocol `rex.control.v1`.
+      Every message is one JSON object: the client sends one `hello`, then `request` messages; the server sends a `welcome`, a `response` per request, and `event` messages.
+    - The hello names the newest and oldest API revisions the client speaks, and the welcome names the revision the connection uses, so rawr pins the revision it was written for (13 today) and refuses a server outside its range.
     - A `rex` module owns the connection and exposes typed calls and an event stream: list sessions and blocks, read a block's program status, watch status and block events, stop and start the server.
-    - Nothing outside that module sees the protocol, so a Rex change touches one module, and a test against a recorded exchange shows when it does.
-    - Rex documents its methods (`rex api list`, `rex api describe`), not the socket protocol itself.
+    - Its request and response types come from `/api/help`'s schemas, and a test against a recorded exchange shows when a Rex change touches them.
+    - Nothing outside that module sees the protocol.
     - Alternative: a Lua module in Rex's configuration, which uses only documented calls.
       It lost: it runs inside the server, stops with it, and can hand rawr its findings only through a file or a process.
     - Alternative: running `rex api call` per request.
