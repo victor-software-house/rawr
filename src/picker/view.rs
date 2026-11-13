@@ -437,7 +437,7 @@ mod tests {
 
     #[test]
     fn a_long_search_shows_its_end() {
-        let state = State::searching("x".repeat(30) + "tail", ROWS);
+        let state = State::searching(format!("{}tail", "x".repeat(30)), ROWS);
         let (buffer, _) = render(&[], &state, 20, 10);
         let line = row(&buffer, box_top(&buffer) + 1);
         assert!(line.starts_with("❯ x"), "{line}");
