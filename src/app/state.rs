@@ -929,7 +929,7 @@ impl App {
                 // A folded column draws out while the pointer is on it, and
                 // goes back when the pointer leaves it.
                 if self.focus != Focus::Search {
-                    self.follow_pointer(edge, under);
+                    self.follow_pointer(edge, mouse.column == 0, under);
                 }
                 Action::None
             }
@@ -975,25 +975,25 @@ impl App {
     /// Opens or shuts the drawer as the pointer moves. It opens on a rail,
     /// and shuts once the pointer is past its edge by a little slack; a
     /// pointer back in it soon after, or on its rail, opens it again.
-    fn follow_pointer(&mut self, edge: bool, under: Under) {
+    fn follow_pointer(&mut self, edge: bool, left_edge: bool, under: Under) {
+        // Past the window's left side is beside the panes' rail, so it
+        // keeps their drawer out as the drawer itself does.
+        let keep = under.keep || left_edge;
         let Some(drawer) = self.drawer else {
             if !edge && let Some(column) = under.rail {
                 self.draw_out(Some(column));
             }
             return;
         };
-        if edge {
-            self.left = None;
-            self.draw_out(None);
-        } else if let Some(column) = under.rail {
+        if !edge && let Some(column) = under.rail {
             self.draw_out(Some(column));
         } else if drawer.open {
-            if !under.keep {
+            if !keep {
                 self.left = Some(Instant::now());
                 self.draw_out(None);
             }
-        } else if under.on_rail
-            || (under.keep && self.left.is_some_and(|left| left.elapsed() < GRACE))
+        } else if (!edge && under.on_rail)
+            || (keep && self.left.is_some_and(|left| left.elapsed() < GRACE))
         {
             self.draw_out(Some(drawer.column));
         }

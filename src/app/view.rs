@@ -174,7 +174,24 @@ fn rule(frame: &mut Frame<'_>, area: Rect, style: Style) {
 
 /// Each column's width when `focus` has settled, of `total` columns.
 fn rails(frame: &mut Frame<'_>, app: &App, area: Rect, shown: Shown<'_>, hits: &mut Hits) {
-    let [a, b] = app.layout();
+    let [mut a, mut b] = app.layout();
+    // The rail the panes fold to, before a drawer widens it.
+    let folded = Rect { width: a, ..area };
+    // A drawn-out panes column pushes the pane aside rather than covering
+    // it, so the pane stays in sight.
+    let drawn = app
+        .drawn()
+        .filter(|(column, _)| *column == Focus::Panes && a < FULL);
+    if let Some((column, out)) = drawn {
+        let full = app.drawer_full(column).max(a);
+        #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let wide = (f32::from(a) + (f32::from(full) - f32::from(a)) * out)
+            .round()
+            .max(0.0) as u16;
+        let total = a + b;
+        a = wide.min(total.saturating_sub(RAIL));
+        b = total - a;
+    }
     let [first, edge, second] = Layout::horizontal([
         Constraint::Length(a),
         Constraint::Length(1),
@@ -202,75 +219,20 @@ fn rails(frame: &mut Frame<'_>, app: &App, area: Rect, shown: Shown<'_>, hits: &
         }
     }
     // A drawer that has shut keeps its area a moment, so a pointer that
-    // slipped out can bring it back.
+    // slipped out can bring it back. The area runs the screen's height, so
+    // a pointer that leaves past the top or the bottom keeps it too.
     if let Some(column) = app.drawer.map(|drawer| drawer.column)
-        && let Some(rail) = rects.get(column.column()).filter(|rail| rail.width < FULL)
+        && column == Focus::Panes
+        && folded.width < FULL
     {
-        if let Some((_, out)) = app.drawn() {
-            drawer(frame, app, (area, *rail), (column, out), shown, hits);
-        }
-        hits.keep = Some(keep_area(app, area, *rail, column));
-        hits.drawer_rail = Some(*rail);
+        let keep = keep_area(app, area, folded, column);
+        hits.keep = Some(Rect {
+            y: 0,
+            height: hits.height,
+            ..keep
+        });
+        hits.drawer_rail = Some(folded);
     }
-}
-
-/// A column drawn out from its rail over the others: towards the focused
-/// column, as far as the width it wants, `out` of the way there.
-fn drawer(
-    frame: &mut Frame<'_>,
-    app: &App,
-    (area, rail): (Rect, Rect),
-    (column, out): (Focus, f32),
-    shown: Shown<'_>,
-    hits: &mut Hits,
-) {
-    let rightward = column.column() < app.lead().column();
-    let full = app.drawer_full(column);
-    #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    let wide = (f32::from(RAIL) + (f32::from(full) - f32::from(RAIL)) * out)
-        .round()
-        .max(0.0) as u16;
-    // The drawer and the edge it is dragged by.
-    let (body, edge) = if rightward {
-        let body = Rect {
-            width: wide.min(area.right().saturating_sub(rail.x + 1)),
-            ..rail
-        };
-        let edge = Rect {
-            x: body.right(),
-            width: 1,
-            ..rail
-        };
-        (body, edge)
-    } else {
-        let x = rail.right().saturating_sub(wide).max(area.x + 1);
-        let body = Rect {
-            x,
-            width: rail.right() - x,
-            ..rail
-        };
-        let edge = Rect {
-            x: x - 1,
-            width: 1,
-            ..rail
-        };
-        (body, edge)
-    };
-    let whole = body.union(edge);
-    hits.cover(whole);
-    frame.render_widget(Clear, whole);
-    if body.width < FULL {
-        rail_view(frame, app, column, body, shown, hits);
-    } else {
-        header(frame, app, column, body, hits);
-        view(frame, app, column, below(body, 2), shown, hits);
-    }
-    let grip = Grip {
-        column,
-        anchor: if rightward { body.x } else { body.right() },
-        rightward,
-    };
-    edge_line(frame, app, edge, Some(grip), hits);
 }
 
 /// Where the pointer keeps the drawer of `column` out: the open drawer's
