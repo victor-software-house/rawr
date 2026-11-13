@@ -17,13 +17,13 @@ use crate::session::Agent;
 /// Where the picker opens.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Start {
-    /// On the pane's own sessions, with the search line closed.
+    /// On the pane's own sessions, with the search box empty.
     Pane,
-    /// On the search line, with this text typed.
+    /// On every local session, with this text typed in the search box.
     Search(String),
 }
 
-/// Reads every local session once, the first time the search line opens.
+/// Reads every local session once, the first time the list needs them.
 struct Catalog<L> {
     load: Option<L>,
     found: Vec<Found>,
@@ -37,8 +37,8 @@ impl<L: FnOnce() -> Result<Vec<Found>>> Catalog<L> {
         Ok(&self.found)
     }
 
-    /// The rows to show: the pane's sessions, or, while the search line is
-    /// open, the matches for `query`.
+    /// The rows to list: the pane's sessions, or, once the user searches,
+    /// the matches for `query`.
     fn rows(&mut self, pane: &[Agent], query: Option<&str>) -> Result<Vec<Agent>> {
         match query {
             None => Ok(pane.to_vec()),
@@ -49,8 +49,8 @@ impl<L: FnOnce() -> Result<Vec<Found>>> Catalog<L> {
 
 /// Shows `pane`'s sessions, or the search results while the user searches,
 /// and returns the session the user resumes, or `None` when the user
-/// dismisses the picker. `load` reads every local session, and runs only if
-/// the search line opens.
+/// dismisses the picker. `limit` is how many sessions show before `ctrl+o`.
+/// `load` reads every local session, and runs only once the user types.
 ///
 /// # Errors
 ///
@@ -63,6 +63,7 @@ impl<L: FnOnce() -> Result<Vec<Found>>> Catalog<L> {
 pub(crate) fn choose(
     pane: &[Agent],
     start: Start,
+    limit: usize,
     load: impl FnOnce() -> Result<Vec<Found>>,
 ) -> Result<Option<Agent>> {
     let mut catalog = Catalog {
@@ -70,8 +71,8 @@ pub(crate) fn choose(
         found: Vec::new(),
     };
     let mut state = match start {
-        Start::Pane => State::new(pane.len()),
-        Start::Search(query) => State::searching(query),
+        Start::Pane => State::new(pane.len(), limit),
+        Start::Search(query) => State::searching(query, limit),
     };
     let mut rows = catalog.rows(pane, state.query())?;
     state.set_len(rows.len());
@@ -111,9 +112,6 @@ pub(crate) fn choose(
             Step::Dismiss => return Ok(None),
             Step::Filter => {
                 rows = catalog.rows(pane, state.query())?;
-                if state.query().is_none() && rows.is_empty() {
-                    return Ok(None);
-                }
                 state.set_len(rows.len());
                 offset = 0;
             }

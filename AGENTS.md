@@ -11,7 +11,8 @@ The README describes the behaviour; this file holds the rules for changing it.
    `record` deletes a file only after the Rex server has answered with its full block list; a failed or partial listing deletes nothing.
 3. `pick` and `find` draw on the terminal through stderr and write nothing to stdout.
    On a choice they restore the terminal, then replace their own process with `claude --resume <session id>` in the session's folder.
-   They exit non-zero, printing nothing, when there is no terminal, no index, nothing to resume, or the user dismisses the picker.
+   They exit non-zero, printing nothing, when there is no terminal, no index or nothing to resume.
+   When the user dismisses the picker, they exit non-zero and print one hint line on stderr.
 4. The binary starts `rex`, and on a choice becomes `claude`; it starts nothing else.
    Nothing resumes without a choice.
 5. The repository is public.
