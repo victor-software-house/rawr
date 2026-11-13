@@ -118,7 +118,7 @@ The closest first-party models are Claude Code's own supervisor, which defers it
    - Once every block has settled, the daemon checks every block once more right before the stop.
    - It then stops the Rex server, starts it again, and closes the drain.
    - On a timeout or any other failure, the daemon closes the drain, so no session goes on winding down for a restart that will not come.
-   - The mod tells a session that acknowledged a cancelled drain that work can go on.
+   - The mod tells every session it delivered a cancelled drain to, acknowledged or not, that work can go on.
    - Interrupting `rawr restart` with `ctrl+c` cancels the restart and closes its drain.
    - At start, the daemon closes any drain it finds open, unless its restart record says a restart is pending, in which case it resumes the wait.
    - `drain.yaml` records the daemon's process ID and start time; a drain whose owner is gone is stale, delivers nothing, and goes at the next daemon start.

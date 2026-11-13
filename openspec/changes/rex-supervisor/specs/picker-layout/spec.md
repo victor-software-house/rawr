@@ -15,6 +15,16 @@ The picker SHALL show at most `picker.rows` sessions and, only when more session
 - **WHEN** a pane's index lists seven sessions and `picker.rows` is 3
 - **THEN** three rows show, then `+4 earlier · ctrl+o`, and `ctrl+o` shows all seven
 
+#### Scenario: No more sessions than rows
+
+- **WHEN** a pane's index lists two sessions and `picker.rows` is 3
+- **THEN** two rows show, and no `earlier` row
+
+#### Scenario: As many sessions as rows
+
+- **WHEN** a pane's index lists three sessions and `picker.rows` is 3
+- **THEN** three rows show, and no `earlier` row
+
 ### Requirement: Search box at the bottom
 
 The picker SHALL draw its search box at the bottom of the screen, under the list, with the key line under the box.
@@ -32,13 +42,3 @@ After Esc, `q` or `ctrl+c`, `rawr pick` SHALL print one line on stderr naming `r
 
 - **WHEN** the picker is open and the user presses Esc
 - **THEN** stderr ends with `rawr pick reopens this pane's sessions · rawr find searches all`
-
-#### Scenario: No more sessions than rows
-
-- **WHEN** a pane's index lists two sessions and `picker.rows` is 3
-- **THEN** two rows show, and no `earlier` row
-
-#### Scenario: As many sessions as rows
-
-- **WHEN** a pane's index lists three sessions and `picker.rows` is 3
-- **THEN** three rows show, and no `earlier` row

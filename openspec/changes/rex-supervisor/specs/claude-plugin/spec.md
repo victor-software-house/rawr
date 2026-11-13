@@ -31,11 +31,11 @@ The rawr mod SHALL read `$XDG_STATE_HOME/rawr/drain.yaml` every 2 seconds and de
 
 ### Requirement: Tell a session its drain was cancelled
 
-When a drain the session acknowledged closes without a restart, the rawr mod SHALL clear its `ui.status` and append one notice before the session's next step that the restart was cancelled and work can go on.
+When a drain the mod delivered to the session closes without a restart, whether or not the session has acknowledged it yet, the rawr mod SHALL clear its `ui.status` and append one notice before the session's next step that the restart was cancelled and work can go on.
 
 #### Scenario: The restart timed out
 
-- **WHEN** a session acknowledged `d-7a21` and the daemon closes `d-7a21` after `restart.wait` expires
+- **WHEN** the mod delivered `d-7a21` to a session still mid-turn, and the daemon closes `d-7a21` after `restart.wait` expires
 - **THEN** the session's next turn starts with the cancellation notice
 
 ### Requirement: Acknowledge when the carrying turn ends
