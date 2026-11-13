@@ -8,6 +8,7 @@ pub(crate) mod facts;
 pub(crate) mod feed;
 mod markup;
 mod report;
+mod shell;
 pub(crate) mod state;
 mod theme;
 mod view;

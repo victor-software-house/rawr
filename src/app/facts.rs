@@ -33,7 +33,8 @@ pub(crate) struct Facts {
     pub(crate) agents: usize,
     /// The session's task list as it stands, from its task and to-do calls.
     pub(crate) tasks: Vec<Task>,
-    /// The files it edited or wrote, the most recent last, with how often.
+    /// The files it changed, through its edit tools or a shell command
+    /// that plainly writes them, the most recent last, with how often.
     pub(crate) files: Vec<(String, usize)>,
     /// The files it read, the most recent last, with how often.
     #[serde(default)]
@@ -398,15 +399,21 @@ impl Stretch {
     }
 }
 
+/// How many files the facts keep in each of their lists: more than the
+/// entries, since a session's scratch files would push its own out.
+const FILES: usize = 1000;
+
 /// Counts `count` more uses of `path` in `list`, which moves it to the
-/// end, as the most recent, keeping the last [`KEEP`].
+/// end, as the most recent, keeping the last [`FILES`].
 fn touch(list: &mut Vec<(String, usize)>, path: &str, count: usize) {
     let before = list
         .iter()
         .position(|(file, _)| file == path)
         .map_or(0, |index| list.remove(index).1);
     list.push((path.to_owned(), before + count));
-    trim(list);
+    if list.len() > FILES {
+        list.drain(..list.len() - FILES);
+    }
 }
 
 /// Keeps the last [`KEEP`] of `list`.
@@ -938,6 +945,12 @@ fn call(stretch: &mut Stretch, at: Option<&str>, cwd: Option<&str>, part: &Part<
         "Read" => {
             if let Some(path) = input.file_path.as_deref() {
                 touch(&mut facts.read, path, 1);
+            }
+        }
+        // What a shell command plainly writes counts as changed.
+        "Bash" => {
+            for path in super::shell::writes(input.command.as_deref().unwrap_or_default(), cwd) {
+                touch(&mut facts.files, &path, 1);
             }
         }
         _ => {}
