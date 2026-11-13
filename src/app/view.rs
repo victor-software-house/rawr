@@ -19,7 +19,9 @@ use ratatui::widgets::{
 
 use crate::app::facts::{Facts, Pr, Said};
 use crate::app::feed::Pane;
-use crate::app::state::{self, App, Arrangement, Button, Focus, Link, Scroll, Tab, Target};
+use crate::app::state::{
+    self, App, Arrangement, Button, Focus, Grip, Link, Scroll, Tab, Target, Under,
+};
 use crate::app::theme;
 use crate::session::Agent;
 use crate::status::Status;
@@ -30,10 +32,6 @@ const RAIL: u16 = 5;
 /// The narrowest a column draws in full; narrower, it draws as a rail.
 const FULL: u16 = 28;
 
-/// How wide the panes and the sessions grow when focused, so the column to
-/// their right gets the rest of a wide screen.
-const CAPS: [u16; 3] = [64, 76, u16::MAX];
-
 /// How many columns a view slides in from in the single arrangement.
 const SLIDE: f32 = 10.0;
 
@@ -43,8 +41,10 @@ const SLIDE: f32 = 10.0;
 pub(crate) struct Hits {
     targets: Vec<(Rect, Target)>,
     lists: Vec<(Rect, Focus)>,
-    /// The folded columns, which open when the pointer comes over them.
+    /// The folded columns, which draw out when the pointer comes over them.
     rails: Vec<(Rect, Focus)>,
+    /// The drawn-out column, over the others.
+    drawer: Option<Rect>,
     /// The screen's size.
     pub(crate) width: u16,
     pub(crate) height: u16,
@@ -63,20 +63,22 @@ impl Hits {
             .map(|(_, target)| *target)
     }
 
-    pub(crate) fn rail(&self, column: u16, row: u16) -> Option<Focus> {
+    /// What lies at `column`, `row`.
+    pub(crate) fn under(&self, column: u16, row: u16) -> Under {
         let at = Position::new(column, row);
-        self.rails
-            .iter()
-            .find(|(area, _)| area.contains(at))
-            .map(|(_, focus)| *focus)
-    }
-
-    pub(crate) fn list(&self, column: u16, row: u16) -> Option<Focus> {
-        let at = Position::new(column, row);
-        self.lists
-            .iter()
-            .find(|(area, _)| area.contains(at))
-            .map(|(_, focus)| *focus)
+        let find = |areas: &[(Rect, Focus)]| {
+            areas
+                .iter()
+                .find(|(area, _)| area.contains(at))
+                .map(|(_, focus)| *focus)
+        };
+        Under {
+            target: self.target(column, row),
+            list: find(&self.lists),
+            rail: find(&self.rails),
+            drawer: self.drawer.is_some_and(|area| area.contains(at)),
+            size: (self.width, self.height),
+        }
     }
 
     fn add(&mut self, area: Rect, target: Target) {
@@ -168,15 +170,18 @@ fn rule(frame: &mut Frame<'_>, area: Rect, style: Style) {
 // The rails arrangement.
 
 /// Each column's width when `focus` has settled, of `total` columns.
-fn widths(focus: Focus, total: u16) -> [u16; 3] {
+/// The focused column takes the width it wants, the next one the rest
+/// when that is enough to draw in full, and the others fold to rails.
+fn widths(focus: Focus, total: u16, wants: [u16; 3]) -> [u16; 3] {
     let at = focus.column();
     let mut out = [RAIL; 3];
     let wide = total.saturating_sub(2 * RAIL);
     out[at] = wide;
     if at < 2 {
-        let spare = wide.saturating_sub(CAPS[at]);
+        let want = wants[at].min(wide);
+        let spare = wide.saturating_sub(want);
         if spare + RAIL >= FULL {
-            out[at] = CAPS[at];
+            out[at] = want;
             out[at + 1] = RAIL + spare;
         }
     }
@@ -199,8 +204,10 @@ fn blend(from: [u16; 3], to: [u16; 3], progress: f32, total: u16) -> [u16; 3] {
 
 fn rails(frame: &mut Frame<'_>, app: &App, area: Rect, shown: Shown<'_>, hits: &mut Hits) {
     let total = area.width.saturating_sub(2);
-    let to = widths(app.at(), total);
-    let from = app.moved.map_or(to, |(was, _)| widths(was, total));
+    let to = widths(app.at(), total, app.wants);
+    let from = app
+        .moved
+        .map_or(to, |(was, _)| widths(was, total, app.wants));
     let [a, b, c] = blend(from, to, app.progress(), total);
     let [first, edge_a, second, edge_b, third] = Layout::horizontal([
         Constraint::Length(a),
@@ -210,13 +217,19 @@ fn rails(frame: &mut Frame<'_>, app: &App, area: Rect, shown: Shown<'_>, hits: &
         Constraint::Length(c),
     ])
     .areas(area);
-    for edge in [edge_a, edge_b] {
-        let lines: Vec<Line<'static>> = (0..edge.height)
-            .map(|_| Line::styled("│", theme::line()))
-            .collect();
-        frame.render_widget(Paragraph::new(lines), edge);
+    let rects = [first, second, third];
+    // An edge moves when the column to its left is drawn in full; the
+    // session column takes what is left, so its own edge never moves.
+    for (index, edge) in [edge_a, edge_b].into_iter().enumerate() {
+        let left = rects[index];
+        let grip = (left.width >= FULL && index < 2).then(|| Grip {
+            column: Focus::COLUMNS[index],
+            anchor: left.x,
+            rightward: true,
+        });
+        edge_line(frame, app, edge, grip, hits);
     }
-    for (column, rect) in Focus::COLUMNS.into_iter().zip([first, second, third]) {
+    for (column, rect) in Focus::COLUMNS.into_iter().zip(rects) {
         if rect.width == 0 || rect.height < 3 {
             continue;
         }
@@ -226,6 +239,93 @@ fn rails(frame: &mut Frame<'_>, app: &App, area: Rect, shown: Shown<'_>, hits: &
             header(frame, app, column, rect, hits);
             view(frame, app, column, below(rect, 2), shown, hits);
         }
+    }
+    if let Some((column, out)) = app.drawn()
+        && let Some(rail) = rects.get(column.column()).filter(|rail| rail.width < FULL)
+    {
+        drawer(frame, app, (area, *rail), (column, out), shown, hits);
+    }
+}
+
+/// A column drawn out from its rail over the others: towards the focused
+/// column, as far as the width it wants, `out` of the way there.
+fn drawer(
+    frame: &mut Frame<'_>,
+    app: &App,
+    (area, rail): (Rect, Rect),
+    (column, out): (Focus, f32),
+    shown: Shown<'_>,
+    hits: &mut Hits,
+) {
+    let rightward = column.column() < app.at().column();
+    let full = app.wants[column.column()].min(area.width.saturating_sub(RAIL));
+    #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let wide = (f32::from(RAIL) + (f32::from(full) - f32::from(RAIL)) * out)
+        .round()
+        .max(0.0) as u16;
+    // The drawer and the edge it is dragged by.
+    let (body, edge) = if rightward {
+        let body = Rect {
+            width: wide.min(area.right().saturating_sub(rail.x + 1)),
+            ..rail
+        };
+        let edge = Rect {
+            x: body.right(),
+            width: 1,
+            ..rail
+        };
+        (body, edge)
+    } else {
+        let x = rail.right().saturating_sub(wide).max(area.x + 1);
+        let body = Rect {
+            x,
+            width: rail.right() - x,
+            ..rail
+        };
+        let edge = Rect {
+            x: x - 1,
+            width: 1,
+            ..rail
+        };
+        (body, edge)
+    };
+    let whole = body.union(edge);
+    hits.cover(whole);
+    frame.render_widget(Clear, whole);
+    if body.width < FULL {
+        rail_view(frame, app, column, body, shown, hits);
+    } else {
+        header(frame, app, column, body, hits);
+        view(frame, app, column, below(body, 2), shown, hits);
+    }
+    let grip = Grip {
+        column,
+        anchor: if rightward { body.x } else { body.right() },
+        rightward,
+    };
+    edge_line(frame, app, edge, Some(grip), hits);
+    hits.drawer = Some(whole);
+}
+
+/// A column's edge: a thin rule, which lights while hovered or dragged
+/// when `grip` lets it move.
+fn edge_line(frame: &mut Frame<'_>, app: &App, area: Rect, grip: Option<Grip>, hits: &mut Hits) {
+    let lit = grip.is_some_and(|grip| {
+        app.dragging.is_some_and(|held| held.column == grip.column)
+            || app.hover == Some(Target::Edge(grip))
+    });
+    let (glyph, style) = if lit {
+        ("┃", Style::new().fg(theme::ACCENT))
+    } else {
+        ("│", theme::line())
+    };
+    let lines: Vec<Line<'static>> = (0..area.height)
+        .map(|_| Line::styled(glyph, style))
+        .collect();
+    frame.render_widget(Paragraph::new(lines), area);
+    if let Some(grip) = grip {
+        // Before the rows, so the edge's own column always takes the drag.
+        hits.targets.insert(0, (area, Target::Edge(grip)));
     }
 }
 
@@ -288,9 +388,23 @@ const fn names(column: Focus) -> (&'static str, &'static str) {
     }
 }
 
-/// A folded column: its key, then a glyph per row, or the session's tabs.
-/// A click on a row selects it; anywhere else focuses the column.
+/// A folded column, which draws out while the pointer is on it.
 fn rail(
+    frame: &mut Frame<'_>,
+    app: &App,
+    column: Focus,
+    area: Rect,
+    shown: Shown<'_>,
+    hits: &mut Hits,
+) {
+    rail_view(frame, app, column, area, shown, hits);
+    hits.rails.push((area, column));
+}
+
+/// A folded column's face: its key, then a glyph per row, or the
+/// session's tabs. A click on a row selects it; anywhere else focuses the
+/// column.
+fn rail_view(
     frame: &mut Frame<'_>,
     app: &App,
     column: Focus,
@@ -407,7 +521,6 @@ fn rail(
         }
     }
     hits.add(area, Target::Column(column));
-    hits.rails.push((area, column));
 }
 
 /// One column's content.
@@ -698,7 +811,7 @@ fn pane_row(frame: &mut Frame<'_>, app: &App, index: usize, cell: Rect) {
         return;
     };
     let selected = index == app.pane;
-    let focused = app.at() == Focus::Panes;
+    let focused = app.at() == Focus::Panes || app.out(Focus::Panes);
     let hovered = app.hover == Some(Target::Pane(index));
     let age = short_age(pane.sessions.first().and_then(|(agent, _)| agent.idle));
     let width = usize::from(cell.width);

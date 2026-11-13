@@ -110,7 +110,7 @@ pub(crate) fn run(view: Option<u64>) -> Result<Option<Agent>> {
             replacing = false;
             daemon.send(ToDaemon::Drawn);
         }
-        screen.set_pointer(if app.hover.is_some() {
+        screen.set_pointer(if app.hover.is_some() || app.dragging.is_some() {
             Pointer::Hand
         } else {
             Pointer::Default
@@ -141,13 +141,9 @@ pub(crate) fn run(view: Option<u64>) -> Result<Option<Agent>> {
         for msg in first.into_iter().chain(receive.try_iter()) {
             let action = match msg {
                 Msg::Input(Event::Key(key)) => app.on_key(key),
-                Msg::Input(Event::Mouse(mouse)) => app.on_mouse(
-                    mouse,
-                    hits.target(mouse.column, mouse.row),
-                    hits.list(mouse.column, mouse.row),
-                    hits.rail(mouse.column, mouse.row),
-                    (hits.width, hits.height),
-                ),
+                Msg::Input(Event::Mouse(mouse)) => {
+                    app.on_mouse(mouse, hits.under(mouse.column, mouse.row))
+                }
                 Msg::Input(Event::Paste(text)) => app.on_paste(&text),
                 Msg::Input(Event::FocusLost) => {
                     app.on_blur();

@@ -125,10 +125,49 @@ pub(crate) enum Target {
     Tab(Tab),
     /// The line that stands for a pane's untitled scratch sessions.
     Scratch,
+    /// The edge of a column, which a drag moves.
+    Edge(Grip),
+}
+
+/// A column's movable edge: the column it sizes, and where the column
+/// starts, from which a drag measures the new width.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Grip {
+    pub(crate) column: Focus,
+    /// The column's fixed side: its left edge when it grows rightwards, its
+    /// right edge otherwise.
+    pub(crate) anchor: u16,
+    pub(crate) rightward: bool,
+}
+
+/// A folded column drawn out over the others while the pointer is on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Drawer {
+    pub(crate) column: Focus,
+    /// When it started opening or closing.
+    at: Instant,
+    open: bool,
+}
+
+/// What lies under the pointer, as the last frame drew it.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct Under {
+    pub(crate) target: Option<Target>,
+    /// The list the wheel scrolls there.
+    pub(crate) list: Option<Focus>,
+    /// The folded column there.
+    pub(crate) rail: Option<Focus>,
+    /// Whether the pointer is over the open drawer.
+    pub(crate) drawer: bool,
+    /// The screen's width and height.
+    pub(crate) size: (u16, u16),
 }
 
 /// How long a change of focus takes to settle on screen.
 pub(crate) const MOVE: Duration = Duration::from_millis(160);
+
+/// The narrowest a column may be dragged.
+pub(crate) const NARROWEST: u16 = 28;
 
 /// How many lines one wheel notch moves a list.
 const WHEEL: i16 = 2;
@@ -181,6 +220,12 @@ pub(crate) struct App {
     pub(crate) want: Option<String>,
     /// The panes, sessions, session and results, in that order.
     scrolls: [Scroll; 4],
+    /// The width each column takes when it has focus or is drawn out; the
+    /// session column takes the rest when it has focus.
+    pub(crate) wants: [u16; 3],
+    pub(crate) drawer: Option<Drawer>,
+    /// The edge being dragged.
+    pub(crate) dragging: Option<Grip>,
 }
 
 /// A list's place in [`App::scrolls`].
@@ -218,8 +263,10 @@ impl App {
             panes: Vec::new(),
             pane: 0,
             session: 0,
-            focus: Focus::Panes,
-            back: Focus::Panes,
+            // The panes fold to a rail that draws out under the pointer, so
+            // the sessions have the width.
+            focus: Focus::Sessions,
+            back: Focus::Sessions,
             arrangement: Arrangement::Rails,
             tab: Tab::Overview,
             moved: None,
@@ -239,6 +286,9 @@ impl App {
             show_scratch: false,
             want: None,
             scrolls: [Scroll::default(); 4],
+            wants: [48, 60, 72],
+            drawer: None,
+            dragging: None,
         }
     }
 
@@ -283,13 +333,68 @@ impl App {
         self.panes.iter().any(|pane| pane.status == Status::Working) || self.moving()
     }
 
-    /// Moves focus to `column`, marking the move for the screen.
+    /// Moves focus to `column`, marking the move for the screen. The
+    /// columns reflow, so a drawer has nothing left to cover.
     fn focus_on(&mut self, column: Focus) {
         if column != self.focus {
             self.moved = Some((self.focus, Instant::now()));
             self.focus = column;
             self.filtering = false;
+            self.drawer = None;
         }
+    }
+
+    /// How far the drawer is out, from 0 to 1, eased; none once it has shut.
+    pub(crate) fn drawn(&self) -> Option<(Focus, f32)> {
+        let drawer = self.drawer?;
+        let t = (drawer.at.elapsed().as_secs_f32() / MOVE.as_secs_f32()).min(1.0);
+        let eased = 1.0 - (1.0 - t).powi(3);
+        if drawer.open {
+            Some((drawer.column, eased))
+        } else if t < 1.0 {
+            Some((drawer.column, 1.0 - eased))
+        } else {
+            None
+        }
+    }
+
+    /// Draws `column` out, or shuts the drawer when `column` is none,
+    /// starting from where the drawer is now so a reversal never jumps.
+    fn draw_out(&mut self, column: Option<Focus>) {
+        let now = self.drawn();
+        let (target, open) = match (column, now) {
+            (Some(column), _) => (column, true),
+            (None, Some((column, _))) => (column, false),
+            (None, None) => {
+                self.drawer = None;
+                return;
+            }
+        };
+        if self
+            .drawer
+            .is_some_and(|drawer| drawer.column == target && drawer.open == open)
+        {
+            return;
+        }
+        // Start the curve where the drawer stands: an out-ness `o` sits at
+        // time `1 - cbrt(1 - o)` opening, and `1 - cbrt(o)` closing.
+        let out = match now {
+            Some((column, out)) if column == target => out,
+            _ => 0.0,
+        };
+        let t = if open {
+            1.0 - (1.0 - out).cbrt()
+        } else {
+            1.0 - out.cbrt()
+        };
+        let at = Instant::now()
+            .checked_sub(MOVE.mul_f32(t))
+            .unwrap_or_else(Instant::now);
+        self.drawer = Some(Drawer {
+            column: target,
+            at,
+            open,
+        });
     }
 
     /// Takes a new list of panes, sorted by attention, and keeps the
@@ -390,6 +495,7 @@ impl App {
     /// Whether focus is still moving on screen, so frames come fast.
     pub(crate) fn moving(&self) -> bool {
         self.moved.is_some_and(|(_, at)| at.elapsed() < MOVE)
+            || self.drawer.is_some_and(|drawer| drawer.at.elapsed() < MOVE)
     }
 
     /// The session `r` resumes: the one shown, or the selected pane's newest
@@ -607,17 +713,9 @@ impl App {
         }
     }
 
-    /// Handles a mouse report. `hit` is what the last frame drew under the
-    /// pointer, `list` the list under it, `rail` the folded column under
-    /// it, and `size` the screen's size.
-    pub(crate) fn on_mouse(
-        &mut self,
-        mouse: MouseEvent,
-        hit: Option<Target>,
-        list: Option<Focus>,
-        rail: Option<Focus>,
-        size: (u16, u16),
-    ) -> Action {
+    /// Handles a mouse report; `under` is what the last frame drew under
+    /// the pointer.
+    pub(crate) fn on_mouse(&mut self, mouse: MouseEvent, under: Under) -> Action {
         if self.help {
             if matches!(mouse.kind, MouseEventKind::Down(_)) {
                 self.help = false;
@@ -630,21 +728,43 @@ impl App {
                 // in its padding or beyond, with the position clamped to the
                 // outermost cells. A report there may be the pointer outside,
                 // so the outermost ring never hovers.
-                let (width, height) = size;
+                let (width, height) = under.size;
                 let edge = mouse.column == 0
                     || mouse.row == 0
                     || mouse.column + 1 >= width
                     || mouse.row + 1 >= height;
-                self.hover = if edge { None } else { hit };
-                // A folded column opens as soon as the pointer is over it.
-                // Not while the columns move, or a column folding under the
-                // pointer would open again.
-                if !edge
-                    && !self.moving()
-                    && self.focus != Focus::Search
-                    && let Some(column) = rail
-                {
-                    self.focus_on(column);
+                self.hover = if edge { None } else { under.target };
+                // A folded column draws out while the pointer is on it, and
+                // goes back when the pointer leaves it.
+                if self.focus != Focus::Search {
+                    let open = self
+                        .drawer
+                        .filter(|drawer| drawer.open)
+                        .map(|drawer| drawer.column);
+                    if edge {
+                        self.draw_out(None);
+                    } else if let Some(column) = under.rail {
+                        self.draw_out(Some(column));
+                    } else if under.drawer {
+                        // Back over a drawer that was shutting: it opens again.
+                        let column = self.drawer.map(|drawer| drawer.column);
+                        self.draw_out(column);
+                    } else if open.is_some() {
+                        self.draw_out(None);
+                    }
+                }
+                Action::None
+            }
+            MouseEventKind::Drag(MouseButton::Left) => {
+                if let Some(grip) = self.dragging {
+                    let wide = if grip.rightward {
+                        mouse.column.saturating_sub(grip.anchor) + 1
+                    } else {
+                        grip.anchor.saturating_sub(mouse.column)
+                    };
+                    self.wants[grip.column.column()] = wide.max(NARROWEST);
+                    // A drag follows the pointer, with nothing easing.
+                    self.moved = None;
                 }
                 Action::None
             }
@@ -654,41 +774,57 @@ impl App {
                 } else {
                     -1
                 };
-                if let Some(list) = list {
+                if let Some(list) = under.list {
                     self.scroll(list, by);
                 }
                 Action::None
             }
             MouseEventKind::Down(MouseButton::Left) => {
                 self.notice = None;
-                hit.map_or(Action::None, |target| self.click(target))
+                under
+                    .target
+                    .map_or(Action::None, |target| self.click(target))
             }
             MouseEventKind::Up(_) => {
-                self.hover = hit;
+                self.dragging = None;
+                self.hover = under.target;
                 Action::None
             }
             _ => Action::None,
         }
     }
 
+    /// Whether `column` is drawn out over the others.
+    pub(crate) fn out(&self, column: Focus) -> bool {
+        self.drawer
+            .is_some_and(|drawer| drawer.open && drawer.column == column)
+    }
+
     fn click(&mut self, target: Target) -> Action {
         match target {
             Target::Pane(index) => {
-                if self.focus == Focus::Panes && self.pane == index {
+                let here = self.focus == Focus::Panes || self.out(Focus::Panes);
+                if here && self.pane == index {
                     return self.go_to();
                 }
-                self.focus_on(Focus::Panes);
+                // A pick in the drawer leaves focus where it was.
+                if !self.out(Focus::Panes) {
+                    self.focus_on(Focus::Panes);
+                }
                 self.pane = index;
                 self.session = self.first_session();
                 *self.scroll_mut(Focus::Sessions) = Scroll::default();
                 Action::None
             }
             Target::Session(index) => {
-                if self.focus == Focus::Sessions && self.session == index {
+                let here = self.focus == Focus::Sessions || self.out(Focus::Sessions);
+                if here && self.session == index {
                     self.focus_on(Focus::Session);
                     return Action::None;
                 }
-                self.focus_on(Focus::Sessions);
+                if !self.out(Focus::Sessions) {
+                    self.focus_on(Focus::Sessions);
+                }
                 self.session = index;
                 *self.scroll_mut(Focus::Session) = Scroll::default();
                 Action::None
@@ -724,6 +860,10 @@ impl App {
                 self.keep_visible();
                 Action::None
             }
+            Target::Edge(grip) => {
+                self.dragging = Some(grip);
+                Action::None
+            }
         }
     }
 
@@ -753,6 +893,7 @@ impl App {
     /// The window lost focus: nothing is hovered.
     pub(crate) fn on_blur(&mut self) {
         self.hover = None;
+        self.draw_out(None);
     }
 
     pub(crate) fn set_results(&mut self, results: Vec<Hit>) {
@@ -908,6 +1049,7 @@ pub(crate) struct Carry {
     filters: [String; 3],
     show_scratch: bool,
     panes_top: u16,
+    wants: [u16; 3],
 }
 
 impl App {
@@ -922,6 +1064,7 @@ impl App {
             filters: self.filters.clone(),
             show_scratch: self.show_scratch,
             panes_top: self.scroll_of(Focus::Panes).top,
+            wants: self.wants,
         }
     }
 
@@ -937,6 +1080,7 @@ impl App {
         self.filters = carry.filters;
         self.show_scratch = carry.show_scratch;
         self.scroll_mut(Focus::Panes).top = carry.panes_top;
+        self.wants = carry.wants;
         self.focus == Focus::Search && !self.query.trim().is_empty()
     }
 }
