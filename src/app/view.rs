@@ -1032,7 +1032,12 @@ fn pane_view(frame: &mut Frame<'_>, app: &App, area: Rect, shown: Shown<'_>, hit
         }
     }
     scrollbar(frame, content, skip, total);
-    frame.render_widget(Paragraph::new(lines).scroll((skip, 0)), text);
+    frame.render_widget(
+        Paragraph::new(lines)
+            .style(Style::new().fg(theme::TEXT))
+            .scroll((skip, 0)),
+        text,
+    );
     if let Some(at) = prs_at.and_then(|at| u16::try_from(at).ok())
         && at >= skip
         && at - skip < text.height
@@ -1539,7 +1544,11 @@ fn marks(kind: &Kind) -> (Vec<Span<'static>>, &'static str, Style) {
                 "killed" => Style::new().fg(theme::WARNING),
                 _ => Style::new(),
             };
-            (vec![Span::styled("⏺ ", tone)], "", Style::new())
+            (
+                vec![Span::styled("⏺ ", tone)],
+                "",
+                Style::new().fg(theme::QUIET),
+            )
         }
         Kind::Message { from } => (vec![name(from)], "", Style::new()),
         Kind::Idle { from, how } => {
