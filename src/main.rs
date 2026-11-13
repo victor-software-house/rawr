@@ -20,6 +20,7 @@ use ctl_core::prelude::*;
 use ctl_core::shell::{self, Script};
 use serde::Serialize;
 
+use crate::config::Config;
 use crate::index::{BlockId, HookInput, PaneIndex};
 use crate::picker::Start;
 use crate::session::Agent;
@@ -144,17 +145,21 @@ fn current_block() -> Result<Option<BlockId>> {
     }
 }
 
-/// Adds the hook's session to this pane's index, then drops the entries of
-/// panes the Rex server no longer has. Outside Rex it does nothing.
+/// Adds the hook's session to this pane's index, drops the entries whose
+/// transcript is gone, then drops the entries of panes the Rex server no
+/// longer has. Outside Rex it does nothing, and reads no config.
 fn record() -> Result<()> {
     let Some(block) = current_block()? else {
         return Ok(());
     };
+    let config = Config::load()?;
     let input: HookInput =
         serde_json::from_reader(std::io::stdin().lock()).context("read the hook input on stdin")?;
     let dir = index::state_dir()?;
+    let now = index::unix_now();
     let mut pane = PaneIndex::load(&dir, &block)?;
-    pane.add(input.into_entry());
+    pane.prune_missing(now);
+    pane.add(input.into_entry(now), config.history.per_pane);
     pane.save(&dir, &block)?;
     index::prune(&dir)
 }
@@ -164,7 +169,8 @@ fn pane_agents(live: &HashSet<String>) -> Result<Vec<Agent>> {
     let Some(block) = current_block()? else {
         return Ok(Vec::new());
     };
-    let pane = PaneIndex::load(&index::state_dir()?, &block)?;
+    let mut pane = PaneIndex::load(&index::state_dir()?, &block)?;
+    pane.prune_missing(index::unix_now());
     Ok(session::resumable(pane.entries(), live))
 }
 

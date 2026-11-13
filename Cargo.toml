@@ -17,7 +17,11 @@ clap = { version = "4.6.7", features = ["derive"] }
 ctl-core = { version = "=0.7.4", default-features = false, features = [
   "app",
   "completion",
+  "input",
 ] }
+# ctl-core's `input` loader validates a type that derives garde's `Validate`,
+# whose expansion names `::garde`; ctl-core pins the same version.
+garde = { version = "0.23.0", default-features = false, features = ["derive"] }
 memchr = "2.8.3"
 ratatui = { version = "=0.30.2", default-features = false, features = [
   "crossterm_0_29",
