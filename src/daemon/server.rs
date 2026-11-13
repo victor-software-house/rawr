@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 
 use super::{Build, FromDaemon, Here, Reach, ToDaemon, actions, folder, socket};
-use crate::app::facts::Reading;
+use crate::app::facts::{self, Reading};
 use crate::app::feed::{self, Pane, Update};
 use crate::app::state::Carry;
 use crate::catalog::{self, Found};
@@ -407,12 +407,20 @@ fn read_facts(
     if reading.catch_up(&path).is_none() {
         return;
     }
+    // The task list Claude Code keeps wins over the one the calls give.
+    let tasks = facts::stored_tasks(&path);
     let mut sent: Option<Instant> = None;
     loop {
         let whole = reading.whole();
         let facts = || FromDaemon::Facts {
             path: path.clone(),
-            facts: reading.facts(),
+            facts: {
+                let mut facts = reading.facts();
+                if let Some(tasks) = &tasks {
+                    facts.tasks.clone_from(tasks);
+                }
+                facts
+            },
         };
         if whole {
             let _ = send.send(facts());
