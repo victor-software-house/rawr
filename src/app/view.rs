@@ -59,8 +59,7 @@ pub(crate) fn draw(frame: &mut Frame<'_>, app: &App) -> Hits {
         width: frame.area().width,
         ..Hits::default()
     };
-    let [body, footer] =
-        Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(frame.area());
+    let body = frame.area();
     let side = if app.folded { RAIL } else { app.sidebar };
     let [sidebar, edge, main] = Layout::horizontal([
         Constraint::Length(side),
@@ -74,15 +73,19 @@ pub(crate) fn draw(frame: &mut Frame<'_>, app: &App) -> Hits {
         side_panel(frame, app, sidebar, &mut hits);
     }
     edge_line(frame, app, edge, &mut hits);
-    let [content, search] =
-        Layout::vertical([Constraint::Fill(1), Constraint::Length(3)]).areas(main);
-    let content = pad(content, 2, 1);
+    let [content, search, footer] = Layout::vertical([
+        Constraint::Fill(1),
+        Constraint::Length(3),
+        Constraint::Length(1),
+    ])
+    .areas(main);
+    let content = pad(content, 1, 1);
     if app.focus == Focus::Search {
         results(frame, app, content, &mut hits);
     } else {
         detail(frame, app, content, &mut hits);
     }
-    search_box(frame, app, pad(search, 1, 0), &mut hits);
+    search_box(frame, app, search, &mut hits);
     footer_line(frame, app, footer, &mut hits);
     if app.help {
         hits.targets.clear();
@@ -259,7 +262,7 @@ fn pane_row(frame: &mut Frame<'_>, app: &App, index: usize, cell: Rect) {
         twin_tag(app, pane),
         if mine { " (here)" } else { "" }
     );
-    let room = usize::from(cell.width).saturating_sub(5 + age.chars().count() + 2);
+    let room = usize::from(cell.width).saturating_sub(4 + age.chars().count() + 2);
     let name = truncate(&pane.name, room.saturating_sub(tag.chars().count()));
     let gap = room.saturating_sub(name.chars().count() + tag.chars().count());
     let bar = if selected && app.focus == Focus::Panes {
@@ -282,7 +285,7 @@ fn pane_row(frame: &mut Frame<'_>, app: &App, index: usize, cell: Rect) {
                 theme::glyph(pane.status, app.frame),
                 theme::status(pane.status),
             ),
-            Span::raw("  "),
+            Span::raw(" "),
             Span::styled(name, name_style),
             Span::styled(tag, theme::dim()),
             Span::raw(" ".repeat(gap)),

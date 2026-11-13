@@ -69,8 +69,10 @@ pub(crate) fn run() -> Result<Option<Agent>> {
     let mut screen = Screen::enter_with(false)?;
     execute!(std::io::stderr(), SetCursorStyle::BlinkingBar).context("set the cursor shape")?;
     let mut reporter = Reporter::default();
+    let started = std::time::Instant::now();
     loop {
         reporter.send(own_status(&app))?;
+        app.frame = usize::try_from(started.elapsed().as_millis() / SPIN.as_millis()).unwrap_or(0);
         let mut hits = view::Hits::default();
         screen
             .terminal()
@@ -81,8 +83,14 @@ pub(crate) fn run() -> Result<Option<Agent>> {
         } else {
             Pointer::Default
         })?;
+        // The spinner follows the clock, so input arriving between ticks never
+        // holds it still.
+        let elapsed = started.elapsed();
+        let tick = elapsed.as_millis() / SPIN.as_millis();
+        app.frame = usize::try_from(tick).unwrap_or(0);
         let first = if app.animating() {
-            match receive.recv_timeout(SPIN) {
+            let next = SPIN.saturating_mul(u32::try_from(tick + 1).unwrap_or(u32::MAX));
+            match receive.recv_timeout(next.saturating_sub(elapsed)) {
                 Ok(msg) => Some(msg),
                 Err(mpsc::RecvTimeoutError::Timeout) => None,
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
@@ -92,9 +100,6 @@ pub(crate) fn run() -> Result<Option<Agent>> {
         } else {
             Some(receive.recv().context("the app's inputs closed")?)
         };
-        if first.is_none() {
-            app.frame = app.frame.wrapping_add(1);
-        }
         for msg in first.into_iter().chain(receive.try_iter()) {
             let action = match msg {
                 Msg::Input(Event::Key(key)) => app.on_key(key),
