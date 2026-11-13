@@ -105,6 +105,19 @@ queue:
       - Both OSC 7501 sequences match the protocol, proved by the unit test in CI
       - A background tab running rawr pick shows the dot, and the dot is gone after Esc
     plan: openspec/changes/pane-status/proposal.md
+
+  - id: RAWR-012
+    title: "Supervise Claude Code agents in Rex: status, drain, restart and install"
+    scope: supervisor
+    outcome: >-
+      rawr shows every Rex pane's Claude Code status, drains the sessions and
+      restarts the Rex server once every pane is idle, and installs from Homebrew with one
+      setup command
+    blocked_by: []
+    acceptance:
+      - The maintainer approves the rex-supervisor design and its open points are answered in it
+      - Each decision in the design maps to a row with its own OpenSpec change
+    plan: openspec/changes/rex-supervisor/proposal.md
 archive:
   - id: RAWR-002
     title: Parse and report through ctl-core
