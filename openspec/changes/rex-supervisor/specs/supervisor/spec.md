@@ -20,6 +20,16 @@ Show the state of every Claude Code session running in Rex, and restart the Rex 
 - **WHEN** a block's root record is `state=done:app=claude-code` and it has one child record `state=working`
 - **THEN** its row reads `Working`
 
+#### Scenario: A permission prompt while a background task runs
+
+- **WHEN** a block's root record is `state=blocked:app=claude-code:kind=permission` and it has one child record `state=working`
+- **THEN** its row reads `Needs input`
+
+#### Scenario: A finished background task
+
+- **WHEN** a block's root record is `state=idle:app=claude-code` and its one child record is `state=done`
+- **THEN** its row reads `Idle`
+
 #### Scenario: A pane whose Claude has exited
 
 - **WHEN** a block has no program status record and its index lists a session
@@ -27,7 +37,7 @@ Show the state of every Claude Code session running in Rex, and restart the Rex 
 
 ### Requirement: Restart waits for idle
 
-`rawr restart` SHALL open a drain, and SHALL stop and start the Rex server only when every live Claude block's current session has acknowledged the current drain ID and the block reads `Idle` or `Failed` with no child record on a check made right before the stop, or when `--force` is given.
+`rawr restart` SHALL open a drain, and SHALL stop and start the Rex server only when every live Claude block's current session has acknowledged the current drain ID and the block reads `Idle` or `Failed` with no child record in `working` on a check made right before the stop, or when `--force` is given.
 The set of live blocks SHALL change as Claude sessions start and exit during the drain.
 On a timeout, an interrupt or any other non-zero exit, `rawr restart` SHALL close the drain it opened.
 
@@ -38,7 +48,7 @@ On a timeout, an interrupt or any other non-zero exit, `rawr restart` SHALL clos
 
 #### Scenario: An idle block with no acknowledgement
 
-- **WHEN** block `block:0190f3a2-7c41-7e10-8b2d-5d9e6a4c1f08` reads `Idle` with no child record and has not acknowledged the current drain ID
+- **WHEN** block `block:0190f3a2-7c41-7e10-8b2d-5d9e6a4c1f08` reads `Idle` with no child record in `working` and has not acknowledged the current drain ID
 - **THEN** the daemon does not stop the Rex server
 
 #### Scenario: A second Claude in a pane that already acknowledged
@@ -63,7 +73,7 @@ On a timeout, an interrupt or any other non-zero exit, `rawr restart` SHALL clos
 
 #### Scenario: Every pane acknowledged and settled
 
-- **WHEN** every Claude block has acknowledged the drain and reads `Idle` or `Failed` with no child record
+- **WHEN** every Claude block has acknowledged the drain and reads `Idle` or `Failed` with no child record in `working`
 - **THEN** the daemon stops the Rex server, starts it again, and closes the drain
 
 #### Scenario: One pane stays busy past the wait

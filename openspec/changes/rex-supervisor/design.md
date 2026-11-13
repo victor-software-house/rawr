@@ -60,11 +60,14 @@ The closest first-party models are Claude Code's own supervisor, which defers it
 
    | Rex record | Word | Glyph |
    |:--|:--|:--|
-   | `working`, or any child record | Working | spinner |
    | `blocked` | Needs input | `✻` in the warning colour |
-   | `done` or `idle`, no child record | Idle | `✻` dimmed |
+   | `working`, or any child record in `working` | Working | spinner |
+   | `done` or `idle`, no child record in `working` | Idle | `✻` dimmed |
    | `error` | Failed | `∙` in the error colour |
    | no record, session in the index | Stopped | `∙` dimmed |
+
+   The first row that matches wins, so Needs input shows even while a background task runs, since the user has to act.
+   A child record that reports `done`, `idle` or `error` is a finished task and makes no block Working.
 
    rawr stops reading `~/.claude/sessions/<pid>.json`.
    Its format is not documented ([.claude directory][cc-dir]), and Rex already marks which blocks run a live Claude.
@@ -104,12 +107,12 @@ The closest first-party models are Claude Code's own supervisor, which defers it
 5. **A restart waits for idle, within a bound.**
    - `rawr restart` opens a drain.
    - The daemon then holds the restart until every live Claude block has settled, re-checking on each status event.
-   - A block has settled when it has acknowledged the drain's ID and reads Idle or Failed with no child record.
+   - A block has settled when it has acknowledged the drain's ID and reads Idle or Failed with no child record in `working`.
      Since the acknowledgement comes at the end of the hand-off turn, an Idle reading from before that turn started cannot count.
    - The set of blocks is live: a block whose Claude exits or whose pane closes leaves it, and a Claude that starts during the drain joins it.
    - A block that reads Needs input is named at once, so the user can answer it, and the wait goes on.
    - A block whose session has no rawr mod, such as one started before `rawr setup`, is named at once as one that cannot acknowledge.
-     It counts as settled once it has read Idle with no child record for `drain.grace` (default 1 minute).
+     It counts as settled once it has read Idle with no child record in `working` for `drain.grace` (default 1 minute).
    - Past `restart.wait` (default 5 minutes), the restart fails, closes the drain so no later session receives its request, and names each pane as busy, waiting on input, or not acknowledged.
    - Once every block has settled, the daemon checks every block once more right before the stop.
    - It then stops the Rex server, starts it again, and closes the drain.
