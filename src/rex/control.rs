@@ -151,25 +151,26 @@ impl Client {
     }
 
     /// Opens a floating layer at `bounds` in `window_id` that runs `command`,
-    /// and focuses it.
+    /// without focusing it, so the window and the app's view stay as they
+    /// are. Returns the new block's ID.
     ///
     /// # Errors
     ///
-    /// Fails when the server refuses the call.
+    /// Fails when the server refuses the call or creates no block.
     pub(crate) fn float_command(
         &mut self,
         session_id: &str,
         window_id: &str,
         bounds: [f64; 4],
         command: &[String],
-    ) -> Result<()> {
-        self.call::<_, IgnoredAny>(
+    ) -> Result<String> {
+        let created: Created = self.call(
             "session.new_layer",
             &json!({
                 "session_id": session_id,
                 "window_id": window_id,
                 "bounds": bounds,
-                "focus": true,
+                "focus": false,
                 "layout": { "block": {
                     "flavor": "com.superlogical.terminal.shell",
                     "label": "rawr",
@@ -177,8 +178,54 @@ impl Client {
                 } },
             }),
         )?;
+        created
+            .block_ids
+            .into_iter()
+            .next()
+            .context("Rex opened the layer with no block")
+    }
+
+    /// The size of the terminal in `block_id`: its columns and rows, and
+    /// the pixel size of one cell.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the server refuses the call.
+    pub(crate) fn terminal_size(&mut self, session_id: &str, block_id: &str) -> Result<Size> {
+        self.call(
+            "com.superlogical.terminal.size",
+            &json!({ "session_id": session_id, "block_id": block_id, "args": {} }),
+        )
+    }
+
+    /// Sizes the terminal in `block_id` to `size`. A terminal no app has
+    /// shown yet takes it at once.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the server refuses the call.
+    pub(crate) fn resize(&mut self, session_id: &str, block_id: &str, size: &Size) -> Result<()> {
+        self.call::<_, IgnoredAny>(
+            "com.superlogical.terminal.resize",
+            &json!({ "session_id": session_id, "block_id": block_id, "args": size }),
+        )?;
         Ok(())
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct Created {
+    #[serde(default)]
+    block_ids: Vec<String>,
+}
+
+/// A terminal's size, from `com.superlogical.terminal.size`.
+#[derive(Debug, Clone, Copy, Deserialize, serde::Serialize)]
+pub(crate) struct Size {
+    pub(crate) columns: u32,
+    pub(crate) rows: u32,
+    pub(crate) cell_width_px: u32,
+    pub(crate) cell_height_px: u32,
 }
 
 impl Client {

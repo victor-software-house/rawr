@@ -78,7 +78,7 @@ pub(crate) fn run(
     });
 
     let mut app = App::new(std::env::var("REX_BLOCK").ok());
-    app.want = select;
+    app.want.clone_from(&select);
     let mut found: Option<Arc<Vec<Found>>> = None;
     // One worker reads transcripts for the newest query only: each new
     // query bumps the generation, and the worker drops a stale one between
@@ -142,17 +142,13 @@ pub(crate) fn run(
             .draw(|frame| hits = view::draw(frame, &app, shown))
             .context("draw the app")?;
         app.settle(&hits.tops);
-        // The copy this one replaces stays until this one shows the panes.
+        // The copy this one replaces stays on screen until this one has drawn
+        // the panes; then this one takes its place.
         if matches!(app.link, Link::Live)
             && let Some((session, block)) = replace.take()
+            && let Err(error) = take_over(select.as_deref(), (&session, &block))
         {
-            thread::spawn(move || {
-                if let Ok(mut client) =
-                    Endpoint::from_environment().and_then(|at| Client::connect(&at))
-                {
-                    let _ = client.close_block(&session, &block);
-                }
-            });
+            app.notice = Some(format!("{error:#}"));
         }
         screen.set_pointer(if app.dragging || app.hover.is_some() {
             Pointer::Hand
@@ -293,12 +289,17 @@ fn own_status(app: &App) -> Report {
 }
 
 /// Shows `block_id` in the Rex app. When this app floats in another window,
-/// a new copy floats over the pane it went to, with the pane selected, and
-/// closes this one once its own first frame is drawn: the old copy stays on
-/// screen until the new one shows.
+/// it starts a copy of itself there instead, out of sight and at its own
+/// size, with the pane selected; the copy draws, then switches the view
+/// and closes this one (see [`take_over`]), so nothing blank or resizing is
+/// ever on screen.
 fn go_to(session_id: &str, block_id: &str) -> Result<()> {
     let mut client = Client::connect(&Endpoint::from_environment()?)?;
-    let window_id = reveal(&mut client, session_id, block_id)?;
+    let window_id = client
+        .view(session_id)?
+        .find(block_id)
+        .map(|(_, window, _)| window.window_id.clone())
+        .context("the pane is no longer in its session")?;
     let here = std::env::var("REX_SESSION").ok();
     let me = std::env::var("REX_BLOCK").ok();
     let floating = match (&here, &me) {
@@ -309,17 +310,18 @@ fn go_to(session_id: &str, block_id: &str) -> Result<()> {
             .map(|(_, _, layer)| layer.bounds),
         _ => None,
     };
-    client.show(
-        here.as_deref().unwrap_or(session_id),
-        session_id,
-        &window_id,
-    )?;
-    shown(&mut client, session_id, block_id, &window_id)?;
-    let (Some(bounds), Some(here), Some(me)) = (floating, here, me) else {
-        return Ok(());
+    let (Some(bounds), Some(here), Some(me)) = (floating, &here, &me) else {
+        reveal(&mut client, session_id, block_id)?;
+        client.show(
+            here.as_deref().unwrap_or(session_id),
+            session_id,
+            &window_id,
+        )?;
+        return shown(&mut client, session_id, block_id, &window_id);
     };
+    let size = client.terminal_size(here, me)?;
     let exe = std::env::current_exe().context("find the rawr binary")?;
-    client.float_command(
+    let copy = client.float_command(
         session_id,
         &window_id,
         bounds,
@@ -328,12 +330,34 @@ fn go_to(session_id: &str, block_id: &str) -> Result<()> {
             "--select".to_owned(),
             block_id.to_owned(),
             "--replace-session".to_owned(),
-            here,
+            here.clone(),
             "--replace-block".to_owned(),
-            me,
+            me.clone(),
         ],
     )?;
+    client.resize(session_id, &copy, &size)?;
     Ok(())
+}
+
+/// What a copy started by [`go_to`] does once it has drawn the panes: brings
+/// the pane it went to into view, focuses itself over it, asks the Rex app
+/// to show its window, and closes the copy it replaces, by that block's ID.
+fn take_over(select: Option<&str>, (old_session, old_block): (&str, &str)) -> Result<()> {
+    let mut client = Client::connect(&Endpoint::from_environment()?)?;
+    let session = std::env::var("REX_SESSION").context("rawr runs outside Rex")?;
+    let me = std::env::var("REX_BLOCK").context("rawr runs outside Rex")?;
+    if let Some(block) = select {
+        reveal(&mut client, &session, block)?;
+    }
+    client.focus_block(&session, &me)?;
+    let window_id = client
+        .view(&session)?
+        .find(&me)
+        .map(|(_, window, _)| window.window_id.clone())
+        .context("this copy is no longer in its session")?;
+    client.show(old_session, &session, &window_id)?;
+    shown(&mut client, &session, &me, &window_id)?;
+    client.close_block(old_session, old_block)
 }
 
 /// Brings `block_id` into view in its session: its window active, no other
