@@ -40,7 +40,7 @@ When a drain the mod delivered to the session closes without a restart, whether 
 
 ### Requirement: Acknowledge when the carrying turn ends
 
-The rawr mod SHALL acknowledge a drain request with the session's ID on `turn.complete` of the turn that carried it, whatever its `reason`: `answer`, `aborted`, `refusal` or `error`.
+The rawr mod SHALL acknowledge a drain request with the session's ID on `turn.complete` of the turn that carried it, whatever its `reason`: `answer`, `aborted`, `refusal` or `error`, except for a turn it cancelled under "Interrupt a turn that runs too long", which "Acknowledge an interrupted request after its hand-off" governs.
 
 #### Scenario: The hand-off turn ends in an error
 
@@ -49,13 +49,13 @@ The rawr mod SHALL acknowledge a drain request with the session's ID on `turn.co
 
 ### Requirement: Interrupt a turn that runs too long
 
-When a session that received a drain request through `$.session.append` has held it for `drain.interrupt` without its carrying turn ending, the rawr mod SHALL, once per request ID, cancel the running turn with `$.turn.abort` and submit the hand-off request with `$.prompt.submit`.
+When a session that received a drain request through `$.session.append` has held it for `drain.interrupt` without its carrying turn ending, the rawr mod SHALL, once per request ID, cancel the running turn with `$.turn.abort`, and SHALL then submit the hand-off as "Acknowledge an interrupted request after its hand-off" sets out.
 The submitted hand-off turn SHALL become the carrying turn and SHALL NOT be interrupted again.
 
 #### Scenario: A long build during a drain
 
 - **WHEN** `drain.interrupt` is `2m` and a session is still running a foreground build 2 minutes after `d-7a21` was appended
-- **THEN** the mod cancels the turn, the build stops, and the session starts its hand-off turn
+- **THEN** the mod cancels the turn, the build stops, and, once the cancelled turn completes with `reason` `aborted`, the session starts its hand-off turn
 
 #### Scenario: The hand-off turn itself runs long
 
