@@ -152,8 +152,13 @@ impl State {
         }
     }
 
-    /// Shows the whole list, or the first `limit` sessions again.
+    /// Shows the whole list, or the first `limit` sessions again; nothing
+    /// changes when the list has no more sessions than rows, or while the
+    /// box holds text, which shows every match anyway.
     fn toggle_expanded(&mut self) -> Step {
+        if !self.can_expand() {
+            return Step::Ignore;
+        }
         self.expanded = !self.expanded;
         self.selected = self.selected.min(self.visible().saturating_sub(1));
         self.hover = None;
@@ -463,6 +468,20 @@ mod tests {
             assert_eq!(state.earlier(), 0);
             assert!(!state.can_expand());
         }
+    }
+
+    #[test]
+    fn ctrl_o_does_nothing_when_it_would_show_nothing_more() {
+        for total in [2, 3] {
+            let mut state = State::new(total, ROWS);
+            assert_eq!(state.on_key(ctrl('o'), 1), Step::Ignore);
+            assert!(!state.expanded());
+        }
+
+        let mut state = State::new(7, ROWS);
+        type_text(&mut state, "shop");
+        assert_eq!(state.on_key(ctrl('o'), 1), Step::Ignore);
+        assert!(!state.expanded());
     }
 
     #[test]

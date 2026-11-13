@@ -63,7 +63,7 @@ impl<L: FnOnce() -> Result<Vec<Found>>> Catalog<L> {
 pub(crate) fn choose(
     pane: &[Agent],
     start: Start,
-    rows: usize,
+    limit: usize,
     load: impl FnOnce() -> Result<Vec<Found>>,
 ) -> Result<Option<Agent>> {
     let mut catalog = Catalog {
