@@ -27,20 +27,39 @@ commit-msg:
 # Hooks are the cheap local tier: no build, test, typecheck or type-aware
 # lint. The pull request's CI is the gate and runs all of them.
 pre-push:
-  # Each job is a script, .lefthook/pre-push/<name>, that runs one mise
-  # task. lefthook skips a pre-push command when `git diff HEAD @{push}` is
-  # empty, so a push of a branch other than the checked-out one ran no
-  # command; a script has no such skip.
-  scripts:
-    # Runs the repository's fast file checks, such as Markdown lint and
-    # typos, on the files the pushed commits change, at the pushed commit's
-    # content. The OpenSpec and workflow checks run when a file under their
-    # path changed. The task, mise-tasks/hooks/changed.sh, reads git's
-    # pre-push lines on stdin.
-    changed.sh:
-      runner: sh
+  parallel: true
+  # Each file check runs a check:repo task on the files the push changes:
+  # lefthook's {push_files}, the files between HEAD and @{push}, as the
+  # working tree holds them. A command's glob narrows them, and a command
+  # whose glob matches no pushed file is skipped. lefthook's default glob
+  # matcher reads * across directories, so *.toml matches at every depth,
+  # and openspec/** needs openspec/* beside it for the files at its top.
+  commands:
+    markdown:
+      glob: "*.{md,markdown,mkd,mkdn,mdown,mdwn,mdx,qmd,rmd}"
       env: *hookenv
-      use_stdin: true
+      run: mise run lint:md {push_files}
+    toml:
+      glob: "*.toml"
+      env: *hookenv
+      run: mise run format:toml {push_files}
+    # typos and Vale pick their own files from the push: .typos.toml and the
+    # ProseStyle settings choose, code included.
+    typos:
+      env: *hookenv
+      run: mise run lint:typos {push_files}
+    specs:
+      glob: ["openspec/*", "openspec/**/*"]
+      env: *hookenv
+      # Quoted: ":::" holds ": ", which YAML reads as a mapping.
+      run: "mise run specs ::: specs:budget"
+    workflows:
+      glob: [".github/*", ".github/**/*"]
+      env: *hookenv
+      run: "mise run lint:workflows ::: lint:workflow-policy"
+  # Each script, .lefthook/pre-push/<name>, runs one mise task on git's
+  # pre-push lines, so it checks every pushed ref, not only HEAD.
+  scripts:
     # Fails when a mise lockfile no longer matches its config
     # (mise-tasks/hooks/lockfile.sh). The task checks each committed
     # mise.<profile>.toml's lock in turn, except the hooks profile's, in a

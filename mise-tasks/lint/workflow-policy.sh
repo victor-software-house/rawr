@@ -5,6 +5,11 @@
 # repository carries no copy. --absolute-paths keeps a linked worktree's
 # absolute git directory whole.
 #
+# git exports GIT_DIR, GIT_WORK_TREE and GIT_INDEX_FILE to pre-push in a linked
+# worktree. The task unsets them before its first git call: with them set, a
+# render below the root would take its own folder as the top, and the pull's
+# clone would read the pusher's repository.
+#
 # Each pinned commit gets a folder of its own, filled once and never
 # rewritten. verify then runs offline after the first run, and no file of an
 # older pin mixes in.
@@ -39,6 +44,7 @@
 # checks the tracked workflows only. With none, nothing runs and the check
 # passes. -z hands xargs each path unquoted, whatever it holds.
 render=$(pwd)
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
 cd "$(git rev-parse --show-toplevel)" || exit 1
 files=$(git ls-files ':(glob).github/workflows/*.yml' ':(glob).github/workflows/*.yaml') || exit 1
 [ -n "$files" ] || exit 0
