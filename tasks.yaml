@@ -130,6 +130,8 @@ queue:
       - Every task in the rawr-app change is checked off with evidence.
       - The maintainer approves the preview before the pull request opens.
     plan: openspec/changes/rawr-app/proposal.md
+    notes:
+      - '2026-11-13, before the pull request: the rawr-app change still describes three layouts and ctrl+l, while the app now has two columns and a drawer; AGENTS.md rules 3 and 4 still name pick and say the binary starts nothing else, but the app opens files with /usr/bin/open; clippy and the test suite are not yet clean on feat/tui; the branch is one commit behind main.'
 
   - id: RAWR-014
     title: Serve every rawr window from one daemon
@@ -186,6 +188,41 @@ queue:
       - Going to a closed session resumes it.
     notes:
       - 2026-11-13, implemented on feat/tui (f8b33a1); not yet in the rawr-app change.
+
+  - id: RAWR-021
+    title: Draw the picker search box at the bottom
+    scope: picker
+    outcome: The picker keeps its search box at the bottom with a hint of how to come back.
+    blocked_by: []
+    acceptance:
+      - Every task in the picker-and-index change is checked off with evidence.
+    plan: openspec/changes/picker-and-index/proposal.md
+    notes:
+      - '2026-11-13, shipped in #32; only the preview go-ahead, task 2.4, is open, and RAWR-013 removes pick.'
+
+  - id: RAWR-022
+    title: Drain Rex before a restart without cutting agents
+    scope: supervisor
+    outcome: A Rex restart waits for every agent to reach a safe point.
+    blocked_by:
+      - RAWR-012
+    acceptance:
+      - Every task in the drain-and-restart change is checked off with evidence.
+    plan: openspec/changes/drain-and-restart/proposal.md
+
+  - id: RAWR-023
+    title: Set rawr up in one step and serve its daemon from the tap
+    scope: install
+    outcome: >-
+      One command wires rawr into the shell and Claude Code, and the tap installs it
+      with its daemon.
+    blocked_by:
+      - RAWR-012
+    acceptance:
+      - Every task in the setup-and-tap change is checked off with evidence.
+    plan: openspec/changes/setup-and-tap/proposal.md
+    notes:
+      - 2026-11-13, overlaps RAWR-006 and RAWR-008, whose install-and-shells change predates the daemon; one of the two changes should absorb the other.
 archive:
   - id: RAWR-018
     title: Read a session's task list as Claude Code keeps it
@@ -254,3 +291,24 @@ horizon:
       session-lake.
     reason: deferred
     open: session-lake has no public interface rawr can depend on.
+
+  - id: RAWR-024
+    title: Mirror the pane order between rawr and the Rex sidebar
+    scope: app
+    outcome: Reordering panes in rawr reorders them in Rex, and the reverse.
+    reason: deferred
+    open: The app ships first.
+
+  - id: RAWR-025
+    title: Group the panes list by Rex session
+    scope: app
+    outcome: The panes list can show each Rex session as a group.
+    reason: deferred
+    open: The app ships first.
+
+  - id: RAWR-026
+    title: Switch the app between view modes
+    scope: app
+    outcome: The app offers more than one view of its panes and sessions.
+    reason: deferred
+    open: The app ships first.
