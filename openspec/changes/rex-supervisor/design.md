@@ -131,7 +131,10 @@ The closest first-party models are Claude Code's own supervisor, which defers it
 9. **The shell offers a restored pane its sessions.**
    - A line in the shell's startup file runs `rawr pick` once, before the first prompt, so each restored pane with sessions opens the full-screen picker when Rex starts.
    - `rawr setup` prints that line for the user's shell; `rawr init <shell>` prints the hook it loads, from ctl-core's shared shell integration.
-   - The shells and their hooks follow the prior art of Homebrew, mise and direnv, and the shell comes from ctl-core's shell detection (CTC-057).
+   - `rawr init` takes the shell as a required argument, as `direnv hook`, `zoxide init` and `starship init` do; `rawr setup` picks the shell for the line it prints from the running shell, then `$SHELL`, as `brew shellenv` does, through ctl-core's shell detection (CTC-057).
+   - Like those `init` commands, `rawr setup` prints the line and edits no startup file.
+   - The hook unhooks itself after its first run, since every shell's prompt hook fires on each prompt: `add-zsh-hook precmd` in zsh, `PROMPT_COMMAND` in bash, a `fish_prompt` event in fish.
+   - bash, zsh and fish come first, the shells ctl-core's `Shell` holds; nushell and PowerShell, which mise and direnv also cover, follow when ctl-core adds them.
    - Alternative: the daemon types `rawr pick` into each restored shell, as the "Resume Claude here" Rex action does.
      It lost: typed input can collide with what the user types first, and nothing else in rawr types into a terminal.
 10. **The index cleans itself.**
