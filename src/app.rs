@@ -5,21 +5,22 @@
 //! loop drains the channel and draws once after each batch, with no timer.
 
 mod feed;
+mod report;
 mod state;
 mod theme;
 mod view;
 
-use std::collections::HashSet;
 use std::sync::mpsc;
 use std::thread;
 
 use anyhow::{Context, Result};
 use ratatui::crossterm::event::{self, Event};
+use report::{Report, Reporter};
 pub(crate) use state::Layout;
 use state::{Action, App, Link};
 
 use crate::catalog::{self, Found};
-use crate::picker::terminal::Screen;
+use crate::picker::terminal::{Pointer, Screen};
 use crate::session::{self, Agent};
 
 enum Msg {
@@ -60,16 +61,34 @@ pub(crate) fn run(layout: Layout) -> Result<Option<Agent>> {
     let mut app = App::new(layout, std::env::var("REX_BLOCK").ok());
     let mut found: Option<Vec<Found>> = None;
     let mut screen = Screen::enter_with(false)?;
+    let mut reporter = Reporter::default();
     loop {
+        reporter.send(own_status(&app))?;
+        let mut hits = view::Hits::default();
         screen
             .terminal()
-            .draw(|frame| view::draw(frame, &app))
+            .draw(|frame| hits = view::draw(frame, &app))
             .context("draw the app")?;
+        screen.set_pointer(if app.dragging || app.hover.is_some() {
+            Pointer::Hand
+        } else {
+            Pointer::Default
+        })?;
         let first = receive.recv().context("the app's inputs closed")?;
         for msg in std::iter::once(first).chain(receive.try_iter()) {
             let action = match msg {
                 Msg::Input(Event::Key(key)) => app.on_key(key),
-                Msg::Input(Event::Mouse(mouse)) => app.on_mouse(mouse),
+                Msg::Input(Event::Mouse(mouse)) => app.on_mouse(
+                    mouse,
+                    hits.target(mouse.column, mouse.row),
+                    hits.list(mouse.column, mouse.row),
+                    hits.body,
+                ),
+                Msg::Input(Event::Paste(text)) => app.on_paste(&text),
+                Msg::Input(Event::FocusLost) => {
+                    app.on_blur();
+                    Action::None
+                }
                 Msg::Input(_) => Action::None,
                 Msg::Feed(feed::Update::Panes(panes)) => {
                     app.set_panes(panes);
@@ -123,6 +142,31 @@ pub(crate) fn run(layout: Layout) -> Result<Option<Agent>> {
                 }
             }
         }
-        let _ = HashSet::<()>::new();
+    }
+}
+
+/// What the app's own status record says now.
+fn own_status(app: &App) -> Report {
+    match &app.link {
+        Link::Connecting => Report::Working("Reading Rex".to_owned()),
+        Link::Offline(_) => Report::Idle("Rex is not running here".to_owned()),
+        Link::Live | Link::Stale(_) => {
+            let count = |status| {
+                app.panes
+                    .iter()
+                    .filter(|pane| pane.status == status)
+                    .count()
+            };
+            let waiting = count(crate::status::Status::NeedsInput);
+            let working = count(crate::status::Status::Working);
+            let mut parts = vec![format!("{} panes", app.panes.len())];
+            if waiting > 0 {
+                parts.push(format!("{waiting} need input"));
+            }
+            if working > 0 {
+                parts.push(format!("{working} working"));
+            }
+            Report::Idle(parts.join(" · "))
+        }
     }
 }

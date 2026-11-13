@@ -1,41 +1,94 @@
 //! How the app looks, in each of the three layouts. Drawing reads the state
-//! and writes widgets; it changes nothing.
+//! and writes widgets, and records where each thing that takes a click
+//! landed, so a click never disagrees with the screen.
 
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout as Split, Rect};
+use ratatui::layout::{Constraint, Layout as Split, Position, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Clear, List, ListItem, ListState, Paragraph, Tabs, Wrap};
+use ratatui::widgets::{Block, Clear, List, ListItem, ListState, Paragraph, Wrap};
 
 use crate::app::feed::Pane;
-use crate::app::state::{App, Focus, Layout, Link};
+use crate::app::state::{App, Button, Focus, Layout, Link, Target};
 use crate::app::theme;
 use crate::session::{Agent, ago};
 
-pub(crate) fn draw(frame: &mut Frame<'_>, app: &App) {
-    let [header, body, search, footer] = Split::vertical([
-        Constraint::Length(1),
-        Constraint::Fill(1),
-        Constraint::Length(if app.layout == Layout::Tabs { 0 } else { 3 }),
-        Constraint::Length(1),
-    ])
-    .areas(frame.area());
-    frame.render_widget(Paragraph::new(header_line(app)), header);
-    match app.layout {
-        Layout::Columns => columns(frame, app, body),
-        Layout::Stacked => stacked(frame, app, body),
-        Layout::Tabs => tabs(frame, app, body),
+/// Where the last frame put each thing that takes a click, and which list
+/// each area scrolls.
+#[derive(Debug, Default)]
+pub(crate) struct Hits {
+    /// The body between the header and the search box, for dragging the
+    /// divider.
+    pub(crate) body: Rect,
+    targets: Vec<(Rect, Target)>,
+    lists: Vec<(Rect, Focus)>,
+}
+
+impl Hits {
+    pub(crate) fn target(&self, column: u16, row: u16) -> Option<Target> {
+        let at = Position::new(column, row);
+        self.targets
+            .iter()
+            .find(|(area, _)| area.contains(at))
+            .map(|(_, target)| *target)
     }
-    if app.layout != Layout::Tabs {
-        search_box(frame, app, search);
+
+    pub(crate) fn list(&self, column: u16, row: u16) -> Option<Focus> {
+        let at = Position::new(column, row);
+        self.lists
+            .iter()
+            .find(|(area, _)| area.contains(at))
+            .map(|(_, focus)| *focus)
     }
-    frame.render_widget(Paragraph::new(footer_line(app)), footer);
-    if app.help {
-        help(frame);
+
+    fn add(&mut self, area: Rect, target: Target) {
+        self.targets.push((area, target));
     }
 }
 
-fn header_line(app: &App) -> Line<'static> {
+pub(crate) fn draw(frame: &mut Frame<'_>, app: &App) -> Hits {
+    let mut hits = Hits::default();
+    let tabs = app.layout == Layout::Tabs;
+    let searching = app.focus == Focus::Search;
+    let [header, bar, body, search, footer] = Split::vertical([
+        Constraint::Length(1),
+        Constraint::Length(u16::from(tabs)),
+        Constraint::Fill(1),
+        Constraint::Length(if tabs && !searching { 0 } else { 3 }),
+        Constraint::Length(1),
+    ])
+    .areas(frame.area());
+    hits.body = body;
+    header_line(frame, app, header, &mut hits);
+    if tabs {
+        tab_bar(frame, app, bar, &mut hits);
+    }
+    match app.layout {
+        Layout::Columns => columns(frame, app, body, &mut hits),
+        Layout::Stacked => stacked(frame, app, body, &mut hits),
+        Layout::Tabs => tab_body(frame, app, body, &mut hits),
+    }
+    if search.height > 0 {
+        search_box(frame, app, search, &mut hits);
+    }
+    footer_line(frame, app, footer, &mut hits);
+    if app.help {
+        hits = Hits::default();
+        help(frame);
+    }
+    hits
+}
+
+/// A row's style: hovered rows get the hover background.
+fn row_style(app: &App, target: Target) -> Style {
+    if app.hover == Some(target) {
+        theme::hover()
+    } else {
+        Style::new()
+    }
+}
+
+fn header_line(frame: &mut Frame<'_>, app: &App, area: Rect, hits: &mut Hits) {
     let waiting = app
         .panes
         .iter()
@@ -52,7 +105,7 @@ fn header_line(app: &App) -> Line<'static> {
         ));
     }
     let link = match &app.link {
-        Link::Connecting => Some(("connecting to Rex…".to_owned(), theme::dim())),
+        Link::Connecting => Some(("reading Rex…".to_owned(), theme::dim())),
         Link::Live => None,
         Link::Offline(why) => Some((
             format!("Rex is not running here ({why})"),
@@ -63,44 +116,96 @@ fn header_line(app: &App) -> Line<'static> {
     if let Some((text, style)) = link {
         spans.push(Span::styled(format!("  ▲ {text}"), style));
     }
-    spans.push(Span::styled(
-        format!("   layout: {} (ctrl+l)", app.layout.name()),
-        theme::dim(),
-    ));
-    Line::from(spans)
+    let label = format!(" layout: {} ▾ ", app.layout.name());
+    let width = u16::try_from(label.chars().count()).unwrap_or(0);
+    let button = Rect {
+        x: area.right().saturating_sub(width),
+        width: width.min(area.width),
+        ..area
+    };
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+    let style = if app.hover == Some(Target::Layout) {
+        theme::hover().fg(theme::ACCENT)
+    } else {
+        theme::dim()
+    };
+    frame.render_widget(Paragraph::new(Line::styled(label, style)), button);
+    hits.add(button, Target::Layout);
 }
 
-fn footer_line(app: &App) -> Line<'static> {
+fn footer_line(frame: &mut Frame<'_>, app: &App, area: Rect, hits: &mut Hits) {
     if let Some(notice) = &app.notice {
-        return Line::styled(format!(" ▲ {notice}"), Style::new().fg(theme::WARNING));
+        frame.render_widget(
+            Paragraph::new(Line::styled(
+                format!(" ▲ {notice}"),
+                Style::new().fg(theme::WARNING),
+            )),
+            area,
+        );
+        return;
     }
-    let keys = match app.focus {
-        Focus::Search => "type to search · ↑↓ move · enter resume · esc back",
-        Focus::Panes | Focus::Sessions => {
-            "enter go to pane · r resume here · tab switch list · / search · ? keys · q quit"
-        }
+    let buttons: &[(Button, &str, &str)] = match app.focus {
+        Focus::Search => &[
+            (Button::Resume, "enter", "resume"),
+            (Button::Back, "esc", "back"),
+        ],
+        Focus::Panes | Focus::Sessions => &[
+            (Button::GoTo, "enter", "go to pane"),
+            (Button::Resume, "r", "resume here"),
+            (Button::Switch, "tab", "switch list"),
+            (Button::Search, "/", "search"),
+            (Button::Help, "?", "keys"),
+            (Button::Quit, "q", "quit"),
+        ],
     };
-    Line::styled(format!(" {keys}"), theme::dim())
+    let mut x = area.x + 1;
+    for (button, key, what) in buttons {
+        let text = format!(" {key} {what} ");
+        let width = u16::try_from(text.chars().count()).unwrap_or(0);
+        if x + width > area.right() {
+            break;
+        }
+        let cell = Rect { x, width, ..area };
+        let hovered = app.hover == Some(Target::Button(*button));
+        let line = Line::from(vec![
+            Span::styled(
+                format!(" {key}"),
+                if hovered {
+                    theme::hover()
+                        .fg(theme::ACCENT)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::new().fg(theme::ACCENT)
+                },
+            ),
+            Span::styled(
+                format!(" {what} "),
+                if hovered {
+                    theme::hover()
+                } else {
+                    theme::dim()
+                },
+            ),
+        ]);
+        frame.render_widget(Paragraph::new(line), cell);
+        hits.add(cell, Target::Button(*button));
+        x += width + 1;
+    }
 }
 
 /// One pane row: glyph, name, status word, and the newest title when wide.
-fn pane_item(
-    pane: &Pane,
-    name: &str,
-    here: Option<&str>,
-    width: u16,
-    title: bool,
-) -> ListItem<'static> {
-    let mine = here == Some(pane.block_id.as_str());
+fn pane_item(app: &App, index: usize, pane: &Pane, width: u16, title: bool) -> ListItem<'static> {
+    let mine = app.here.as_deref() == Some(pane.block_id.as_str());
     // Borders, the highlight symbol, the glyph and the status word.
     let room = usize::from(width).saturating_sub(2 + 2 + 2 + 13);
     let name_width = if title { room.min(32) } else { room };
+    let name = unique_name(app, pane);
     let mut spans = vec![
         Span::styled(
             format!("{} ", theme::glyph(pane.status)),
             theme::status(pane.status),
         ),
-        Span::raw(format!("{:<name_width$}", truncate(name, name_width))),
+        Span::raw(format!("{:<name_width$}", truncate(&name, name_width))),
         Span::styled(
             format!(" {:<12}", pane.status_word()),
             theme::status(pane.status),
@@ -113,26 +218,28 @@ fn pane_item(
     if mine {
         spans.push(Span::styled(" (here)", theme::dim()));
     }
-    ListItem::new(Line::from(spans))
+    ListItem::new(Line::from(spans)).style(row_style(app, Target::Pane(index)))
 }
 
-fn session_item(agent: &Agent, held: bool, width: u16) -> ListItem<'static> {
+fn session_item(agent: &Agent, held: bool, width: u16, style: Style) -> ListItem<'static> {
     let age = ago(agent.idle);
     let room = usize::from(width).saturating_sub(age.len() + 6);
     let title = truncate(&agent.title, room);
     let pad = room.saturating_sub(title.chars().count());
-    let mut lines = vec![Line::from(vec![
-        Span::raw(title),
-        Span::raw(" ".repeat(pad)),
-        Span::styled(format!(" {age}"), theme::dim()),
-    ])];
     let folder = if held {
         format!("{} · running", agent.short_cwd())
     } else {
         agent.short_cwd()
     };
-    lines.push(Line::styled(truncate(&folder, room), theme::dim()));
-    ListItem::new(lines)
+    ListItem::new(vec![
+        Line::from(vec![
+            Span::raw(title),
+            Span::raw(" ".repeat(pad)),
+            Span::styled(format!(" {age}"), theme::dim()),
+        ]),
+        Line::styled(truncate(&folder, room), theme::dim()),
+    ])
+    .style(style)
 }
 
 fn list<'a>(items: Vec<ListItem<'a>>, title: String, focused: bool) -> List<'a> {
@@ -150,7 +257,40 @@ fn list<'a>(items: Vec<ListItem<'a>>, title: String, focused: bool) -> List<'a> 
         .highlight_symbol("❯ ")
 }
 
-fn panes_list(frame: &mut Frame<'_>, app: &App, area: Rect, title: bool) {
+/// Renders `list` in `area` and records one target per visible item, each
+/// `height` rows tall.
+fn render_list(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    list: List<'_>,
+    selected: Option<usize>,
+    (count, height): (usize, u16),
+    (focus, target): (Focus, fn(usize) -> Target),
+    hits: &mut Hits,
+) {
+    let mut state = ListState::default().with_selected(selected);
+    frame.render_stateful_widget(list, area, &mut state);
+    let inner = area.inner(ratatui::layout::Margin::new(1, 1));
+    hits.lists.push((inner, focus));
+    let mut y = inner.y;
+    for index in state.offset()..count {
+        if y + height > inner.bottom() {
+            break;
+        }
+        hits.add(
+            Rect {
+                x: inner.x,
+                y,
+                width: inner.width,
+                height,
+            },
+            target(index),
+        );
+        y += height;
+    }
+}
+
+fn panes_list(frame: &mut Frame<'_>, app: &App, area: Rect, title: bool, hits: &mut Hits) {
     if app.panes.is_empty() {
         empty(frame, app, area);
         return;
@@ -158,21 +298,18 @@ fn panes_list(frame: &mut Frame<'_>, app: &App, area: Rect, title: bool) {
     let items = app
         .panes
         .iter()
-        .map(|pane| {
-            pane_item(
-                pane,
-                &unique_name(app, pane),
-                app.here.as_deref(),
-                area.width,
-                title,
-            )
-        })
+        .enumerate()
+        .map(|(index, pane)| pane_item(app, index, pane, area.width, title))
         .collect();
-    let mut state = ListState::default().with_selected(Some(app.pane));
-    frame.render_stateful_widget(
-        list(items, "Panes".to_owned(), app.focus == Focus::Panes),
+    let focused = app.focus == Focus::Panes;
+    render_list(
+        frame,
         area,
-        &mut state,
+        list(items, "Panes".to_owned(), focused),
+        Some(app.pane),
+        (app.panes.len(), 1),
+        (Focus::Panes, Target::Pane),
+        hits,
     );
 }
 
@@ -196,7 +333,7 @@ fn empty(frame: &mut Frame<'_>, app: &App, area: Rect) {
     );
 }
 
-fn sessions_list(frame: &mut Frame<'_>, app: &App, area: Rect, details: bool) {
+fn sessions_list(frame: &mut Frame<'_>, app: &App, area: Rect, details: bool, hits: &mut Hits) {
     let Some(pane) = app.selected() else {
         frame.render_widget(Block::bordered().border_style(theme::dim()), area);
         return;
@@ -217,108 +354,151 @@ fn sessions_list(frame: &mut Frame<'_>, app: &App, area: Rect, details: bool) {
                     " · {}",
                     pane.sessions
                         .first()
-                        .map(|(a, _)| a.short_cwd())
+                        .map(|(agent, _)| agent.short_cwd())
                         .unwrap_or_default()
                 ),
                 theme::dim(),
             ),
         ]);
         frame.render_widget(
-            Paragraph::new(vec![
-                line,
-                Line::styled(format!(" {}", pane.block_id), theme::dim()),
-            ])
-            .block(
+            Paragraph::new(line).block(
                 Block::bordered()
-                    .title(format!(" {} ", pane.name))
+                    .title(format!(" {} ", unique_name(app, pane)))
                     .border_style(theme::dim()),
             ),
             info,
         );
     }
+    let width = rest.width.saturating_sub(4);
     let items = pane
         .sessions
         .iter()
-        .map(|(agent, held)| session_item(agent, *held, rest.width.saturating_sub(4)))
+        .enumerate()
+        .map(|(index, (agent, held))| {
+            session_item(agent, *held, width, row_style(app, Target::Session(index)))
+        })
         .collect();
     let focused = app.focus == Focus::Sessions;
-    let mut state = ListState::default().with_selected(focused.then_some(app.session));
     let title = if details {
         "Sessions in this pane".to_owned()
     } else {
-        format!("{} · sessions", pane.name)
+        format!("{} · sessions", unique_name(app, pane))
     };
-    frame.render_stateful_widget(list(items, title, focused), rest, &mut state);
+    render_list(
+        frame,
+        rest,
+        list(items, title, focused),
+        focused.then_some(app.session),
+        (pane.sessions.len(), 2),
+        (Focus::Sessions, Target::Session),
+        hits,
+    );
 }
 
-fn results_list(frame: &mut Frame<'_>, app: &App, area: Rect) {
+fn results_list(frame: &mut Frame<'_>, app: &App, area: Rect, hits: &mut Hits) {
+    let width = area.width.saturating_sub(4);
     let items: Vec<ListItem<'static>> = app
         .results
         .iter()
-        .map(|agent| session_item(agent, false, area.width.saturating_sub(4)))
+        .enumerate()
+        .map(|(index, agent)| {
+            session_item(agent, false, width, row_style(app, Target::Result(index)))
+        })
         .collect();
-    let mut state = ListState::default().with_selected(Some(app.result));
-    let title = format!("Search · {} matches", app.results.len());
-    frame.render_stateful_widget(list(items, title, true), area, &mut state);
-}
-
-fn columns(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    let [left, right] =
-        Split::horizontal([Constraint::Percentage(44), Constraint::Fill(1)]).areas(area);
-    panes_list(frame, app, left, false);
-    if app.focus == Focus::Search {
-        results_list(frame, app, right);
+    let title = if app.query.trim().is_empty() {
+        "Search · type to find a session".to_owned()
     } else {
-        sessions_list(frame, app, right, true);
-    }
+        format!("Search · {} matches", app.results.len())
+    };
+    render_list(
+        frame,
+        area,
+        list(items, title, true),
+        Some(app.result),
+        (app.results.len(), 2),
+        (Focus::Search, Target::Result),
+        hits,
+    );
 }
 
-fn stacked(frame: &mut Frame<'_>, app: &App, area: Rect) {
+fn columns(frame: &mut Frame<'_>, app: &App, area: Rect, hits: &mut Hits) {
+    let [left, right] =
+        Split::horizontal([Constraint::Percentage(app.split), Constraint::Fill(1)]).areas(area);
+    panes_list(frame, app, left, false, hits);
     if app.focus == Focus::Search {
-        results_list(frame, app, area);
+        results_list(frame, app, right, hits);
+    } else {
+        sessions_list(frame, app, right, true, hits);
+    }
+    divider(
+        frame,
+        app,
+        Rect {
+            x: left.right().saturating_sub(1),
+            width: 2,
+            ..area
+        },
+        true,
+        hits,
+    );
+}
+
+fn stacked(frame: &mut Frame<'_>, app: &App, area: Rect, hits: &mut Hits) {
+    if app.focus == Focus::Search {
+        results_list(frame, app, area, hits);
         return;
     }
-    let rows = u16::try_from(app.panes.len().max(1))
-        .unwrap_or(u16::MAX)
-        .saturating_add(2);
     let [top, bottom] =
-        Split::vertical([Constraint::Max(rows.max(4)), Constraint::Fill(1)]).areas(area);
-    panes_list(frame, app, top, true);
-    sessions_list(frame, app, bottom, false);
+        Split::vertical([Constraint::Percentage(app.split), Constraint::Fill(1)]).areas(area);
+    panes_list(frame, app, top, true, hits);
+    sessions_list(frame, app, bottom, false, hits);
+    divider(
+        frame,
+        app,
+        Rect {
+            y: top.bottom().saturating_sub(1),
+            height: 2,
+            ..area
+        },
+        false,
+        hits,
+    );
 }
 
-fn tabs(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    let [bar, body, search] = Split::vertical([
-        Constraint::Length(1),
-        Constraint::Fill(1),
-        Constraint::Length(if app.focus == Focus::Search { 3 } else { 0 }),
-    ])
-    .areas(area);
-    let index = match app.focus {
-        Focus::Panes => 0,
-        Focus::Sessions => 1,
-        Focus::Search => 2,
-    };
-    frame.render_widget(
-        Tabs::new(["Panes", "Sessions", "Search"])
-            .select(index)
-            .highlight_style(theme::selected())
-            .style(theme::dim())
-            .padding(" ", " "),
-        bar,
-    );
-    match app.focus {
-        Focus::Panes => panes_list(frame, app, body, true),
-        Focus::Sessions => sessions_list(frame, app, body, true),
-        Focus::Search => {
-            results_list(frame, app, body);
-            search_box(frame, app, search);
-        }
+fn tab_bar(frame: &mut Frame<'_>, app: &App, area: Rect, hits: &mut Hits) {
+    let mut x = area.x + 1;
+    for (focus, name) in [
+        (Focus::Panes, "Panes"),
+        (Focus::Sessions, "Sessions"),
+        (Focus::Search, "Search"),
+    ] {
+        let text = format!(" {name} ");
+        let width = u16::try_from(text.chars().count()).unwrap_or(0);
+        let cell = Rect { x, width, ..area };
+        let style = if app.focus == focus {
+            theme::selected().add_modifier(Modifier::UNDERLINED)
+        } else if app.hover == Some(Target::Tab(focus)) {
+            theme::hover()
+        } else {
+            theme::dim()
+        };
+        frame.render_widget(Paragraph::new(Line::styled(text, style)), cell);
+        hits.add(cell, Target::Tab(focus));
+        x += width + 1;
     }
 }
 
-fn search_box(frame: &mut Frame<'_>, app: &App, area: Rect) {
+fn tab_body(frame: &mut Frame<'_>, app: &App, area: Rect, hits: &mut Hits) {
+    match app.focus {
+        Focus::Panes => panes_list(frame, app, area, true, hits),
+        Focus::Sessions => sessions_list(frame, app, area, true, hits),
+        Focus::Search => results_list(frame, app, area, hits),
+    }
+}
+
+fn search_box(frame: &mut Frame<'_>, app: &App, area: Rect, hits: &mut Hits) {
     let focused = app.focus == Focus::Search;
+    let hovered = app.hover == Some(Target::Search);
     let text = if focused || !app.query.is_empty() {
         Line::from(vec![
             Span::raw(format!(" {}", app.query)),
@@ -327,10 +507,22 @@ fn search_box(frame: &mut Frame<'_>, app: &App, area: Rect) {
     } else {
         Line::styled(" / search every local session", theme::dim())
     };
+    let block = Block::bordered().border_style(if hovered && !focused {
+        Style::new().fg(theme::ACCENT)
+    } else {
+        theme::border(focused)
+    });
     frame.render_widget(
-        Paragraph::new(text).block(Block::bordered().border_style(theme::border(focused))),
+        Paragraph::new(text)
+            .style(if hovered {
+                theme::hover()
+            } else {
+                Style::new()
+            })
+            .block(block),
         area,
     );
+    hits.add(area, Target::Search);
 }
 
 fn help(frame: &mut Frame<'_>) {
@@ -343,6 +535,8 @@ fn help(frame: &mut Frame<'_>) {
         ("tab ← →", "move between the panes and the sessions"),
         ("↑ ↓ j k", "move the selection"),
         ("/", "search every local session"),
+        ("click", "select; click the selected row to act on it"),
+        ("wheel", "scroll the list under the pointer"),
         ("ctrl+l", "next layout (preview only)"),
         ("q esc", "quit"),
     ];
@@ -364,7 +558,7 @@ fn help(frame: &mut Frame<'_>) {
     frame.render_widget(
         Paragraph::new(lines).block(
             Block::bordered()
-                .title(" Keys ")
+                .title(" Keys · any key closes ")
                 .border_style(theme::border(true)),
         ),
         area,
@@ -409,4 +603,30 @@ fn unique_name(app: &App, pane: &Pane) -> String {
         pane.name,
         bare.chars().take(4).collect::<String>()
     )
+}
+
+/// Records the border between the two parts as a drag handle, and lights it
+/// while it is hovered or dragged. `vertical` is a border that runs top to
+/// bottom.
+fn divider(frame: &mut Frame<'_>, app: &App, area: Rect, vertical: bool, hits: &mut Hits) {
+    hits.targets.insert(0, (area, Target::Divider));
+    if !(app.dragging || app.hover == Some(Target::Divider)) {
+        return;
+    }
+    let style = Style::new().fg(theme::ACCENT).add_modifier(Modifier::BOLD);
+    let buffer = frame.buffer_mut();
+    for x in area.left()..area.right() {
+        for y in area.top()..area.bottom() {
+            if let Some(cell) = buffer.cell_mut(Position::new(x, y)) {
+                let edge = if vertical {
+                    y == area.top() || y + 1 == area.bottom()
+                } else {
+                    x == area.left() || x + 1 == area.right()
+                };
+                if !edge {
+                    cell.set_style(style);
+                }
+            }
+        }
+    }
 }

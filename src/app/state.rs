@@ -2,7 +2,7 @@
 //! the terminal, so every key is a plain function of the state.
 
 use ratatui::crossterm::event::{
-    KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
+    KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 
 use crate::app::feed::Pane;
@@ -74,8 +74,45 @@ pub(crate) enum Action {
     Search,
 }
 
+/// A footer button; each does what its key does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Button {
+    GoTo,
+    Resume,
+    Switch,
+    Search,
+    Help,
+    Quit,
+    Back,
+}
+
+/// Something on screen that takes a click.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Target {
+    Pane(usize),
+    Session(usize),
+    Result(usize),
+    Tab(Focus),
+    Search,
+    Layout,
+    Button(Button),
+    /// The border between the two parts of the screen; dragging it resizes
+    /// them.
+    Divider,
+}
+
+/// The smallest share either part of a split keeps, in percent.
+const MIN_SPLIT: u16 = 15;
+
 #[derive(Debug)]
 pub(crate) struct App {
+    /// What the pointer is over.
+    pub(crate) hover: Option<Target>,
+    /// The panes column's share of the width in the two-column layout, and
+    /// the panes list's share of the height in the stacked one, in percent.
+    pub(crate) split: u16,
+    /// Whether the divider is being dragged.
+    pub(crate) dragging: bool,
     pub(crate) panes: Vec<Pane>,
     pub(crate) pane: usize,
     pub(crate) session: usize,
@@ -106,6 +143,9 @@ pub(crate) const fn rank(status: Status) -> u8 {
 impl App {
     pub(crate) fn new(layout: Layout, here: Option<String>) -> Self {
         Self {
+            hover: None,
+            split: 44,
+            dragging: false,
             panes: Vec::new(),
             pane: 0,
             session: 0,
@@ -220,6 +260,14 @@ impl App {
                 Action::None
             }
             KeyCode::Char('r') => self.resume(),
+            KeyCode::Char('<' | '[') => {
+                self.resize(-5);
+                Action::None
+            }
+            KeyCode::Char('>' | ']') => {
+                self.resize(5);
+                Action::None
+            }
             KeyCode::Enter => match self.focus {
                 Focus::Panes => self.go_to(),
                 Focus::Sessions | Focus::Search => self.resume(),
@@ -257,13 +305,168 @@ impl App {
         }
     }
 
-    pub(crate) fn on_mouse(&mut self, mouse: MouseEvent) -> Action {
-        match mouse.kind {
-            MouseEventKind::ScrollDown => self.step(1),
-            MouseEventKind::ScrollUp => self.step(-1),
-            _ => {}
+    /// Handles a mouse report. `hit` is what the last frame drew under the
+    /// pointer, `list` the list under it, and `area` the screen body, for
+    /// dragging the divider.
+    pub(crate) fn on_mouse(
+        &mut self,
+        mouse: MouseEvent,
+        hit: Option<Target>,
+        list: Option<Focus>,
+        area: ratatui::layout::Rect,
+    ) -> Action {
+        if self.help {
+            if matches!(mouse.kind, MouseEventKind::Down(_)) {
+                self.help = false;
+            }
+            return Action::None;
         }
-        Action::None
+        match mouse.kind {
+            MouseEventKind::Moved => {
+                self.hover = hit;
+                Action::None
+            }
+            MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => {
+                let by = if mouse.kind == MouseEventKind::ScrollDown {
+                    1
+                } else {
+                    -1
+                };
+                if let Some(list) = list {
+                    self.scroll(list, by);
+                }
+                Action::None
+            }
+            MouseEventKind::Down(MouseButton::Left) => {
+                self.notice = None;
+                match hit {
+                    Some(Target::Divider) => {
+                        self.dragging = true;
+                        Action::None
+                    }
+                    Some(target) => self.click(target),
+                    None => Action::None,
+                }
+            }
+            MouseEventKind::Drag(MouseButton::Left) if self.dragging => {
+                self.drag_to(mouse.column, mouse.row, area);
+                Action::None
+            }
+            MouseEventKind::Up(_) => {
+                self.dragging = false;
+                self.hover = hit;
+                Action::None
+            }
+            _ => Action::None,
+        }
+    }
+
+    /// Moves the divider to the pointer.
+    fn drag_to(&mut self, column: u16, row: u16, area: ratatui::layout::Rect) {
+        let (at, start, size) = match self.layout {
+            Layout::Columns => (column, area.x, area.width),
+            Layout::Stacked => (row, area.y, area.height),
+            Layout::Tabs => return,
+        };
+        if size == 0 {
+            return;
+        }
+        let share = u32::from(at.saturating_sub(start)) * 100 / u32::from(size);
+        self.split = u16::try_from(share)
+            .unwrap_or(100)
+            .clamp(MIN_SPLIT, 100 - MIN_SPLIT);
+    }
+
+    /// Grows or shrinks the panes part by `by` percent.
+    fn resize(&mut self, by: i16) {
+        self.split = self
+            .split
+            .saturating_add_signed(by)
+            .clamp(MIN_SPLIT, 100 - MIN_SPLIT);
+    }
+
+    fn click(&mut self, target: Target) -> Action {
+        match target {
+            Target::Pane(index) => {
+                if self.focus == Focus::Panes && self.pane == index {
+                    return self.go_to();
+                }
+                self.focus = Focus::Panes;
+                self.pane = index;
+                self.session = 0;
+                Action::None
+            }
+            Target::Session(index) => {
+                if self.focus == Focus::Sessions && self.session == index {
+                    return self.resume();
+                }
+                self.focus = Focus::Sessions;
+                self.session = index;
+                Action::None
+            }
+            Target::Result(index) => {
+                if self.result == index {
+                    return self.resume();
+                }
+                self.result = index;
+                Action::None
+            }
+            Target::Tab(focus) => {
+                self.focus = focus;
+                if focus == Focus::Search {
+                    Action::Search
+                } else {
+                    Action::None
+                }
+            }
+            Target::Search => {
+                self.focus = Focus::Search;
+                Action::Search
+            }
+            Target::Layout => {
+                self.layout = self.layout.next();
+                Action::None
+            }
+            Target::Button(button) => self.press(button),
+            Target::Divider => Action::None,
+        }
+    }
+
+    fn press(&mut self, button: Button) -> Action {
+        let code = match button {
+            Button::GoTo => KeyCode::Enter,
+            Button::Resume => {
+                return self.resume();
+            }
+            Button::Switch => KeyCode::Tab,
+            Button::Search => KeyCode::Char('/'),
+            Button::Help => KeyCode::Char('?'),
+            Button::Quit => KeyCode::Char('q'),
+            Button::Back => KeyCode::Esc,
+        };
+        self.on_key(KeyEvent::new(code, KeyModifiers::NONE))
+    }
+
+    /// Moves the selection of `list`, the list under the pointer.
+    fn scroll(&mut self, list: Focus, by: isize) {
+        let focus = self.focus;
+        self.focus = list;
+        self.step(by);
+        self.focus = focus;
+    }
+
+    pub(crate) fn on_paste(&mut self, text: &str) -> Action {
+        if self.focus != Focus::Search {
+            self.focus = Focus::Search;
+        }
+        self.query.push_str(&text.replace(['\n', '\r', '\t'], " "));
+        Action::Search
+    }
+
+    /// The pointer left the terminal: nothing is hovered.
+    pub(crate) fn on_blur(&mut self) {
+        self.hover = None;
+        self.dragging = false;
     }
 
     pub(crate) fn set_results(&mut self, results: Vec<Agent>) {

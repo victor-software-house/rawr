@@ -44,3 +44,8 @@ pub(crate) fn status(status: Status) -> Style {
         Status::Idle | Status::Stopped => dim(),
     }
 }
+
+/// The row or button under the pointer: a raised background.
+pub(crate) fn hover() -> Style {
+    Style::new().bg(Color::Indexed(237))
+}

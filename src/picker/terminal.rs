@@ -10,7 +10,10 @@ use anyhow::{Context, Result};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::cursor::{Hide, Show};
-use ratatui::crossterm::event::{self, DisableMouseCapture, EnableMouseCapture};
+use ratatui::crossterm::event::{
+    self, DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
+    EnableFocusChange, EnableMouseCapture,
+};
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -95,7 +98,15 @@ impl Screen {
             .write_all(if waiting { STATUS_WAITING } else { b"" })
             .map_err(anyhow::Error::from)
             .and_then(|()| {
-                execute!(err, EnterAlternateScreen, EnableMouseCapture, Hide).map_err(Into::into)
+                execute!(
+                    err,
+                    EnterAlternateScreen,
+                    EnableMouseCapture,
+                    EnableFocusChange,
+                    EnableBracketedPaste,
+                    Hide
+                )
+                .map_err(Into::into)
             })
             .context("take the screen")
             .and_then(|()| {
@@ -152,7 +163,14 @@ fn leave() {
     let mut err = io::stderr();
     let _ = err.write_all(Pointer::Default.sequence());
     let _ = err.write_all(STATUS_CLEAR);
-    let _ = execute!(err, DisableMouseCapture, Show, LeaveAlternateScreen);
+    let _ = execute!(
+        err,
+        DisableBracketedPaste,
+        DisableFocusChange,
+        DisableMouseCapture,
+        Show,
+        LeaveAlternateScreen
+    );
     let deadline = Instant::now() + DRAIN;
     while let Some(left) = deadline.checked_duration_since(Instant::now()) {
         match event::poll(left) {
