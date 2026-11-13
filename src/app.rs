@@ -6,6 +6,7 @@
 
 pub(crate) mod facts;
 pub(crate) mod feed;
+mod markup;
 mod report;
 pub(crate) mod state;
 mod theme;
@@ -69,6 +70,7 @@ pub(crate) fn run(view: Option<u64>) -> Result<Option<Agent>> {
         send.send(Msg::Daemon(incoming)).is_ok()
     })?;
 
+    markup::load();
     let mut app = App::new(std::env::var("REX_BLOCK").ok());
     // Whether this window replaces another once it has drawn the panes.
     let mut replacing = false;
@@ -229,6 +231,16 @@ pub(crate) fn run(view: Option<u64>) -> Result<Option<Agent>> {
             match action {
                 Action::None => {}
                 Action::Quit => return Ok(None),
+                Action::OpenFile(index) => {
+                    let file = app
+                        .current()
+                        .and_then(|agent| facts.get(&agent.transcript))
+                        .and_then(|known| known.files.get(index))
+                        .map(|(path, _)| PathBuf::from(path));
+                    if let Some(file) = file {
+                        open_file(file, &mut app);
+                    }
+                }
                 Action::Resume(agent) => {
                     // A floating window resumes in a tab of the pane's session;
                     // the daemon decides, and answers `exec` for a tiled one.
@@ -262,6 +274,25 @@ pub(crate) fn run(view: Option<u64>) -> Result<Option<Agent>> {
                 }
             }
         }
+    }
+}
+
+/// Opens `file` in its default app, as a click on a `file://` link would;
+/// a file gone since the session touched it says so in the search box.
+fn open_file(file: PathBuf, app: &mut App) {
+    if !file.exists() {
+        app.notice = Some(format!("{} is gone", file.display()));
+        return;
+    }
+    match std::process::Command::new("/usr/bin/open")
+        .arg(&file)
+        .spawn()
+    {
+        Ok(mut child) => {
+            // The opener ends at once; its exit is collected off the loop.
+            thread::spawn(move || child.wait());
+        }
+        Err(error) => app.notice = Some(format!("could not open {}: {error}", file.display())),
     }
 }
 

@@ -23,6 +23,8 @@ ctl-core = { version = "=0.7.4", default-features = false, features = [
 # whose expansion names `::garde`; ctl-core pins the same version.
 garde = { version = "0.23.0", default-features = false, features = ["derive"] }
 memchr = "2.8.3"
+# The prompts and messages the app shows, drawn as markdown.
+pulldown-cmark = { version = "=0.13.6", default-features = false }
 ratatui = { version = "=0.30.2", default-features = false, features = [
   "crossterm_0_29",
 ] }
@@ -30,12 +32,24 @@ rustix = { version = "1.1.6", features = ["process"] }
 serde = { version = "1.0.229", features = ["derive"] }
 # preserve_order: `setup claude` keeps the order of the user's settings.
 serde_json = { version = "1.0.154", features = ["preserve_order", "raw_value"] }
+# Code highlighting, on the Oniguruma regex engine. Parsing only: the app
+# loads two-face's syntax dump and builds its theme in code, so it needs no
+# YAML, plist or bundled themes.
+syntect = { version = "=5.3.0", default-features = false, features = [
+  "parsing",
+  "regex-onig",
+] }
 textwrap = { version = "0.16.4", default-features = false, features = [
   "unicode-width",
 ] }
 # handshake: the client side of the WebSocket upgrade, over a plain stream.
 tungstenite = { version = "0.30.0", default-features = false, features = [
   "handshake",
+] }
+# bat's syntax set for syntect, which adds TypeScript, TOML and others to
+# syntect's defaults.
+two-face = { version = "=0.5.2", default-features = false, features = [
+  "syntect-onig",
 ] }
 
 # clap's derive output names `::clap`, so the derives need clap as a direct

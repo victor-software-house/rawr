@@ -15,8 +15,6 @@ use std::path::Path;
 use serde::Deserialize;
 use serde_json::value::RawValue;
 
-use crate::session::sanitize;
-
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, Deserialize)]
 pub(crate) struct Facts {
     pub(crate) model: Option<String>,
@@ -69,6 +67,10 @@ pub(crate) struct Said {
     pub(crate) text: String,
     #[serde(default)]
     pub(crate) kind: Kind,
+    /// The longer text the entry opens to, when it has one: a message's
+    /// body, a sub-agent's prompt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) more: Option<String>,
 }
 
 /// What an entry is, which sets the mark Claude Code draws before it.
@@ -88,6 +90,8 @@ pub(crate) enum Kind {
     Ended { status: String },
     /// A message from a teammate or another session: `Message from @name`.
     Message { from: String },
+    /// A teammate gone idle: `⏺ @name finished`, coloured by how.
+    Idle { from: String, how: String },
     /// A message relayed from a channel: `← source: text`.
     Relayed { from: String },
     /// The user stopped Claude mid-turn.
@@ -110,9 +114,10 @@ impl Said {
     /// What a filter matches the entry on.
     pub(crate) fn searched(&self) -> Cow<'_, str> {
         match &self.kind {
-            Kind::Tool { name } | Kind::Message { from: name } | Kind::Relayed { from: name } => {
-                Cow::Owned(format!("{name} {}", self.text))
-            }
+            Kind::Tool { name }
+            | Kind::Message { from: name }
+            | Kind::Idle { from: name, .. }
+            | Kind::Relayed { from: name } => Cow::Owned(format!("{name} {}", self.text)),
             Kind::Prompt
             | Kind::Command
             | Kind::Shell
@@ -230,6 +235,8 @@ struct Input<'line> {
     to: Option<Cow<'line, str>>,
     #[serde(default)]
     message: Option<serde_json::Value>,
+    #[serde(borrow, default)]
+    prompt: Option<Cow<'line, str>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -542,7 +549,7 @@ fn add(stretch: &mut Stretch, record: Record<'_>) {
             }
         }
         "user" if !record.is_meta && !record.summary => {
-            if let Some((kind, text)) = record
+            if let Some((kind, text, more)) = record
                 .message
                 .and_then(|message| message.content)
                 .and_then(entry)
@@ -557,6 +564,7 @@ fn add(stretch: &mut Stretch, record: Record<'_>) {
                         at: record.timestamp.as_deref().map(str::to_owned),
                         text,
                         kind,
+                        more,
                     },
                 );
             }
@@ -568,7 +576,7 @@ fn add(stretch: &mut Stretch, record: Record<'_>) {
 /// What a user line shows, as Claude Code draws it: a prompt, a command,
 /// a message the session was sent. Tool results, injected context and
 /// the entries Claude Code draws nothing for give `None`.
-fn entry(content: &RawValue) -> Option<(Kind, String)> {
+fn entry(content: &RawValue) -> Option<Shown> {
     let text = if let Ok(text) = serde_json::from_str::<Cow<'_, str>>(content.get()) {
         text.into_owned()
     } else {
@@ -582,10 +590,42 @@ fn entry(content: &RawValue) -> Option<(Kind, String)> {
             .collect::<Vec<_>>()
             .join("\n")
     };
-    let text = text.trim();
-    let (kind, shown) = said_as(text)?;
-    let shown = sanitize(&shown.split_whitespace().collect::<Vec<_>>().join(" "));
-    (!shown.is_empty()).then_some((kind, shown))
+    let (kind, shown, more) = said_as(text.trim())?;
+    let shown = clean(&shown);
+    (!shown.is_empty()).then(|| {
+        (
+            kind,
+            shown,
+            more.map(|more| clean(&more))
+                .filter(|more| !more.is_empty()),
+        )
+    })
+}
+
+/// An entry's kind, the text it shows, and the longer text it opens to.
+type Shown = (Kind, String, Option<String>);
+
+/// How many characters of an entry's text the facts keep.
+const TEXT_CHARS: usize = 4000;
+
+/// `text` with its line breaks, without control characters, cut to
+/// [`TEXT_CHARS`].
+fn clean(text: &str) -> String {
+    let mut out: String = text
+        .trim()
+        .chars()
+        .filter_map(|c| match c {
+            '\t' => Some(' '),
+            '\n' => Some('\n'),
+            c if c.is_control() => None,
+            c => Some(c),
+        })
+        .take(TEXT_CHARS)
+        .collect();
+    if text.chars().count() > TEXT_CHARS {
+        out.push('…');
+    }
+    out
 }
 
 /// The lead Claude Code writes before a message from another session.
@@ -595,14 +635,14 @@ const PEER_LEAD: &str = "Another Claude session sent a message";
 const RELAY_LEAD: &str = "A message arrived from ";
 
 /// How Claude Code draws a user line's text, in its order of checks.
-fn said_as(text: &str) -> Option<(Kind, String)> {
+fn said_as(text: &str) -> Option<Shown> {
     if text.is_empty() || text == "(no content)" {
         return None;
     }
     if text == "[Request interrupted by user]"
         || text == "[Request interrupted by user for tool use]"
     {
-        return Some((Kind::Interrupted, "Interrupted".to_owned()));
+        return Some((Kind::Interrupted, "Interrupted".to_owned(), None));
     }
     // A message's own lead line comes before its tag.
     let body = if text.starts_with(PEER_LEAD) || text.starts_with(RELAY_LEAD) {
@@ -612,17 +652,21 @@ fn said_as(text: &str) -> Option<(Kind, String)> {
         text
     };
     if body.starts_with("<teammate-message ") {
-        let from = attribute(body, "teammate_id").unwrap_or("teammate");
-        let what = attribute(body, "summary")
-            .map(str::to_owned)
-            .or_else(|| element(body, "teammate-message").map(str::to_owned))
-            .unwrap_or_default();
-        return Some((
-            Kind::Message {
-                from: from.to_owned(),
-            },
-            what,
-        ));
+        let from = attribute(body, "teammate_id")
+            .unwrap_or("teammate")
+            .to_owned();
+        let inner = element(body, "teammate-message").unwrap_or_default();
+        if inner.starts_with('{') {
+            return teammate_note(from, inner);
+        }
+        return Some(match attribute(body, "summary") {
+            Some(summary) => (
+                Kind::Message { from },
+                summary.to_owned(),
+                Some(inner.to_owned()),
+            ),
+            None => (Kind::Message { from }, inner.to_owned(), None),
+        });
     }
     if body.starts_with("<cross-session-message") {
         let from = attribute(body, "from-name")
@@ -639,6 +683,7 @@ fn said_as(text: &str) -> Option<(Kind, String)> {
                 from: from.to_owned(),
             },
             what.to_owned(),
+            None,
         ));
     }
     if body.starts_with("<channel source=\"") {
@@ -649,23 +694,27 @@ fn said_as(text: &str) -> Option<(Kind, String)> {
             None => server.to_owned(),
         };
         let what = element(body, "channel").unwrap_or_default();
-        return Some((Kind::Relayed { from }, what.to_owned()));
+        return Some((Kind::Relayed { from }, what.to_owned(), None));
     }
     if text.starts_with("<command-name>") || text.starts_with("<command-message>") {
         let name = element(text, "command-name")
             .or_else(|| element(text, "command-message"))?
             .trim_start_matches('/');
         if element(text, "skill-format").is_some() {
-            return Some((Kind::Command, format!("Skill({name})")));
+            return Some((Kind::Command, format!("Skill({name})"), None));
         }
         let args = element(text, "command-args").unwrap_or_default();
-        return Some((Kind::Command, format!("/{name} {args}")));
+        return Some((Kind::Command, format!("/{name} {args}"), None));
     }
     if text.starts_with("<bash-input>") {
-        return Some((Kind::Shell, element(text, "bash-input")?.to_owned()));
+        return Some((Kind::Shell, element(text, "bash-input")?.to_owned(), None));
     }
     if text.contains("<user-memory-input>") {
-        return Some((Kind::Memory, element(text, "user-memory-input")?.to_owned()));
+        return Some((
+            Kind::Memory,
+            element(text, "user-memory-input")?.to_owned(),
+            None,
+        ));
     }
     if text.contains("<task-notification") {
         // A tool call's late result shows with the call, not here.
@@ -674,14 +723,125 @@ fn said_as(text: &str) -> Option<(Kind, String)> {
         }
         let summary = element(text, "summary")?;
         let status = element(text, "status").unwrap_or_default().to_owned();
-        return Some((Kind::Ended { status }, summary.to_owned()));
+        return Some((Kind::Ended { status }, summary.to_owned(), None));
     }
     // Shell output, command output, ticks, caveats, wakes and the rest of
     // what Claude Code sends as a user line draw nothing here.
     if text.starts_with('<') {
         return None;
     }
-    Some((Kind::Prompt, text.to_owned()))
+    Some((Kind::Prompt, text.to_owned(), None))
+}
+
+/// One of the notes Claude Code's teammates send as JSON, as Claude Code
+/// draws it; `None` for the ones it draws nothing for.
+fn teammate_note(from: String, json: &str) -> Option<Shown> {
+    let note: serde_json::Value = serde_json::from_str(json).ok()?;
+    let field = |name: &str| {
+        note.get(name)
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+    };
+    let kind = field("type").unwrap_or_default();
+    Some(match kind.as_str() {
+        "idle_notification" => {
+            let how = match field("idleReason").as_deref() {
+                Some("failed") => "failed",
+                Some("interrupted") => "was interrupted",
+                _ => "finished",
+            };
+            let result = field("result");
+            let text = field("failureReason")
+                .or_else(|| field("summary"))
+                .or_else(|| {
+                    result
+                        .as_deref()
+                        .and_then(|result| result.lines().next())
+                        .map(str::to_owned)
+                })
+                .unwrap_or_default();
+            (
+                Kind::Idle {
+                    from,
+                    how: how.to_owned(),
+                },
+                text,
+                result,
+            )
+        }
+        "task_completed" => {
+            let id = note
+                .get("taskId")
+                .map(|id| id.as_str().map_or_else(|| id.to_string(), str::to_owned))
+                .unwrap_or_default();
+            let subject = field("taskSubject")
+                .map(|subject| format!(" ({subject})"))
+                .unwrap_or_default();
+            (
+                Kind::Message { from },
+                format!("Completed task #{id}{subject}"),
+                None,
+            )
+        }
+        "shutdown_approved" => return None,
+        "shutdown_request" => (
+            Kind::Message { from },
+            format!(
+                "Shutdown request{}",
+                field("reason")
+                    .map(|reason| format!(": {reason}"))
+                    .unwrap_or_default()
+            ),
+            None,
+        ),
+        "shutdown_rejected" => (
+            Kind::Message { from },
+            format!(
+                "Shutdown rejected{}",
+                field("reason")
+                    .map(|reason| format!(": {reason}"))
+                    .unwrap_or_default()
+            ),
+            None,
+        ),
+        "plan_approval_request" => (
+            Kind::Message { from },
+            "Plan approval request".to_owned(),
+            field("planContent"),
+        ),
+        "plan_approval_response" => {
+            let approved = note
+                .get("approved")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            (
+                Kind::Message { from },
+                if approved {
+                    "✓ Plan approved"
+                } else {
+                    "✗ Plan rejected"
+                }
+                .to_owned(),
+                field("feedback"),
+            )
+        }
+        "task_assignment" => (
+            Kind::Message { from },
+            format!(
+                "Task #{} assigned: {}",
+                field("taskId").unwrap_or_default(),
+                field("subject").unwrap_or_default()
+            ),
+            field("description"),
+        ),
+        _ => (
+            Kind::Message { from },
+            field("content")
+                .or_else(|| field("summary"))
+                .unwrap_or_else(|| json.to_owned()),
+            None,
+        ),
+    })
 }
 
 /// The text inside the first `<name …>…</name>` of `text`.
@@ -771,23 +931,23 @@ fn call(stretch: &mut Stretch, at: Option<&str>, cwd: Option<&str>, part: &Part<
         }
         _ => {}
     }
-    if let Some((shown, what)) = tool_line(name, &input, part.input, cwd) {
+    if let Some((shown, what, more)) = tool_line(name, &input, part.input, cwd) {
         keep(
             &mut facts.activity,
             Said {
                 at: at.map(str::to_owned),
-                text: sanitize(&what.split_whitespace().collect::<Vec<_>>().join(" ")),
+                text: clean(&what),
                 kind: Kind::Tool { name: shown },
+                more: more
+                    .map(|more| clean(&more))
+                    .filter(|more| !more.is_empty()),
             },
         );
     }
 }
 
-/// How many characters of a shell command a collapsed row shows.
-const COMMAND_CHARS: usize = 160;
-
-/// How many characters of a message a row shows.
-const MESSAGE_CHARS: usize = 200;
+/// A tool's shown name, the text in its brackets, and what it opens to.
+type Shown3 = (String, String, Option<String>);
 
 /// The name Claude Code shows for a tool call and what it writes in the
 /// brackets after it; `None` for the calls it draws no row for, such as
@@ -797,20 +957,15 @@ fn tool_line(
     input: &Input<'_>,
     raw: Option<&RawValue>,
     cwd: Option<&str>,
-) -> Option<(String, String)> {
+) -> Option<Shown3> {
     let path =
         |path: Option<&Cow<'_, str>>| path.map(|path| shown_path(path, cwd)).unwrap_or_default();
     let (shown, what) = match name {
         "TodoWrite" | "TaskCreate" | "TaskUpdate" | "TaskList" | "TaskGet" => return None,
-        "Bash" | "PowerShell" => {
-            let command = input.command.as_deref().unwrap_or_default();
-            let lines: Vec<_> = command.lines().take(2).collect();
-            let mut what = lines.join(" ");
-            if what.chars().count() > COMMAND_CHARS || command.lines().count() > 2 {
-                what = what.chars().take(COMMAND_CHARS).collect::<String>() + "…";
-            }
-            (name.to_owned(), what)
-        }
+        "Bash" | "PowerShell" => (
+            name.to_owned(),
+            input.command.as_deref().unwrap_or_default().to_owned(),
+        ),
         "Read" => {
             let mut what = path(input.file_path.as_ref());
             if let Some(pages) = input.pages.as_deref() {
@@ -843,10 +998,11 @@ fn tool_line(
                 None | Some("" | "general-purpose") => "Agent",
                 Some(kind) => kind,
             };
-            (
+            return Some((
                 shown.to_owned(),
                 input.description.as_deref().unwrap_or_default().to_owned(),
-            )
+                input.prompt.as_deref().map(str::to_owned),
+            ));
         }
         "WebFetch" => (
             "Fetch".to_owned(),
@@ -871,22 +1027,24 @@ fn tool_line(
                 Some(other) => other.to_string(),
                 None => String::new(),
             };
-            let mut message: String = message.chars().take(MESSAGE_CHARS).collect();
-            if message.chars().count() == MESSAGE_CHARS {
-                message.push('…');
-            }
             let to = input.to.as_deref().unwrap_or_default();
-            ("SendMessage".to_owned(), format!("{to} ← \"{message}\""))
+            return Some(("SendMessage".to_owned(), to.to_owned(), Some(message)));
         }
         _ => match name
             .strip_prefix("mcp__")
             .and_then(|rest| rest.split_once("__"))
         {
             Some((server, tool)) => (format!("{server} - {tool} (MCP)"), fields(raw)),
-            None => (name.to_owned(), fields(raw)),
+            None => (
+                name.to_owned(),
+                input
+                    .description
+                    .as_deref()
+                    .map_or_else(|| fields(raw), str::to_owned),
+            ),
         },
     };
-    Some((shown, what))
+    Some((shown, what, None))
 }
 
 /// A tool's input as Claude Code writes it for a tool with no row of its
@@ -1031,7 +1189,7 @@ mod tests {
 mod entries {
     use super::{Kind, said_as};
 
-    fn shown(text: &str) -> Option<(Kind, String)> {
+    fn shown(text: &str) -> Option<(Kind, String, Option<String>)> {
         said_as(text)
     }
 
@@ -1039,17 +1197,17 @@ mod entries {
     fn user_lines_show_as_claude_code_draws_them() {
         assert_eq!(
             shown("fix the build"),
-            Some((Kind::Prompt, "fix the build".to_owned()))
+            Some((Kind::Prompt, "fix the build".to_owned(), None))
         );
         assert_eq!(
             shown(
                 "<command-message>review</command-message>\n<command-name>/review</command-name>\n<command-args>42</command-args>"
             ),
-            Some((Kind::Command, "/review 42".to_owned()))
+            Some((Kind::Command, "/review 42".to_owned(), None))
         );
         assert_eq!(
             shown("<bash-input>ls -la</bash-input>"),
-            Some((Kind::Shell, "ls -la".to_owned()))
+            Some((Kind::Shell, "ls -la".to_owned(), None))
         );
         assert_eq!(
             shown(
@@ -1059,7 +1217,8 @@ mod entries {
                 Kind::Ended {
                     status: "completed".to_owned()
                 },
-                "Build finished".to_owned()
+                "Build finished".to_owned(),
+                None
             ))
         );
         assert_eq!(
@@ -1070,7 +1229,8 @@ mod entries {
                 Kind::Message {
                     from: "notes".to_owned()
                 },
-                "Done with the draft".to_owned()
+                "Done with the draft".to_owned(),
+                None
             ))
         );
         assert_eq!(
@@ -1081,12 +1241,13 @@ mod entries {
                 Kind::Message {
                     from: "writer".to_owned()
                 },
-                "Draft ready".to_owned()
+                "Draft ready".to_owned(),
+                Some("The draft is in place.".to_owned())
             ))
         );
         assert_eq!(
             shown("[Request interrupted by user]"),
-            Some((Kind::Interrupted, "Interrupted".to_owned()))
+            Some((Kind::Interrupted, "Interrupted".to_owned(), None))
         );
         assert_eq!(
             shown("<bash-stdout>out</bash-stdout><bash-stderr></bash-stderr>"),

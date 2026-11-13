@@ -2,6 +2,7 @@
 //! draws or reads the terminal, so every event is a plain function of the
 //! state.
 
+use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 use ratatui::crossterm::event::{
@@ -106,6 +107,9 @@ pub(crate) enum Action {
     Quit,
     /// Resume this session: in a tab when the window floats, else here.
     Resume(Agent),
+    /// Open the session's file at this place in its files, in the file's
+    /// default app.
+    OpenFile(usize),
     /// Show this pane in the Rex app.
     GoTo {
         session_id: String,
@@ -137,6 +141,12 @@ pub(crate) enum Target {
     Scratch,
     /// The edge of a column, which a drag moves.
     Edge(Grip),
+    /// An entry of the prompts or the activity, which a click opens or
+    /// folds, by the key the view gives it.
+    Entry(u64),
+    /// A file of the files tab, by its place in the session's files; a
+    /// click opens it in its default app.
+    File(usize),
 }
 
 /// A column's movable edge: the column it sizes, and where the column
@@ -284,6 +294,8 @@ pub(crate) struct App {
     pub(crate) frame: usize,
     /// Whether a pane's untitled scratch sessions are listed.
     pub(crate) show_scratch: bool,
+    /// The entries opened by a click, by the view's key.
+    pub(crate) open: HashSet<u64>,
     /// The pane to select once the feed lists it, by block ID.
     pub(crate) want: Option<String>,
     /// The panes, sessions, session and results, in that order.
@@ -359,6 +371,7 @@ impl App {
             hover: None,
             frame: 0,
             show_scratch: false,
+            open: HashSet::new(),
             want: None,
             scrolls: [Scroll::default(); 4],
             wants: [48, 60, 72],
@@ -1140,6 +1153,14 @@ impl App {
                 self.dragging = Some(grip);
                 Action::None
             }
+            Target::Entry(key) => {
+                self.focus_here(Focus::Session);
+                if !self.open.remove(&key) {
+                    self.open.insert(key);
+                }
+                Action::None
+            }
+            Target::File(index) => Action::OpenFile(index),
         }
     }
 

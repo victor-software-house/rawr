@@ -5,6 +5,7 @@
 //! cells, and records where each thing that takes a click landed, so a
 //! click never disagrees with the screen.
 
+use std::hash::{Hash, Hasher};
 use std::num::NonZeroU16;
 use std::time::Duration;
 
@@ -22,7 +23,7 @@ use crate::app::feed::Pane;
 use crate::app::state::{
     self, App, Arrangement, Button, FULL, Focus, Grip, Link, RAIL, Scroll, Tab, Target, Under,
 };
-use crate::app::theme;
+use crate::app::{markup, theme};
 use crate::session::Agent;
 use crate::status::Status;
 
@@ -1016,11 +1017,20 @@ fn pane_view(frame: &mut Frame<'_>, app: &App, area: Rect, shown: Shown<'_>, hit
         width: content.width.saturating_sub(2),
         ..content
     };
-    let (lines, prs_at) = tab_lines(app, facts, usize::from(text.width));
+    let (lines, prs_at, rows) = tab_lines(app, facts, &agent.cwd, usize::from(text.width));
     let total = u16::try_from(lines.len()).unwrap_or(u16::MAX);
     hits.lists.push((content, Focus::Session));
     let skip = top_of(app.scroll_of(Focus::Session), total, content.height, None);
     hits.tops.push((Focus::Session, skip));
+    for (at, target) in rows {
+        if let Some(row) = u16::try_from(at)
+            .ok()
+            .and_then(|at| at.checked_sub(skip))
+            .filter(|row| *row < text.height)
+        {
+            hits.add(row_at(text, text.y + row), target);
+        }
+    }
     scrollbar(frame, content, skip, total);
     frame.render_widget(Paragraph::new(lines).scroll((skip, 0)), text);
     if let Some(at) = prs_at.and_then(|at| u16::try_from(at).ok())
@@ -1219,10 +1229,17 @@ fn tabs(frame: &mut Frame<'_>, app: &App, area: Rect, facts: Option<&Facts>, hit
     }
 }
 
-/// The current tab's lines, and which of them holds the pull requests.
-fn tab_lines(app: &App, facts: &Facts, width: usize) -> (Vec<Line<'static>>, Option<usize>) {
+/// The current tab's lines, which of them holds the pull requests, and
+/// which lines take a click.
+fn tab_lines(
+    app: &App,
+    facts: &Facts,
+    cwd: &str,
+    width: usize,
+) -> (Vec<Line<'static>>, Option<usize>, Rows) {
     let filter = app.filter(Focus::Session);
     let mut lines = Vec::new();
+    let mut rows = Rows::new();
     let mut prs_at = None;
     match app.tab {
         Tab::Overview => {
@@ -1301,27 +1318,9 @@ fn tab_lines(app: &App, facts: &Facts, width: usize) -> (Vec<Line<'static>>, Opt
                 }
             }
         }
-        Tab::Prompts => said(&mut lines, &facts.log, filter, width, 3),
-        Tab::Activity => said(&mut lines, &facts.activity, filter, width, 1),
-        Tab::Files => {
-            let mut files: Vec<&(String, usize)> = facts
-                .files
-                .iter()
-                .filter(|(path, _)| state::passes(filter, path))
-                .collect();
-            files.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-            let home = std::env::var("HOME").unwrap_or_default();
-            for (path, count) in files {
-                let short = match path.strip_prefix(&home) {
-                    Some(rest) if !home.is_empty() => format!("~{rest}"),
-                    _ => path.clone(),
-                };
-                lines.push(Line::from(vec![
-                    Span::styled(format!("{count:>4}× "), theme::dim()),
-                    Span::raw(truncate(&short, width.saturating_sub(7))),
-                ]));
-            }
-        }
+        Tab::Prompts => said(&mut lines, &mut rows, app, &facts.log, width),
+        Tab::Activity => said(&mut lines, &mut rows, app, &facts.activity, width),
+        Tab::Files => files(&mut lines, &mut rows, app, facts, cwd, width),
     }
     if lines.is_empty() {
         let text = if filter.is_empty() {
@@ -1331,24 +1330,95 @@ fn tab_lines(app: &App, facts: &Facts, width: usize) -> (Vec<Line<'static>>, Opt
         };
         lines.push(Line::styled(text, theme::dim()));
     }
-    (lines, prs_at)
+    (lines, prs_at, rows)
 }
 
-/// Prompts or tool calls, newest first, each up to `most` lines.
-fn said(lines: &mut Vec<Line<'static>>, items: &[Said], filter: &str, width: usize, most: usize) {
+/// The width of the age column before every entry.
+const AGE: usize = 10;
+
+/// The entries of the prompts or the activity, newest first, as Claude
+/// Code draws them. A folded entry shows its first lines with how many it
+/// leaves out; a click opens it.
+fn said(lines: &mut Vec<Line<'static>>, rows: &mut Rows, app: &App, items: &[Said], width: usize) {
+    let filter = app.filter(Focus::Session);
     for item in items
         .iter()
         .rev()
         .filter(|item| state::passes(filter, &item.searched()))
     {
+        let key = entry_key(item);
+        let open = app.open.contains(&key);
         let age = item.at.as_deref().map(when).unwrap_or_default();
         let age = format!("{:>8}  ", age.trim_end_matches(" ago"));
         let (lead, close, style) = marks(&item.kind);
-        let indent = age.chars().count() + lead.iter().map(|span| span.width()).sum::<usize>();
-        let room = width.saturating_sub(indent + close.chars().count());
-        let parts = wrap(&item.text, room, most);
-        let last = parts.len().saturating_sub(1);
-        for (index, part) in parts.into_iter().enumerate() {
+        let lead_width = lead.iter().map(Span::width).sum::<usize>();
+        // Open, a message's text starts under its mark rather than after
+        // its sender, so it keeps the width of the tab.
+        let hang = open && lead_width > 6 && !matches!(item.kind, Kind::Tool { .. });
+        let indent = if hang { AGE + 2 } else { AGE + lead_width };
+        let room = width.saturating_sub(indent + close.chars().count()).max(8);
+        let mut body = if hang {
+            let mut body = vec![Line::default()];
+            // A note whose text opens its longer text shows the longer one.
+            let first = item.text.lines().next().unwrap_or_default();
+            if !item
+                .more
+                .as_deref()
+                .is_some_and(|more| more.trim_start().starts_with(first))
+            {
+                body.extend(body_lines(item, style, room));
+            }
+            body
+        } else {
+            body_lines(item, style, room)
+        };
+        let most = match item.kind {
+            Kind::Prompt => 3,
+            Kind::Ended { .. } => 2,
+            Kind::Message { .. }
+            | Kind::Idle { .. }
+            | Kind::Relayed { .. }
+            | Kind::Tool { .. }
+            | Kind::Command
+            | Kind::Shell
+            | Kind::Memory
+            | Kind::Interrupted => 1,
+        };
+        let mut more = item
+            .more
+            .as_deref()
+            .map(|more| markup::markdown(more, width.saturating_sub(indent)))
+            .unwrap_or_default();
+        let left = if open {
+            0
+        } else {
+            // Folded, blank lines between paragraphs take no row, and a
+            // one-line entry runs its lines together.
+            body.retain(|line| line.width() > 0);
+            let left = body.len().saturating_sub(most) + more.len();
+            if most == 1 && body.len() > 1 {
+                let mut joined: Vec<Span<'static>> = Vec::new();
+                for (index, line) in body.drain(..).enumerate() {
+                    if index > 0 {
+                        joined.push(Span::raw(" "));
+                    }
+                    joined.extend(line.spans);
+                }
+                body.push(Line::from(joined));
+            }
+            body.truncate(most);
+            more.clear();
+            left
+        };
+        // What a folded entry leaves out shows at its end, never cut off.
+        let tail = if left > 0 {
+            format!("  +{left}")
+        } else {
+            String::new()
+        };
+        let start = lines.len();
+        let last = body.len().saturating_sub(1);
+        for (index, part) in body.into_iter().enumerate() {
             let mut spans = if index == 0 {
                 let mut spans = vec![Span::styled(age.clone(), theme::dim())];
                 spans.extend(lead.iter().cloned());
@@ -1356,18 +1426,83 @@ fn said(lines: &mut Vec<Line<'static>>, items: &[Said], filter: &str, width: usi
             } else {
                 vec![Span::raw(" ".repeat(indent))]
             };
-            spans.push(Span::styled(part, style));
-            if index == last && !close.is_empty() {
-                spans.push(Span::styled(close, theme::dim()));
+            spans.extend(part.spans);
+            if index == last {
+                let end = close.chars().count() + tail.chars().count();
+                let mut line = markup::fit(&Line::from(spans), width.saturating_sub(end));
+                line.spans.push(Span::styled(close, theme::dim()));
+                line.spans
+                    .push(Span::styled(tail.clone(), Style::new().fg(theme::ACCENT)));
+                lines.push(line);
+            } else {
+                lines.push(markup::fit(&Line::from(spans), width));
             }
+        }
+        for part in more {
+            let mut spans = vec![Span::raw(" ".repeat(indent))];
+            spans.extend(part.spans);
             lines.push(Line::from(spans));
         }
+        if left > 0 || open {
+            let hovered = app.hover == Some(Target::Entry(key));
+            for at in start..lines.len() {
+                rows.push((at, Target::Entry(key)));
+                if hovered && let Some(line) = lines.get_mut(at) {
+                    line.style = theme::hover();
+                }
+            }
+        }
+    }
+}
+
+/// Which line of a tab stands for what a click there reaches.
+type Rows = Vec<(usize, Target)>;
+
+/// The key an entry is opened by: the same entry gives the same key on
+/// every frame.
+fn entry_key(item: &Said) -> u64 {
+    let mut hasher = std::hash::DefaultHasher::new();
+    item.at.hash(&mut hasher);
+    item.text.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// An entry's text as Claude Code draws it, wrapped to `room` columns:
+/// shell commands in its code colours, prompts and messages as markdown.
+fn body_lines(item: &Said, style: Style, room: usize) -> Vec<Line<'static>> {
+    let plain = |text: &str| markup::wrap(&[Span::styled(text.to_owned(), style)], room);
+    let code = |text: &str| -> Vec<Line<'static>> {
+        markup::code(text, "bash")
+            .into_iter()
+            .flat_map(|line| markup::wrap(&line.spans, room))
+            .collect()
+    };
+    match &item.kind {
+        Kind::Tool { name } if name == "Bash" || name == "PowerShell" => code(&item.text),
+        Kind::Shell => code(&item.text),
+        Kind::Prompt
+        | Kind::Message { .. }
+        | Kind::Idle { .. }
+        | Kind::Relayed { .. }
+        | Kind::Ended { .. } => {
+            let lines = markup::markdown(&item.text, room);
+            if style == Style::new() {
+                lines
+            } else {
+                lines
+                    .into_iter()
+                    .map(|line| line.patch_style(style))
+                    .collect()
+            }
+        }
+        Kind::Tool { .. } | Kind::Command | Kind::Memory | Kind::Interrupted => plain(&item.text),
     }
 }
 
 /// What Claude Code draws before and after an entry's text, and the
 /// text's style.
 fn marks(kind: &Kind) -> (Vec<Span<'static>>, &'static str, Style) {
+    let name = |from: &str| Span::styled(format!("@{from} "), Style::new().fg(Color::Cyan));
     match kind {
         Kind::Prompt | Kind::Command => (vec![Span::styled("❯ ", theme::dim())], "", Style::new()),
         Kind::Shell => (
@@ -1389,16 +1524,23 @@ fn marks(kind: &Kind) -> (Vec<Span<'static>>, &'static str, Style) {
             };
             (vec![Span::styled("⏺ ", tone)], "", Style::new())
         }
-        Kind::Message { from } => (
-            vec![
-                Span::styled("› ", theme::dim()),
-                Span::raw("Message from "),
-                Span::styled(format!("@{from}"), Style::new().fg(Color::Cyan)),
-                Span::styled(": ", theme::dim()),
-            ],
-            "",
-            Style::new().add_modifier(Modifier::ITALIC),
-        ),
+        Kind::Message { from } => (vec![name(from)], "", Style::new()),
+        Kind::Idle { from, how } => {
+            let tone = match how.as_str() {
+                "failed" => Style::new().fg(theme::ERROR),
+                "was interrupted" => Style::new().fg(theme::WARNING),
+                _ => Style::new().fg(theme::WORKING),
+            };
+            (
+                vec![
+                    Span::styled("⏺ ", tone),
+                    name(from),
+                    Span::styled(format!("{how} · "), theme::dim()),
+                ],
+                "",
+                theme::dim(),
+            )
+        }
         Kind::Relayed { from } => (
             vec![
                 Span::styled("← ", Style::new().fg(theme::ACCENT)),
@@ -1417,6 +1559,103 @@ fn marks(kind: &Kind) -> (Vec<Span<'static>>, &'static str, Style) {
             Style::new(),
         ),
     }
+}
+
+/// The files the session changed, the most changed first: each file's
+/// name, then its folder shortened to fit, dim. A click opens the file.
+fn files(
+    lines: &mut Vec<Line<'static>>,
+    rows: &mut Rows,
+    app: &App,
+    facts: &Facts,
+    cwd: &str,
+    width: usize,
+) {
+    let filter = app.filter(Focus::Session);
+    let mut files: Vec<(usize, &(String, usize))> = facts
+        .files
+        .iter()
+        .enumerate()
+        .filter(|(_, (path, _))| state::passes(filter, path))
+        .collect();
+    files.sort_by(|(_, a), (_, b)| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    for (index, (path, count)) in files {
+        let (folder, name) = path.rsplit_once('/').unwrap_or(("", path));
+        let count = format!("{count:>4}× ");
+        let room = width.saturating_sub(count.chars().count() + name.chars().count() + 2);
+        let folder = short_folder(folder, cwd, room);
+        let hovered = app.hover == Some(Target::File(index));
+        let mut line = Line::from(vec![
+            Span::styled(count, theme::dim()),
+            Span::styled(
+                name.to_owned(),
+                if hovered {
+                    Style::new()
+                        .fg(theme::ACCENT)
+                        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+                } else {
+                    Style::new().add_modifier(Modifier::BOLD)
+                },
+            ),
+            Span::raw("  "),
+            Span::styled(folder, theme::dim()),
+        ]);
+        if hovered {
+            line.style = theme::hover();
+        }
+        rows.push((lines.len(), Target::File(index)));
+        lines.push(markup::fit(&line, width));
+    }
+}
+
+/// `folder` in at most `room` columns: inside the session's folder from
+/// there, under the home folder from `~`; then its middle folders cut to
+/// their first letter, from the left, and last its start dropped.
+fn short_folder(folder: &str, cwd: &str, room: usize) -> String {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let shown = if folder == cwd {
+        ".".to_owned()
+    } else if let Some(inside) = folder
+        .strip_prefix(cwd)
+        .and_then(|rest| rest.strip_prefix('/'))
+        && !cwd.is_empty()
+    {
+        inside.to_owned()
+    } else if !home.is_empty()
+        && let Some(rest) = folder.strip_prefix(&home)
+        && (rest.is_empty() || rest.starts_with('/'))
+    {
+        format!("~{rest}")
+    } else {
+        folder.to_owned()
+    };
+    let mut parts: Vec<String> = shown.split('/').map(str::to_owned).collect();
+    let fits = |parts: &[String]| parts.join("/").chars().count() <= room;
+    // The last folder says the most; the ones before it shrink first.
+    let keep = parts.len().saturating_sub(1);
+    for index in 0..keep {
+        if fits(&parts) {
+            break;
+        }
+        let Some(part) = parts.get_mut(index) else {
+            break;
+        };
+        let short: String = match part.strip_prefix('.') {
+            Some(rest) => format!(
+                ".{}",
+                rest.chars().next().map(String::from).unwrap_or_default()
+            ),
+            None => part.chars().next().map(String::from).unwrap_or_default(),
+        };
+        *part = short;
+    }
+    let mut shown = parts.join("/");
+    let size = shown.chars().count();
+    if size > room {
+        let cut = size - room.saturating_sub(1);
+        shown = format!("…{}", shown.chars().skip(cut).collect::<String>());
+    }
+    shown
 }
 
 /// `text` on lines of at most `width` characters, broken at spaces where
