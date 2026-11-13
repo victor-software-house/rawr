@@ -11,13 +11,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 
-use super::{Build, FromDaemon, Reach, ToDaemon, folder, socket};
+use super::{Build, FromDaemon, Here, Reach, ToDaemon, actions, folder, socket};
 use crate::app::facts::{self, Facts};
 use crate::app::feed::{self, Pane, Update};
+use crate::app::state::Carry;
 use crate::catalog::{self, Found};
 use crate::session;
 
@@ -27,15 +28,20 @@ const QUEUE: usize = 64;
 /// How long the daemon waits before following Rex again after the feed ends.
 const RETRY: Duration = Duration::from_secs(2);
 
-/// A file's size and modification time: when either moves, its facts are
-/// read again.
-type Stamp = (u64, Option<SystemTime>);
+/// A transcript read so far: its length then, the offset after its last
+/// whole line, and its facts up to there.
+#[derive(Clone)]
+struct Read {
+    len: u64,
+    offset: u64,
+    facts: Facts,
+}
 
 /// What every client shares.
 struct Hub {
     build: Build,
     state: Mutex<State>,
-    facts: Mutex<HashMap<PathBuf, (Stamp, Facts)>>,
+    facts: Mutex<HashMap<PathBuf, Read>>,
     catalog: Mutex<Option<Arc<Vec<Found>>>>,
 }
 
@@ -44,6 +50,22 @@ struct State {
     link: (Reach, Option<String>),
     clients: HashMap<u64, SyncSender<FromDaemon>>,
     next: u64,
+    /// Hand-offs waiting for their new window to draw, by view.
+    handoffs: HashMap<u64, Handoff>,
+}
+
+/// A floating window going to a pane in another tab: the copy the daemon
+/// started there opens with `carry`, then takes over from `old`.
+struct Handoff {
+    carry: Carry,
+    old: Here,
+    target: String,
+}
+
+fn notice(send: &SyncSender<FromDaemon>, error: &anyhow::Error) {
+    let _ = send.try_send(FromDaemon::Notice {
+        text: format!("{error:#}"),
+    });
 }
 
 fn hold<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -80,6 +102,7 @@ pub(crate) fn run() -> Result<()> {
             link: (Reach::Stale, Some("reading Rex".to_owned())),
             clients: HashMap::new(),
             next: 0,
+            handoffs: HashMap::new(),
         }),
         facts: Mutex::new(HashMap::new()),
         catalog: Mutex::new(None),
@@ -163,7 +186,7 @@ fn serve(hub: &Arc<Hub>, stream: UnixStream, socket: &Path) {
     let (send, queue) = mpsc::sync_channel::<FromDaemon>(QUEUE);
     thread::spawn(move || write_all(writer, &queue));
     let mut line = String::new();
-    let Ok(ToDaemon::Hello { build }) = read(&mut lines, &mut line) else {
+    let Ok(ToDaemon::Hello { build, view, here }) = read(&mut lines, &mut line) else {
         return;
     };
     if build != hub.build {
@@ -176,25 +199,34 @@ fn serve(hub: &Arc<Hub>, stream: UnixStream, socket: &Path) {
         }
         return;
     }
-    let id = {
+    let (id, view) = {
         let mut state = hold(&hub.state);
         let id = state.next;
         state.next += 1;
+        let view = view.unwrap_or(id);
+        let carry = state
+            .handoffs
+            .get(&view)
+            .map(|handoff| handoff.carry.clone());
         let (reach, reason) = state.link.clone();
         let _ = send.try_send(FromDaemon::Welcome {
             build: hub.build.clone(),
+            view,
+            carry,
         });
-        let _ = send.try_send(FromDaemon::Link {
-            state: reach,
-            reason,
-        });
+        // The panes before the link, so a window never draws a live link with
+        // no panes.
         if reach == Reach::Live {
             let _ = send.try_send(FromDaemon::Panes {
                 panes: state.panes.clone(),
             });
         }
+        let _ = send.try_send(FromDaemon::Link {
+            state: reach,
+            reason,
+        });
         state.clients.insert(id, send.clone());
-        id
+        (id, view)
     };
     let facts = worker(hub, send.clone(), read_facts);
     let generation = Arc::new(AtomicU64::new(0));
@@ -202,7 +234,7 @@ fn serve(hub: &Arc<Hub>, stream: UnixStream, socket: &Path) {
         let generation = Arc::clone(&generation);
         worker(
             hub,
-            send,
+            send.clone(),
             move |hub, send, job: (u64, String, Option<String>)| {
                 search(hub, send, &generation, job);
             },
@@ -217,6 +249,61 @@ fn serve(hub: &Arc<Hub>, stream: UnixStream, socket: &Path) {
             ToDaemon::Search { id, query, pane } => {
                 generation.store(id, Ordering::Release);
                 let _ = searches.send((id, query, pane));
+            }
+            ToDaemon::Drawn => {
+                let handoff = hold(&hub.state).handoffs.remove(&view);
+                if let (Some(handoff), Some(new)) = (handoff, here.clone()) {
+                    let send = send.clone();
+                    thread::spawn(move || {
+                        if let Err(error) = actions::take_over(&new, &handoff.target, &handoff.old)
+                        {
+                            notice(&send, &error);
+                        }
+                    });
+                }
+            }
+            ToDaemon::GoTo {
+                session,
+                block,
+                carry,
+            } => {
+                let (hub, send, here) = (Arc::clone(hub), send.clone(), here.clone());
+                thread::spawn(move || {
+                    match actions::go_to(here.as_ref(), &session, &block, view) {
+                        Ok(actions::Went::Shown) => {}
+                        Ok(actions::Went::Handed { old, target }) => {
+                            hold(&hub.state).handoffs.insert(
+                                view,
+                                Handoff {
+                                    carry: actions::handed(carry, &target),
+                                    old,
+                                    target,
+                                },
+                            );
+                        }
+                        Err(error) => notice(&send, &error),
+                    }
+                });
+            }
+            ToDaemon::Resume { agent, session } => {
+                let (send, here) = (send.clone(), here.clone());
+                thread::spawn(move || {
+                    let floating = here
+                        .as_ref()
+                        .is_some_and(|here| actions::floats(here).unwrap_or(false));
+                    match here {
+                        Some(here) if floating => {
+                            if let Err(error) =
+                                actions::resume_in_tab(&here, &agent, session.as_deref())
+                            {
+                                notice(&send, &error);
+                            }
+                        }
+                        _ => {
+                            let _ = send.try_send(FromDaemon::Exec { agent });
+                        }
+                    }
+                });
             }
             ToDaemon::Shutdown => shut_down(socket),
         }
@@ -282,18 +369,27 @@ fn read_facts(hub: &Hub, send: &SyncSender<FromDaemon>, path: PathBuf) {
     let Ok(meta) = fs::metadata(&path) else {
         return;
     };
-    let stamp = (meta.len(), meta.modified().ok());
-    let known = hold(&hub.facts)
-        .get(&path)
-        .filter(|(read, _)| *read == stamp)
-        .map(|(_, facts)| facts.clone());
+    let known = hold(&hub.facts).get(&path).cloned();
     let facts = match known {
-        Some(facts) => facts,
-        None => {
-            let Some(facts) = facts::read(&path) else {
+        // Unchanged since the last read.
+        Some(read) if read.len == meta.len() => read.facts,
+        // Grown: only the new lines. A transcript that shrank was rewritten,
+        // and is read from the start.
+        known => {
+            let (facts, offset) = known
+                .filter(|read| read.offset <= meta.len())
+                .map_or((Facts::default(), 0), |read| (read.facts, read.offset));
+            let Some((facts, offset)) = facts::read_on(&path, facts, offset) else {
                 return;
             };
-            hold(&hub.facts).insert(path.clone(), (stamp, facts.clone()));
+            hold(&hub.facts).insert(
+                path.clone(),
+                Read {
+                    len: meta.len(),
+                    offset,
+                    facts: facts.clone(),
+                },
+            );
             facts
         }
     };

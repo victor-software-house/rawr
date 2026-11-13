@@ -7,7 +7,7 @@
 pub(crate) mod facts;
 pub(crate) mod feed;
 mod report;
-mod state;
+pub(crate) mod state;
 mod theme;
 mod view;
 
@@ -29,7 +29,6 @@ use crate::catalog;
 use crate::daemon::link::{self, Incoming};
 use crate::daemon::{FromDaemon, Reach, ToDaemon};
 use crate::picker::terminal::{Pointer, Screen};
-use crate::rex::{Client, Endpoint};
 use crate::session::Agent;
 
 /// How often the spinner turns while a pane works; the loop waits on
@@ -39,8 +38,6 @@ const SPIN: Duration = Duration::from_millis(100);
 enum Msg {
     Input(Event),
     Daemon(Incoming),
-    /// Search again for the query in the box.
-    Search,
 }
 
 /// Opens the app and returns the session the user chose to resume, or
@@ -53,11 +50,7 @@ enum Msg {
     clippy::wildcard_enum_match_arm,
     reason = "focus and paste events change nothing"
 )]
-pub(crate) fn run(
-    select: Option<String>,
-    mut replace: Option<(String, String)>,
-    carry: Option<String>,
-) -> Result<Option<Agent>> {
+pub(crate) fn run(view: Option<u64>) -> Result<Option<Agent>> {
     let (send, receive) = mpsc::channel();
     let input = send.clone();
     thread::spawn(move || {
@@ -67,19 +60,17 @@ pub(crate) fn run(
             }
         }
     });
-    let again = send.clone();
-    // The daemon holds the panes, the facts and the search; this window
-    // holds only its view.
-    let daemon = link::start(move |incoming| send.send(Msg::Daemon(incoming)).is_ok())?;
+    // The daemon holds the panes, the facts and the search, and acts in Rex;
+    // this window holds only its view, and draws.
+    let daemon = link::start(view, move |incoming| {
+        send.send(Msg::Daemon(incoming)).is_ok()
+    })?;
 
     let mut app = App::new(std::env::var("REX_BLOCK").ok());
-    app.want.clone_from(&select);
-    // A carried query searches again once the loop runs.
-    if let Some(carry) = carry.and_then(|json| serde_json::from_str(&json).ok())
-        && app.restore(carry)
-    {
-        let _ = again.send(Msg::Search);
-    }
+    // Whether this window replaces another once it has drawn the panes.
+    let mut replacing = false;
+    // Whether the daemon's panes have arrived since this window connected.
+    let mut panes_in = false;
     // The newest search this window sent; hits for an older one are dropped.
     let mut generation: u64 = 0;
     let mut facts: HashMap<PathBuf, Facts> = HashMap::new();
@@ -110,13 +101,11 @@ pub(crate) fn run(
             .draw(|frame| hits = view::draw(frame, &app, shown))
             .context("draw the app")?;
         app.settle(&hits.tops);
-        // The copy this one replaces stays on screen until this one has drawn
-        // the panes; then this one takes its place.
-        if matches!(app.link, Link::Live)
-            && let Some((session, block)) = replace.take()
-            && let Err(error) = take_over(select.as_deref(), (&session, &block))
-        {
-            app.notice = Some(format!("{error:#}"));
+        // The window this one replaces stays on screen until this one has
+        // drawn the panes; then the daemon swaps them.
+        if replacing && panes_in && matches!(app.link, Link::Live) {
+            replacing = false;
+            daemon.send(ToDaemon::Drawn);
         }
         screen.set_pointer(if app.dragging || app.hover.is_some() {
             Pointer::Hand
@@ -155,11 +144,15 @@ pub(crate) fn run(
                     Action::None
                 }
                 Msg::Input(_) => Action::None,
-                Msg::Search => Action::Search,
-                Msg::Daemon(Incoming::Connected) => {
+                Msg::Daemon(Incoming::Connected { carry }) => {
                     // What this window asked before the link went.
                     asked = None;
-                    if app.focus == state::Focus::Search {
+                    panes_in = false;
+                    if let Some(carry) = carry {
+                        replacing = true;
+                        app.restore(carry);
+                    }
+                    if app.focus == state::Focus::Search && !app.query.trim().is_empty() {
                         Action::Search
                     } else {
                         Action::None
@@ -172,6 +165,7 @@ pub(crate) fn run(
                 Msg::Daemon(Incoming::Message(message)) => {
                     match message {
                         FromDaemon::Panes { panes } => {
+                            panes_in = true;
                             app.set_panes(panes);
                             // A pane's activity may have moved its transcript.
                             asked = None;
@@ -201,6 +195,8 @@ pub(crate) fn run(
                                 app.add_results(hits, (read, total));
                             }
                         }
+                        FromDaemon::Exec { agent } => return Ok(Some(agent)),
+                        FromDaemon::Notice { text } => app.notice = Some(text),
                         FromDaemon::Hits { .. }
                         | FromDaemon::Welcome { .. }
                         | FromDaemon::Refused { .. } => {}
@@ -212,31 +208,24 @@ pub(crate) fn run(
                 Action::None => {}
                 Action::Quit => return Ok(None),
                 Action::Resume(agent) => {
-                    // A floating app resumes in a tab of its own; a tiled one
-                    // becomes the session.
+                    // A floating window resumes in a tab of the pane's session;
+                    // the daemon decides, and answers `exec` for a tiled one.
                     let session = match app.focus {
                         state::Focus::Search => None,
                         state::Focus::Panes | state::Focus::Sessions => {
                             app.selected().map(|pane| pane.session_id.clone())
                         }
                     };
-                    match floats() {
-                        Ok(true) => {
-                            if let Err(error) = resume_in_tab(&agent, session.as_deref()) {
-                                app.notice = Some(format!("{error:#}"));
-                            }
-                        }
-                        Ok(false) | Err(_) => return Ok(Some(agent)),
-                    }
+                    daemon.send(ToDaemon::Resume { agent, session });
                 }
                 Action::GoTo {
                     session_id,
                     block_id,
-                } => {
-                    if let Err(error) = go_to(&session_id, &block_id, &app.carry()) {
-                        app.notice = Some(format!("{error:#}"));
-                    }
-                }
+                } => daemon.send(ToDaemon::GoTo {
+                    session: session_id,
+                    block: block_id,
+                    carry: app.carry(),
+                }),
                 Action::Search => {
                     generation += 1;
                     if catalog::terms(&app.query).is_empty() {
@@ -282,161 +271,4 @@ fn own_status(app: &App) -> Report {
             Report::Idle(parts.join(" · "))
         }
     }
-}
-
-/// Shows `block_id` in the Rex app. When this app floats in another window,
-/// it starts a copy of itself there instead, out of sight and at its own
-/// size, with the pane selected; the copy draws, then switches the view
-/// and closes this one (see [`take_over`]), so nothing blank or resizing is
-/// ever on screen.
-fn go_to(session_id: &str, block_id: &str, carry: &state::Carry) -> Result<()> {
-    let mut client = Client::connect(&Endpoint::from_environment()?)?;
-    let window_id = client
-        .view(session_id)?
-        .find(block_id)
-        .map(|(_, window, _)| window.window_id.clone())
-        .context("the pane is no longer in its session")?;
-    let here = std::env::var("REX_SESSION").ok();
-    let me = std::env::var("REX_BLOCK").ok();
-    let floating = match (&here, &me) {
-        (Some(here), Some(me)) => client
-            .view(here)?
-            .find(me)
-            .filter(|(_, own, layer)| layer.floats() && own.window_id != window_id)
-            .map(|(_, _, layer)| layer.bounds),
-        _ => None,
-    };
-    let (Some(bounds), Some(here), Some(me)) = (floating, &here, &me) else {
-        reveal(&mut client, session_id, block_id)?;
-        client.show(
-            here.as_deref().unwrap_or(session_id),
-            session_id,
-            &window_id,
-        )?;
-        return shown(&mut client, session_id, block_id, &window_id);
-    };
-    let size = client.terminal_size(here, me)?;
-    let exe = std::env::current_exe().context("find the rawr binary")?;
-    client.float_command(
-        session_id,
-        &window_id,
-        bounds,
-        &[
-            exe.display().to_string(),
-            "--select".to_owned(),
-            block_id.to_owned(),
-            "--replace-session".to_owned(),
-            here.clone(),
-            "--replace-block".to_owned(),
-            me.clone(),
-            "--carry".to_owned(),
-            serde_json::to_string(carry).context("write the app's state")?,
-        ],
-        &size,
-    )?;
-    Ok(())
-}
-
-/// What a copy started by [`go_to`] does once it has drawn the panes: brings
-/// the pane it went to into view, focuses itself over it, asks the Rex app
-/// to show its window, and closes the copy it replaces, by that block's ID.
-fn take_over(select: Option<&str>, (old_session, old_block): (&str, &str)) -> Result<()> {
-    let mut client = Client::connect(&Endpoint::from_environment()?)?;
-    let session = std::env::var("REX_SESSION").context("rawr runs outside Rex")?;
-    let me = std::env::var("REX_BLOCK").context("rawr runs outside Rex")?;
-    if let Some(block) = select {
-        reveal(&mut client, &session, block)?;
-    }
-    client.focus_block(&session, &me)?;
-    let window_id = client
-        .view(&session)?
-        .find(&me)
-        .map(|(_, window, _)| window.window_id.clone())
-        .context("this copy is no longer in its session")?;
-    client.show(old_session, &session, &window_id)?;
-    shown(&mut client, &session, &me, &window_id)?;
-    client.close_block(old_session, old_block)
-}
-
-/// Brings `block_id` into view in its session: its window active, no other
-/// block zoomed over it, and its floating layer drawn. Returns its window.
-fn reveal(client: &mut Client, session_id: &str, block_id: &str) -> Result<String> {
-    let view = client.view(session_id)?;
-    let (_, window, layer) = view
-        .find(block_id)
-        .context("the pane is no longer in its session")?;
-    let window_id = window.window_id.clone();
-    if window
-        .zoomed_block_id
-        .as_deref()
-        .is_some_and(|zoomed| zoomed != block_id)
-    {
-        client.unzoom(session_id, block_id)?;
-    }
-    if layer.minimized() {
-        client.restore_layer(session_id, &layer.layer_id)?;
-    }
-    client.focus_block(session_id, block_id)?;
-    Ok(window_id)
-}
-
-/// Checks that Rex now draws `block_id`: its window is the active one, no
-/// other block is zoomed over it, and its layer is not minimized.
-fn shown(client: &mut Client, session_id: &str, block_id: &str, window_id: &str) -> Result<()> {
-    let view = client.view(session_id)?;
-    let (_, window, layer) = view
-        .find(block_id)
-        .context("the pane is no longer in its session")?;
-    let active = view.active_window_id.as_deref() == Some(window_id);
-    let covered = window
-        .zoomed_block_id
-        .as_deref()
-        .is_some_and(|zoomed| zoomed != block_id);
-    anyhow::ensure!(
-        active && !covered && !layer.minimized(),
-        "the pane did not come into view, so rawr stayed where it is"
-    );
-    Ok(())
-}
-
-/// Whether this app floats over its window.
-fn floats() -> Result<bool> {
-    let (Ok(here), Ok(me)) = (std::env::var("REX_SESSION"), std::env::var("REX_BLOCK")) else {
-        return Ok(false);
-    };
-    let mut client = Client::connect(&Endpoint::from_environment()?)?;
-    Ok(client
-        .view(&here)?
-        .find(&me)
-        .is_some_and(|(_, _, layer)| layer.floats()))
-}
-
-/// Resumes `agent` in a new tab of `session_id`, or of this app's session,
-/// named by its title, and shows that tab.
-fn resume_in_tab(agent: &Agent, session_id: Option<&str>) -> Result<()> {
-    anyhow::ensure!(
-        std::path::Path::new(&agent.cwd).is_dir(),
-        "{} no longer exists",
-        agent.cwd
-    );
-    let here = std::env::var("REX_SESSION").context("rawr runs outside Rex")?;
-    let session = session_id.unwrap_or(&here);
-    let mut client = Client::connect(&Endpoint::from_environment()?)?;
-    let label: String = agent.title.chars().take(128).collect();
-    let window = client.open_tab(
-        session,
-        &label,
-        &agent.cwd,
-        &[
-            "claude".to_owned(),
-            "--resume".to_owned(),
-            agent.session_id.clone(),
-        ],
-    )?;
-    // The app learns of the new tab a moment after the server makes it, and
-    // a request to show a tab it has not heard of yet does nothing; asking
-    // once more after that moment lands either way.
-    client.show(&here, session, &window)?;
-    thread::sleep(Duration::from_millis(200));
-    client.show(&here, session, &window)
 }

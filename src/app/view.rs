@@ -89,15 +89,8 @@ pub(crate) fn draw(
         side_panel(frame, app, sidebar, &mut hits);
     }
     edge_line(frame, app, edge, &mut hits);
-    // The last row stays empty: a report there may be the pointer below the
-    // pane, so the footer sits above it.
-    let [content, search, footer, _] = Layout::vertical([
-        Constraint::Fill(1),
-        Constraint::Length(3),
-        Constraint::Length(1),
-        Constraint::Length(1),
-    ])
-    .areas(main);
+    let [content, search] =
+        Layout::vertical([Constraint::Fill(1), Constraint::Length(3)]).areas(main);
     let content = pad(content, 1, 1);
     let (content, panel) = match facts {
         Some(_) => {
@@ -123,7 +116,6 @@ pub(crate) fn draw(
         detail(frame, app, content, &mut hits);
     }
     search_box(frame, app, search, &mut hits);
-    footer_line(frame, app, footer, &mut hits);
     if app.help {
         hits.targets.clear();
         hits.cursor = None;
@@ -1070,7 +1062,19 @@ fn search_box(frame: &mut Frame<'_>, app: &App, area: Rect, hits: &mut Hits) {
         Paragraph::new(text).block(
             Block::bordered()
                 .border_type(BorderType::Rounded)
-                .border_style(border),
+                .border_style(border)
+                // The bottom border carries what a footer would: a notice,
+                // else where the keys are, so no row goes to either.
+                .title_bottom(match &app.notice {
+                    Some(notice) => Line::styled(
+                        format!(
+                            " ▲ {} ",
+                            truncate(notice, usize::from(area.width).saturating_sub(8))
+                        ),
+                        Style::new().fg(theme::WARNING),
+                    ),
+                    None => Line::styled(" ? keys ", theme::dim()).right_aligned(),
+                }),
         ),
         area,
     );
@@ -1082,60 +1086,6 @@ fn search_box(frame: &mut Frame<'_>, app: &App, area: Rect, hits: &mut Hits) {
         ));
     }
     hits.add(area, Target::Search);
-}
-
-fn footer_line(frame: &mut Frame<'_>, app: &App, area: Rect, hits: &mut Hits) {
-    if let Some(notice) = &app.notice {
-        put(
-            frame,
-            area,
-            Line::styled(format!("  ▲ {notice}"), Style::new().fg(theme::WARNING)),
-        );
-        return;
-    }
-    let keys: &[(Option<Button>, &str, &str)] = if app.focus == Focus::Search {
-        &[
-            (Some(Button::Resume), "enter", "resume"),
-            (None, "↑↓", "move"),
-            (None, "esc", "back"),
-        ]
-    } else {
-        &[
-            (Some(Button::GoTo), "enter", "go to pane"),
-            (Some(Button::Resume), "r", "resume here"),
-            (Some(Button::Search), "/", "search"),
-            (Some(Button::Sidebar), "ctrl+b", "sidebar"),
-            (Some(Button::Help), "?", "keys"),
-            (Some(Button::Quit), "q", "quit"),
-        ]
-    };
-    let mut x = area.x + 2;
-    for (button, key, what) in keys {
-        let text = format!("{key} {what}");
-        let width = u16::try_from(text.chars().count()).unwrap_or(0);
-        if x + width > area.right() {
-            break;
-        }
-        let cell = Rect { x, width, ..area };
-        let hovered = button.is_some_and(|button| app.hover == Some(Target::Button(button)));
-        let (key_style, what_style) = if hovered {
-            (Style::new().fg(theme::ACCENT), Style::new())
-        } else {
-            (theme::dim(), theme::dim())
-        };
-        put(
-            frame,
-            cell,
-            Line::from(vec![
-                Span::styled((*key).to_owned(), key_style),
-                Span::styled(format!(" {what}"), what_style),
-            ]),
-        );
-        if let Some(button) = button {
-            hits.add(cell, Target::Button(*button));
-        }
-        x += width + 3;
-    }
 }
 
 fn help(frame: &mut Frame<'_>) {

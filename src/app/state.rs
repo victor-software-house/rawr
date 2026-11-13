@@ -54,9 +54,6 @@ pub(crate) enum Action {
 pub(crate) enum Button {
     GoTo,
     Resume,
-    Search,
-    Help,
-    Quit,
     /// Folds the sidebar to a rail of glyphs, or opens it again.
     Sidebar,
 }
@@ -486,15 +483,6 @@ impl App {
         match button {
             Button::GoTo => self.go_to(),
             Button::Resume => self.resume(),
-            Button::Search => {
-                self.focus = Focus::Search;
-                Action::Search
-            }
-            Button::Help => {
-                self.help = true;
-                Action::None
-            }
-            Button::Quit => Action::Quit,
             Button::Sidebar => {
                 self.folded = !self.folded;
                 Action::None
@@ -635,6 +623,8 @@ impl App {
 /// The selected pane goes by its block ID, as `--select`.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Carry {
+    /// The pane to select once the panes arrive, by block ID.
+    pub(crate) select: Option<String>,
     focus: Focus,
     session: usize,
     query: String,
@@ -647,6 +637,7 @@ pub(crate) struct Carry {
 impl App {
     pub(crate) fn carry(&self) -> Carry {
         Carry {
+            select: None,
             focus: self.focus,
             session: self.session,
             query: self.query.clone(),
@@ -660,6 +651,7 @@ impl App {
     /// Opens as `carry` says. Returns whether a search must run again for
     /// the carried query.
     pub(crate) fn restore(&mut self, carry: Carry) -> bool {
+        self.want = carry.select;
         self.focus = carry.focus;
         self.session = carry.session;
         self.query = carry.query;

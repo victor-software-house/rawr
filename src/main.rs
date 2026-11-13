@@ -39,20 +39,9 @@ use crate::setup::{Change, Mode};
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
-    /// The pane the app opens with selected, by its Rex block ID. The app
-    /// passes it on when it moves to another Rex session.
-    #[arg(long, hide = true, value_name = "BLOCK")]
-    select: Option<String>,
-    /// The state the replaced copy hands over, as JSON.
-    #[arg(long, hide = true, value_name = "JSON")]
-    carry: Option<String>,
-    /// The copy of the app this one replaces: its Rex session and block.
-    /// This one closes it, by that block ID, once its own first full frame
-    /// is drawn.
-    #[arg(long, hide = true, value_name = "SESSION", requires = "replace_block")]
-    replace_session: Option<String>,
-    #[arg(long, hide = true, value_name = "BLOCK", requires = "replace_session")]
-    replace_block: Option<String>,
+    /// The view a hand-off started this window for, by the daemon's ID.
+    #[arg(long, hide = true, value_name = "ID")]
+    view: Option<u64>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -188,11 +177,7 @@ fn main() -> ExitCode {
             ) => View::new(OutputFormat::Pretty, ColorMode::Auto),
         })
         .run(|cli| match cli.command {
-            None => open_app(
-                cli.select,
-                cli.replace_session.zip(cli.replace_block),
-                cli.carry,
-            ),
+            None => open_app(cli.view),
             Some(Command::Record) => record().map(|()| Outcome::Recorded),
             Some(Command::Daemon) => daemon::serve().map(|()| Outcome::Recorded),
             Some(Command::Pick) => pick(),
@@ -285,16 +270,12 @@ fn find(words: &[String]) -> Result<Outcome> {
 }
 
 /// Opens the app, and resumes the session the user chooses.
-fn open_app(
-    select: Option<String>,
-    replace: Option<(String, String)>,
-    carry: Option<String>,
-) -> Result<Outcome> {
+fn open_app(view: Option<u64>) -> Result<Outcome> {
     if !std::io::stderr().is_terminal() {
         eprintln!("rawr needs a terminal; rawr status --format json lists the panes");
         return Ok(Outcome::Nothing);
     }
-    match app::run(select, replace, carry)? {
+    match app::run(view)? {
         Some(agent) => match agent.resume()? {},
         None => Ok(Outcome::Recorded),
     }

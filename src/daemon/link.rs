@@ -12,7 +12,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 
-use super::{Build, FromDaemon, ToDaemon, folder, socket};
+use super::{Build, FromDaemon, Here, ToDaemon, folder, socket};
+use crate::app::state::Carry;
 
 /// How long a client waits for a daemon it started to say `ready`.
 const READY: Duration = Duration::from_secs(5);
@@ -23,8 +24,11 @@ const BACKOFF: (Duration, Duration) = (Duration::from_millis(100), Duration::fro
 /// What the link hands the window.
 #[derive(Debug)]
 pub(crate) enum Incoming {
-    /// Connected and welcomed, at the start or again after a loss.
-    Connected,
+    /// Connected and welcomed, at the start or again after a loss; `carry`
+    /// is the view of the window a hand-off replaces.
+    Connected {
+        carry: Option<Carry>,
+    },
     Message(FromDaemon),
     /// The connection went; the link is reconnecting.
     Lost(String),
@@ -45,20 +49,34 @@ impl Link {
 
 /// Starts the link: one thread keeps the connection, reading into `deliver`
 /// and writing what [`Link::send`] queues.
-pub(crate) fn start(deliver: impl Fn(Incoming) -> bool + Send + 'static) -> Result<Link> {
+pub(crate) fn start(
+    view: Option<u64>,
+    deliver: impl Fn(Incoming) -> bool + Send + 'static,
+) -> Result<Link> {
     let build = Build::current()?;
     let (requests, outbox) = mpsc::channel::<ToDaemon>();
-    thread::spawn(move || keep(&build, &Mutex::new(outbox), &deliver));
+    thread::spawn(move || keep(&build, view, &Mutex::new(outbox), &deliver));
     Ok(Link { requests })
 }
 
-fn keep(build: &Build, outbox: &Mutex<Receiver<ToDaemon>>, deliver: &dyn Fn(Incoming) -> bool) {
+fn keep(
+    build: &Build,
+    mut view: Option<u64>,
+    outbox: &Mutex<Receiver<ToDaemon>>,
+    deliver: &dyn Fn(Incoming) -> bool,
+) {
     let mut wait = BACKOFF.0;
     loop {
-        let why = match connect(build) {
-            Ok(stream) => {
+        let why = match connect(build, view) {
+            Ok(Welcomed {
+                stream,
+                view: id,
+                carry,
+            }) => {
                 wait = BACKOFF.0;
-                if !deliver(Incoming::Connected) {
+                // A reconnect asks for the same view.
+                view = Some(id);
+                if !deliver(Incoming::Connected { carry }) {
                     return;
                 }
                 match pump(stream, outbox, deliver) {
@@ -143,11 +161,11 @@ fn write(stream: &mut UnixStream, request: &ToDaemon) -> Result<()> {
 }
 
 /// A welcomed connection: to the running daemon, or to one this starts.
-fn connect(build: &Build) -> Result<UnixStream> {
+fn connect(build: &Build, view: Option<u64>) -> Result<Welcomed> {
     let path = socket()?;
     if let Ok(stream) = UnixStream::connect(&path) {
-        match hello(stream, build)? {
-            Hello::Welcome(stream) => return Ok(stream),
+        match hello(stream, build, view)? {
+            Hello::Welcome(welcomed) => return Ok(welcomed),
             Hello::Refused(mut stream) => {
                 // Another binary: ask it to stop, and wait for its socket
                 // to go quiet.
@@ -169,28 +187,37 @@ fn connect(build: &Build) -> Result<UnixStream> {
     lock.lock().context("wait for start.lock")?;
     // Another window may have started one while this one waited.
     if let Ok(stream) = UnixStream::connect(&path)
-        && let Hello::Welcome(stream) = hello(stream, build)?
+        && let Hello::Welcome(welcomed) = hello(stream, build, view)?
     {
-        return Ok(stream);
+        return Ok(welcomed);
     }
     spawn()?;
     let stream = UnixStream::connect(&path).context("connect to the rawr daemon")?;
-    match hello(stream, build)? {
-        Hello::Welcome(stream) => Ok(stream),
+    match hello(stream, build, view)? {
+        Hello::Welcome(welcomed) => Ok(welcomed),
         Hello::Refused(_) => bail!("the rawr daemon it started runs another binary"),
     }
 }
 
+/// A connection the daemon welcomed, with the window's view.
+struct Welcomed {
+    stream: UnixStream,
+    view: u64,
+    carry: Option<Carry>,
+}
+
 enum Hello {
-    Welcome(UnixStream),
+    Welcome(Welcomed),
     Refused(UnixStream),
 }
 
-fn hello(mut stream: UnixStream, build: &Build) -> Result<Hello> {
+fn hello(mut stream: UnixStream, build: &Build, view: Option<u64>) -> Result<Hello> {
     write(
         &mut stream,
         &ToDaemon::Hello {
             build: build.clone(),
+            view,
+            here: Here::current(),
         },
     )?;
     stream
@@ -211,7 +238,11 @@ fn hello(mut stream: UnixStream, build: &Build) -> Result<Hello> {
         .set_read_timeout(None)
         .context("time the handshake")?;
     match serde_json::from_slice(&line).context("parse the welcome")? {
-        FromDaemon::Welcome { .. } => Ok(Hello::Welcome(stream)),
+        FromDaemon::Welcome { view, carry, .. } => Ok(Hello::Welcome(Welcomed {
+            stream,
+            view,
+            carry,
+        })),
         FromDaemon::Refused { .. } => Ok(Hello::Refused(stream)),
         _ => bail!("the rawr daemon did not answer the hello"),
     }
