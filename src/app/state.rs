@@ -1000,9 +1000,6 @@ impl App {
                 }
                 Action::Search
             }
-            // The header of a drawn-out column is on screen already; a click
-            // there leaves the columns as they are.
-            Target::Column(column) if self.out(column) => Action::None,
             Target::Column(column) => {
                 self.focus_on(column);
                 Action::None
