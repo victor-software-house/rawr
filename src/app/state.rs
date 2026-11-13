@@ -7,6 +7,7 @@ use ratatui::crossterm::event::{
 };
 
 use crate::app::feed::Pane;
+use crate::catalog::Hit;
 use crate::session::Agent;
 use crate::status::Status;
 
@@ -84,7 +85,9 @@ pub(crate) struct App {
     pub(crate) focus: Focus,
     pub(crate) link: Link,
     pub(crate) query: String,
-    pub(crate) results: Vec<Agent>,
+    pub(crate) results: Vec<Hit>,
+    /// Whether the transcripts are still being read for the current query.
+    pub(crate) deep: bool,
     pub(crate) result: usize,
     pub(crate) help: bool,
     /// One line for the status bar, such as the Rex app's refusal.
@@ -127,6 +130,7 @@ impl App {
             link: Link::Connecting,
             query: String::new(),
             results: Vec::new(),
+            deep: false,
             result: 0,
             help: false,
             notice: None,
@@ -174,7 +178,11 @@ impl App {
     /// newest that no live Claude holds.
     fn chosen(&self) -> Option<Agent> {
         match self.focus {
-            Focus::Search => self.results.get(self.result).cloned(),
+            Focus::Search => self
+                .results
+                .get(self.result)
+                .filter(|hit| self.running(&hit.agent.session_id).is_none())
+                .map(|hit| hit.agent.clone()),
             Focus::Sessions => self
                 .selected()
                 .and_then(|pane| pane.sessions.get(self.session))
@@ -267,7 +275,7 @@ impl App {
                 self.results.clear();
                 Action::None
             }
-            KeyCode::Enter => self.resume(),
+            KeyCode::Enter => self.open_hit(),
             KeyCode::Down => {
                 self.step(1);
                 Action::None
@@ -379,7 +387,7 @@ impl App {
             }
             Target::Result(index) => {
                 if self.result == index {
-                    return self.resume();
+                    return self.open_hit();
                 }
                 self.result = index;
                 Action::None
@@ -433,13 +441,55 @@ impl App {
         self.dragging = false;
     }
 
-    pub(crate) fn set_results(&mut self, results: Vec<Agent>) {
+    pub(crate) fn set_results(&mut self, results: Vec<Hit>) {
         self.results = results;
         self.result = 0;
     }
 
+    /// Adds the transcript matches a deep search found for the current query.
+    pub(crate) fn add_results(&mut self, more: Vec<Hit>) {
+        let known: std::collections::HashSet<String> = self
+            .results
+            .iter()
+            .map(|hit| hit.agent.session_id.clone())
+            .collect();
+        self.results.extend(
+            more.into_iter()
+                .filter(|hit| !known.contains(&hit.agent.session_id)),
+        );
+        self.deep = false;
+    }
+
+    /// The pane whose Claude runs `session_id` now, when the sidebar has it.
+    pub(crate) fn running(&self, session_id: &str) -> Option<usize> {
+        self.panes.iter().position(|pane| {
+            pane.status != Status::Stopped
+                && pane
+                    .sessions
+                    .first()
+                    .is_some_and(|(agent, held)| *held && agent.session_id == session_id)
+        })
+    }
+
     fn resume(&self) -> Action {
         self.chosen().map_or(Action::None, Action::Resume)
+    }
+
+    /// A search hit whose Claude runs goes to its pane; any other resumes.
+    fn open_hit(&self) -> Action {
+        let Some(hit) = self.results.get(self.result) else {
+            return Action::None;
+        };
+        match self
+            .running(&hit.agent.session_id)
+            .and_then(|index| self.panes.get(index))
+        {
+            Some(pane) => Action::GoTo {
+                session_id: pane.session_id.clone(),
+                block_id: pane.block_id.clone(),
+            },
+            None => self.resume(),
+        }
     }
 
     fn go_to(&self) -> Action {

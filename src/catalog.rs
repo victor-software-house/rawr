@@ -31,6 +31,10 @@ pub(crate) struct Found {
     latest: u64,
     /// Whether the title came from a typed prompt rather than a slash command.
     titled: bool,
+    /// Its prompts as typed, oldest first, for the line a search shows.
+    prompts: Vec<String>,
+    /// Its transcript, which a deep search reads.
+    pub(crate) transcript: PathBuf,
 }
 
 /// A session's transcript, as one listing of `projects/*/` finds it.
@@ -105,11 +109,14 @@ pub(crate) fn load(claude: &Path, live: &HashSet<String>) -> Result<Vec<Found>> 
             text: format!("{}\n{}\n", prompt.project.to_lowercase(), id.to_lowercase()),
             latest: 0,
             titled: false,
+            prompts: Vec::new(),
+            transcript: transcript.path.clone(),
         });
         if !found.titled && !is_command(&prompt.display) {
             found.agent.title = title(&prompt.display);
             found.titled = true;
         }
+        found.prompts.push(prompt.display.as_ref().to_owned());
         found.text.push_str(&prompt.display.to_lowercase());
         found.text.push('\n');
         found.latest = found.latest.max(prompt.timestamp);
@@ -211,6 +218,134 @@ pub(crate) fn search(pane: &[Agent], catalog: &[Found], terms: &[String]) -> Vec
         }
     }
     results
+}
+
+/// A session a search found, with the line that matched.
+#[derive(Debug, Clone)]
+pub(crate) struct Hit {
+    pub(crate) agent: Agent,
+    /// The typed prompt, or the stretch of transcript, that holds the first
+    /// search word, cut around it.
+    pub(crate) snippet: Option<String>,
+    /// How many prompts the user typed in the session.
+    pub(crate) prompts: usize,
+}
+
+/// The longest snippet, in characters.
+const SNIPPET_CHARS: usize = 160;
+
+/// `text` cut to about [`SNIPPET_CHARS`] around the first place `term`
+/// occurs, on one line and safe to draw.
+pub(crate) fn around(text: &str, term: &str) -> String {
+    let flat = sanitize(&text.split_whitespace().collect::<Vec<_>>().join(" "));
+    let lower = flat.to_lowercase();
+    let chars: Vec<char> = flat.chars().collect();
+    let at = lower
+        .find(term)
+        .map_or(0, |byte| lower[..byte].chars().count());
+    let start = at.saturating_sub(SNIPPET_CHARS / 3);
+    let end = (start + SNIPPET_CHARS).min(chars.len());
+    let mut cut: String = chars[start..end].iter().collect();
+    if start > 0 {
+        cut.insert(0, '…');
+    }
+    if end < chars.len() {
+        cut.push('…');
+    }
+    cut
+}
+
+/// Like [`search`], with the line that matched and the session's prompt
+/// count.
+pub(crate) fn hits(pane: &[Agent], catalog: &[Found], terms: &[String]) -> Vec<Hit> {
+    let by_id: HashMap<&str, &Found> = catalog
+        .iter()
+        .map(|found| (found.agent.session_id.as_str(), found))
+        .collect();
+    let first = terms.first().map(String::as_str).unwrap_or_default();
+    search(pane, catalog, terms)
+        .into_iter()
+        .map(|agent| {
+            let found = by_id.get(agent.session_id.as_str());
+            let snippet = found.and_then(|found| {
+                found
+                    .prompts
+                    .iter()
+                    .rev()
+                    .find(|prompt| prompt.to_lowercase().contains(first))
+                    .map(|prompt| around(prompt, first))
+            });
+            Hit {
+                prompts: found.map_or(0, |found| found.prompts.len()),
+                agent,
+                snippet,
+            }
+        })
+        .collect()
+}
+
+/// The sessions in `catalog` whose transcript holds every term, though no
+/// prompt or title does: what Claude wrote, tool output, file names. Each
+/// transcript is read whole, once per search; `skip` holds the sessions
+/// already found.
+pub(crate) fn deep(
+    catalog: &[Found],
+    terms: &[String],
+    skip: &HashSet<String>,
+    stale: impl Fn() -> bool,
+) -> Vec<Hit> {
+    let Some(first) = terms.first() else {
+        return Vec::new();
+    };
+    catalog
+        .iter()
+        .filter(|found| !skip.contains(&found.agent.session_id))
+        .take_while(|_| !stale())
+        .filter_map(|found| {
+            let bytes = fs::read(&found.transcript).ok()?;
+            // Only what the user and Claude wrote counts: the instructions,
+            // reminders and attachments Claude Code adds to every session
+            // would match everything.
+            let lines: Vec<(&[u8], Vec<u8>)> = bytes
+                .split(|byte| *byte == b'\n')
+                .map(|line| (line, line.to_ascii_lowercase()))
+                .filter(|(_, lower)| spoken(lower))
+                .collect();
+            let holds = |term: &String| {
+                lines
+                    .iter()
+                    .any(|(_, lower)| memchr::memmem::find(lower, term.as_bytes()).is_some())
+            };
+            if !terms.iter().all(holds) {
+                return None;
+            }
+            let (line, at) = lines.iter().find_map(|(line, lower)| {
+                memchr::memmem::find(lower, first.as_bytes()).map(|at| (*line, at))
+            })?;
+            let start = at.saturating_sub(SNIPPET_CHARS);
+            let end = (at + SNIPPET_CHARS * 2).min(line.len());
+            let raw = String::from_utf8_lossy(&line[start..end])
+                .replace("\\n", " ")
+                .replace("\\\"", "\"")
+                .replace("\\t", " ");
+            Some(Hit {
+                agent: found.agent.clone(),
+                snippet: Some(around(&raw, first)),
+                prompts: found.prompts.len(),
+            })
+        })
+        .collect()
+}
+
+/// Whether a transcript line, lowercase, holds words the user or Claude
+/// wrote: a user or assistant message, and not one Claude Code marks as its
+/// own, such as the loaded instructions or a reminder.
+fn spoken(lower: &[u8]) -> bool {
+    let has = |needle: &[u8]| memchr::memmem::find(lower, needle).is_some();
+    (has(b"\"type\":\"user\"") || has(b"\"type\":\"assistant\""))
+        && !has(b"\"ismeta\":true")
+        && !has(b"<system-reminder>")
+        && !has(b"\"tool_use_id\"")
 }
 
 #[cfg(test)]

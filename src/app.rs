@@ -10,7 +10,9 @@ mod state;
 mod theme;
 mod view;
 
-use std::sync::mpsc;
+use std::collections::HashSet;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::Duration;
 
@@ -23,6 +25,7 @@ use state::{Action, App, Link};
 
 use crate::catalog::{self, Found};
 use crate::picker::terminal::{Pointer, Screen};
+use crate::rex::{Client, Endpoint};
 use crate::session::{self, Agent};
 
 /// How often the spinner turns while a pane works; the loop waits on
@@ -32,6 +35,8 @@ const SPIN: Duration = Duration::from_millis(100);
 enum Msg {
     Input(Event),
     Feed(feed::Update),
+    /// What a deep search found for the query of this generation.
+    Deep(u64, Vec<catalog::Hit>),
 }
 
 /// Opens the app and returns the session the user chose to resume, or
@@ -54,6 +59,7 @@ pub(crate) fn run() -> Result<Option<Agent>> {
             }
         }
     });
+    let deep_results = send.clone();
     let (feed_send, feed_receive) = mpsc::channel();
     thread::spawn(move || feed::run(&feed_send));
     thread::spawn(move || {
@@ -65,7 +71,36 @@ pub(crate) fn run() -> Result<Option<Agent>> {
     });
 
     let mut app = App::new(std::env::var("REX_BLOCK").ok());
-    let mut found: Option<Vec<Found>> = None;
+    let mut found: Option<Arc<Vec<Found>>> = None;
+    // One worker reads transcripts for the newest query only: each new
+    // query bumps the generation, and the worker drops a stale one between
+    // files.
+    let generation = Arc::new(AtomicU64::new(0));
+    let (deep_send, deep_receive) =
+        mpsc::channel::<(u64, Arc<Vec<Found>>, Vec<String>, HashSet<String>)>();
+    {
+        let generation = Arc::clone(&generation);
+        let results = deep_results;
+        thread::spawn(move || {
+            while let Ok(mut job) = deep_receive.recv() {
+                while let Ok(newer) = deep_receive.try_recv() {
+                    job = newer;
+                }
+                let (id, found, terms, skip) = job;
+                if generation.load(Ordering::Acquire) != id {
+                    continue;
+                }
+                let hits = catalog::deep(&found, &terms, &skip, || {
+                    generation.load(Ordering::Acquire) != id
+                });
+                if generation.load(Ordering::Acquire) == id
+                    && results.send(Msg::Deep(id, hits)).is_err()
+                {
+                    break;
+                }
+            }
+        });
+    }
     let mut screen = Screen::enter_with(false)?;
     execute!(std::io::stderr(), SetCursorStyle::BlinkingBar).context("set the cursor shape")?;
     let mut reporter = Reporter::default();
@@ -115,6 +150,12 @@ pub(crate) fn run() -> Result<Option<Agent>> {
                     Action::None
                 }
                 Msg::Input(_) => Action::None,
+                Msg::Deep(id, hits) => {
+                    if id == generation.load(Ordering::Acquire) {
+                        app.add_results(hits);
+                    }
+                    Action::None
+                }
                 Msg::Feed(feed::Update::Panes(panes)) => {
                     app.set_panes(panes);
                     Action::None
@@ -135,16 +176,21 @@ pub(crate) fn run() -> Result<Option<Agent>> {
                 Action::GoTo {
                     session_id,
                     block_id,
-                } => {
-                    app.notice = Some(format!(
-                        "go to pane is not built yet: {session_id} {block_id}"
-                    ));
-                }
+                } => match go_to(&session_id, &block_id) {
+                    Ok(Went::Stayed) => {}
+                    Ok(Went::Handed) => return Ok(None),
+                    Err(error) => app.notice = Some(format!("{error:#}")),
+                },
                 Action::Search => {
                     if found.is_none() {
-                        let live = session::live_sessions().unwrap_or_default();
-                        found = Some(catalog::load(&session::claude_dir()?, &live)?);
+                        // Running sessions too: search finds them, and enter
+                        // goes to their pane.
+                        found = Some(Arc::new(catalog::load(
+                            &session::claude_dir()?,
+                            &HashSet::new(),
+                        )?));
                     }
+                    let catalog = found.clone().unwrap_or_default();
                     let pane: Vec<Agent> = app
                         .selected()
                         .map(|pane| {
@@ -154,16 +200,21 @@ pub(crate) fn run() -> Result<Option<Agent>> {
                                 .collect()
                         })
                         .unwrap_or_default();
-                    let results = if app.query.trim().is_empty() {
-                        Vec::new()
+                    let terms = catalog::terms(&app.query);
+                    let id = generation.fetch_add(1, Ordering::AcqRel) + 1;
+                    if terms.is_empty() {
+                        app.set_results(Vec::new());
+                        app.deep = false;
                     } else {
-                        catalog::search(
-                            &pane,
-                            found.as_deref().unwrap_or(&[]),
-                            &catalog::terms(&app.query),
-                        )
-                    };
-                    app.set_results(results);
+                        let hits = catalog::hits(&pane, &catalog, &terms);
+                        let skip = hits
+                            .iter()
+                            .map(|hit| hit.agent.session_id.clone())
+                            .collect();
+                        app.set_results(hits);
+                        app.deep = true;
+                        let _ = deep_send.send((id, catalog, terms, skip));
+                    }
                 }
             }
         }
@@ -198,4 +249,53 @@ fn own_status(app: &App) -> Report {
             Report::Idle(parts.join(" · "))
         }
     }
+}
+
+/// What going to a pane did with the app itself.
+enum Went {
+    /// The app is still on screen: tiled where it was, or floating over the
+    /// pane it went to.
+    Stayed,
+    /// A new app floats over the pane in its session; this one ends.
+    Handed,
+}
+
+/// Shows `block_id` in the Rex app. When this app floats, it floats over the
+/// pane it went to: moved there within its own session, or started there
+/// afresh in another session, since a block stays in its session.
+fn go_to(session_id: &str, block_id: &str) -> Result<Went> {
+    let mut client = Client::connect(&Endpoint::from_environment()?)?;
+    let target = client.view(session_id)?;
+    let (_, window, _) = target
+        .find(block_id)
+        .context("the pane is no longer in its session")?;
+    let window_id = window.window_id.clone();
+    let here = std::env::var("REX_SESSION").ok();
+    let me = std::env::var("REX_BLOCK").ok();
+    let floating = match (&here, &me) {
+        (Some(here), Some(me)) => client
+            .view(here)?
+            .find(me)
+            .filter(|(_, own, layer)| layer.floats() && own.window_id != window_id)
+            .map(|(_, _, layer)| layer.bounds),
+        _ => None,
+    };
+    client.focus_block(session_id, block_id)?;
+    client.show(
+        here.as_deref().unwrap_or(session_id),
+        session_id,
+        &window_id,
+    )?;
+    let (Some(bounds), Some(here), Some(me)) = (floating, here, me) else {
+        return Ok(Went::Stayed);
+    };
+    if here == session_id {
+        client.move_beside(&here, &me, block_id)?;
+        client.float(&here, &me, bounds)?;
+        client.focus_block(&here, &me)?;
+        return Ok(Went::Stayed);
+    }
+    let exe = std::env::current_exe().context("find the rawr binary")?;
+    client.float_command(session_id, &window_id, bounds, &[exe.display().to_string()])?;
+    Ok(Went::Handed)
 }

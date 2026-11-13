@@ -26,6 +26,8 @@ pub(crate) struct Pane {
     /// The session's label and the block's label, as `rawr status` names them.
     pub(crate) name: String,
     pub(crate) status: Status,
+    /// The tab that holds the pane, such as `tab 2`.
+    pub(crate) tab: String,
     /// How far the deciding record is, 0 to 100, when its program says.
     pub(crate) progress: Option<u8>,
     /// The deciding record's line: what Claude is doing or waits for.
@@ -60,6 +62,8 @@ struct Tracked {
     session: Session,
     block: Block,
     records: Vec<StatusRecord>,
+    /// The tab that holds the block: its label, else its place from 1.
+    tab: String,
 }
 
 /// Runs the feed until the event stream ends or the receiver is gone.
@@ -148,16 +152,28 @@ fn list_session(
         Err(error) if session_is_gone(&error) => return Ok(()),
         Err(error) => return Err(error),
     };
+    let view = lister.view(&session.id).ok();
     for block in blocks.into_iter().filter(Block::is_terminal) {
         let Some(records) = lister.program_status(session, &block)? else {
             continue;
         };
+        let tab = view
+            .as_ref()
+            .and_then(|view| view.find(&block.id))
+            .map(|(index, window, _)| match window.label.as_deref() {
+                Some(label) if !label.is_empty() && !label.starts_with("Window ") => {
+                    label.to_owned()
+                }
+                _ => format!("tab {index}"),
+            })
+            .unwrap_or_default();
         panes.insert(
             block.id.clone(),
             Tracked {
                 session: session.clone(),
                 block,
                 records,
+                tab,
             },
         );
     }
@@ -212,6 +228,7 @@ fn pane(tracked: &Tracked, dir: &Path, live: &HashSet<String>) -> Option<Pane> {
         block_id: tracked.block.id.clone(),
         name: pane_name(&tracked.session, &tracked.block),
         status: Status::from_records(&tracked.records),
+        tab: tracked.tab.clone(),
         progress,
         msg,
         sessions,
