@@ -86,9 +86,16 @@ pub(crate) fn code(text: &str, language: &str) -> Vec<Line<'static>> {
                         runs.into_iter()
                             .map(|(style, run)| {
                                 let run = run.trim_end_matches(['\n', '\r']).to_owned();
+                                // Text in the theme's own foreground keeps the
+                                // terminal's, as the rest of the app does.
                                 let colour = style.foreground;
+                                let white = colour.r.min(colour.g).min(colour.b) >= 0xf0;
                                 let mut shown =
-                                    Style::new().fg(Color::Rgb(colour.r, colour.g, colour.b));
+                                    if white || Some(colour) == THEME.settings.foreground {
+                                        Style::new()
+                                    } else {
+                                        Style::new().fg(Color::Rgb(colour.r, colour.g, colour.b))
+                                    };
                                 if style.font_style.contains(FontStyle::BOLD) {
                                     shown = shown.add_modifier(Modifier::BOLD);
                                 }

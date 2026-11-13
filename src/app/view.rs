@@ -1349,7 +1349,8 @@ fn said(lines: &mut Vec<Line<'static>>, rows: &mut Rows, app: &App, items: &[Sai
         let key = entry_key(item);
         let open = app.open.contains(&key);
         let age = item.at.as_deref().map(when).unwrap_or_default();
-        let age = format!("{:>8}  ", age.trim_end_matches(" ago"));
+        let age = format!("{:>7} ", age.trim_end_matches(" ago"));
+        let hovered = app.hover == Some(Target::Entry(key));
         let (lead, close, style) = marks(&item.kind);
         let lead_width = lead.iter().map(Span::width).sum::<usize>();
         // Open, a message's text starts under its mark rather than after
@@ -1416,41 +1417,57 @@ fn said(lines: &mut Vec<Line<'static>>, rows: &mut Rows, app: &App, items: &[Sai
         } else {
             String::new()
         };
+        let folds = left > 0 || open;
+        // As a-tui draws a fold: `▸` before a folded entry, `▾` before an
+        // open one under the pointer, and a bar down the rest of its rows.
+        let marker = match (folds, open, hovered) {
+            (true, false, false) => Span::styled("▸ ", theme::dim()),
+            (true, false, true) | (true, true, true) => {
+                Span::raw(if open { "▾ " } else { "▸ " })
+            }
+            _ => Span::raw("  "),
+        };
+        let gutter = |hovered: bool| {
+            if hovered {
+                vec![
+                    Span::styled("▏", Style::new().fg(theme::ACCENT)),
+                    Span::raw(" ".repeat(indent.saturating_sub(1))),
+                ]
+            } else {
+                vec![Span::raw(" ".repeat(indent))]
+            }
+        };
         let start = lines.len();
         let last = body.len().saturating_sub(1);
         for (index, part) in body.into_iter().enumerate() {
             let mut spans = if index == 0 {
-                let mut spans = vec![Span::styled(age.clone(), theme::dim())];
+                let mut spans = vec![Span::styled(age.clone(), theme::dim()), marker.clone()];
                 spans.extend(lead.iter().cloned());
                 spans
             } else {
-                vec![Span::raw(" ".repeat(indent))]
+                gutter(hovered)
             };
             spans.extend(part.spans);
             if index == last {
                 let end = close.chars().count() + tail.chars().count();
                 let mut line = markup::fit(&Line::from(spans), width.saturating_sub(end));
                 line.spans.push(Span::styled(close, theme::dim()));
-                line.spans
-                    .push(Span::styled(tail.clone(), Style::new().fg(theme::ACCENT)));
+                line.spans.push(Span::styled(
+                    tail.clone(),
+                    if hovered { Style::new() } else { theme::dim() },
+                ));
                 lines.push(line);
             } else {
                 lines.push(markup::fit(&Line::from(spans), width));
             }
         }
         for part in more {
-            let mut spans = vec![Span::raw(" ".repeat(indent))];
+            let mut spans = gutter(hovered);
             spans.extend(part.spans);
             lines.push(Line::from(spans));
         }
-        if left > 0 || open {
-            let hovered = app.hover == Some(Target::Entry(key));
-            for at in start..lines.len() {
-                rows.push((at, Target::Entry(key)));
-                if hovered && let Some(line) = lines.get_mut(at) {
-                    line.style = theme::hover();
-                }
-            }
+        if folds {
+            rows.extend((start..lines.len()).map(|at| (at, Target::Entry(key))));
         }
     }
 }
@@ -1585,7 +1602,7 @@ fn files(
         let room = width.saturating_sub(count.chars().count() + name.chars().count() + 2);
         let folder = short_folder(folder, cwd, room);
         let hovered = app.hover == Some(Target::File(index));
-        let mut line = Line::from(vec![
+        let line = Line::from(vec![
             Span::styled(count, theme::dim()),
             Span::styled(
                 name.to_owned(),
@@ -1600,9 +1617,6 @@ fn files(
             Span::raw("  "),
             Span::styled(folder, theme::dim()),
         ]);
-        if hovered {
-            line.style = theme::hover();
-        }
         rows.push((lines.len(), Target::File(index)));
         lines.push(markup::fit(&line, width));
     }
