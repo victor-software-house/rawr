@@ -37,3 +37,12 @@ When a drain the session acknowledged closes without a restart, the rawr mod SHA
 
 - **WHEN** a session acknowledged `d-7a21` and the daemon closes `d-7a21` after `restart.wait` expires
 - **THEN** the session's next turn starts with the cancellation notice
+
+### Requirement: Acknowledge when the carrying turn ends
+
+The rawr mod SHALL acknowledge a drain request with the session's ID when the turn that carried it ends, on `turn.complete` and on `turn.abort`.
+
+#### Scenario: The hand-off turn ends in an error
+
+- **WHEN** the turn that carried `d-7a21` ends with an API error
+- **THEN** the mod acknowledges `d-7a21`, and a block that reads `Failed` counts as settled

@@ -82,3 +82,8 @@ The daemon SHALL delete no pane file on block events during a restart it runs, a
 
 - **WHEN** `drain.yaml` names a daemon process that no longer runs
 - **THEN** no session receives its hand-off request, and the next daemon start removes `drain.yaml`
+
+#### Scenario: A second Claude in a pane that already acknowledged
+
+- **WHEN** session `6f1c2a90-3b7e-4d21-9c55-0a8e4f7b1d33` acknowledged `d-7a21` and exited, and a new session starts in the same block
+- **THEN** the block stays unsettled until the new session acknowledges `d-7a21`

@@ -97,8 +97,8 @@ The closest first-party models are Claude Code's own supervisor, which defers it
      A session that starts while a drain is open reads it on its first read, like any other.
    - An idle session gets the hand-off request through `$.prompt.submit`, which Claude Code marks as sent by the rawr mod.
    - A busy session gets it through `$.session.append` before its next step.
-   - The mod acknowledges a request with `rawr drain ack <id>` only when the turn that carried it ends (`turn.complete`).
-     The acknowledgement sits under the session's block, keyed by the drain's ID, so an acknowledgement of an earlier drain never counts for a later one.
+   - The mod acknowledges a request with `rawr drain ack <id>` when the turn that carried it ends, whether it completes (`turn.complete`) or ends in error (`turn.abort`).
+     The acknowledgement sits under the session's block, keyed by the drain's ID and the session's ID, and counts only for the block's current session, so neither an earlier drain's acknowledgement nor an earlier session's in the same pane counts.
    - The request text covers finishing the current step, committing or noting what is unfinished, writing a hand-off, starting no new work, and ending the turn.
 
    Delivery does not depend on `crossSessionInbound` or on the inbox socket.
@@ -113,7 +113,7 @@ The closest first-party models are Claude Code's own supervisor, which defers it
    - A block that reads Needs input is named at once, so the user can answer it, and the wait goes on.
    - A block whose session has no rawr mod, such as one started before `rawr setup`, is named at once as one that cannot acknowledge.
      It counts as settled once it has read Idle with no child record for `drain.grace` (default 2 minutes).
-   - Past `restart.wait` (default 30 minutes, Claude Code's own cap), the restart fails and names each pane as busy, waiting on input, or not acknowledged.
+   - Past `restart.wait` (default 30 minutes, Claude Code's own cap), the restart fails, closes the drain so no later session receives its request, and names each pane as busy, waiting on input, or not acknowledged.
    - Once every block has settled, the daemon checks every block once more right before the stop.
    - It then stops the Rex server, starts it again, and closes the drain.
    - On a timeout or any other failure, the daemon closes the drain, so no session goes on winding down for a restart that will not come.
