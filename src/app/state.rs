@@ -149,6 +149,15 @@ pub(crate) struct Drawer {
     open: bool,
 }
 
+/// A move of focus on screen: the column it left, the widths the columns
+/// had then, and when.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Move {
+    pub(crate) was: Focus,
+    from: [u16; 3],
+    at: Instant,
+}
+
 /// What lies under the pointer, as the last frame drew it.
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct Under {
@@ -236,7 +245,7 @@ pub(crate) struct App {
     pub(crate) arrangement: Arrangement,
     pub(crate) tab: Tab,
     /// The column focus last left, and when, for the move on screen.
-    pub(crate) moved: Option<(Focus, Instant)>,
+    pub(crate) moved: Option<Move>,
     pub(crate) link: Link,
     pub(crate) query: String,
     pub(crate) results: Vec<Hit>,
@@ -377,16 +386,16 @@ impl App {
 
     /// How long the last move of focus takes: the farthest any edge goes.
     fn move_span(&self) -> Duration {
-        let Some((was, _)) = self.moved else {
+        let Some(moved) = self.moved else {
             return Duration::ZERO;
         };
         // One view at a time slides a few columns in.
         if self.arrangement == Arrangement::Single {
             return span(10);
         }
-        let from = widths(was, self.total(), self.wants);
         let to = widths(self.at(), self.total(), self.wants);
-        let far = from
+        let far = moved
+            .from
             .iter()
             .zip(to)
             .map(|(a, b)| a.abs_diff(b))
@@ -398,7 +407,56 @@ impl App {
     /// How far the last move of focus has come, from 0 to 1, eased out.
     pub(crate) fn progress(&self) -> f32 {
         self.moved
-            .map_or(1.0, |(_, at)| eased(at.elapsed(), self.move_span()).1)
+            .map_or(1.0, |moved| eased(moved.at.elapsed(), self.move_span()).1)
+    }
+
+    /// Each column's width on screen now, as the last move has brought it.
+    pub(crate) fn layout(&self) -> [u16; 3] {
+        let total = self.total();
+        let to = widths(self.at(), total, self.wants);
+        let Some(moved) = self.moved else {
+            return to;
+        };
+        let progress = self.progress();
+        let mix = |a: u16, b: u16| -> u16 {
+            let at = f32::from(a) + (f32::from(b) - f32::from(a)) * progress;
+            // The result lies between two u16 values, so it fits.
+            #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let at = at.round().max(0.0) as u16;
+            at
+        };
+        let first = mix(moved.from[0], to[0]);
+        let second = mix(moved.from[1], to[1]).min(total.saturating_sub(first));
+        [first, second, total.saturating_sub(first + second)]
+    }
+
+    /// Marks a move from the columns as they stand, so a move that cuts
+    /// into another starts where that one had got to.
+    fn start_move(&mut self, was: Focus) {
+        let mut from = self.layout();
+        // A drawer that is out becomes its column at the width it is drawn,
+        // taking the room from the widest of the others.
+        if let Some((column, out)) = self.drawn() {
+            let full = self.drawer_full(column);
+            #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let wide = (f32::from(RAIL) + (f32::from(full) - f32::from(RAIL)) * out)
+                .round()
+                .max(0.0) as u16;
+            let at = column.column();
+            let gain = wide.saturating_sub(from[at]);
+            if let Some(widest) = (0..3)
+                .filter(|other| *other != at)
+                .max_by_key(|other| from[*other])
+            {
+                from[widest] = from[widest].saturating_sub(gain);
+                from[at] += gain;
+            }
+        }
+        self.moved = Some(Move {
+            was,
+            from,
+            at: Instant::now(),
+        });
     }
 
     /// How wide `column` is when drawn out all the way.
@@ -421,7 +479,7 @@ impl App {
     /// columns reflow, so a drawer has nothing left to cover.
     fn focus_on(&mut self, column: Focus) {
         if column != self.focus {
-            self.moved = Some((self.focus, Instant::now()));
+            self.start_move(self.focus);
             self.focus = column;
             self.filtering = false;
             self.drawer = None;
@@ -578,7 +636,7 @@ impl App {
     /// Whether focus is still moving on screen, so frames come fast.
     pub(crate) fn moving(&self) -> bool {
         self.moved
-            .is_some_and(|(_, at)| at.elapsed() < self.move_span())
+            .is_some_and(|moved| moved.at.elapsed() < self.move_span())
             || self
                 .drawer
                 .is_some_and(|drawer| drawer.at.elapsed() < self.drawer_span(drawer.column))
@@ -620,7 +678,7 @@ impl App {
                     Arrangement::Rails => Arrangement::Single,
                     Arrangement::Single => Arrangement::Rails,
                 };
-                self.moved = Some((self.focus, Instant::now()));
+                self.start_move(self.focus);
                 return Action::None;
             }
             (true, KeyCode::Char('f')) => {
@@ -942,6 +1000,9 @@ impl App {
                 }
                 Action::Search
             }
+            // The header of a drawn-out column is on screen already; a click
+            // there leaves the columns as they are.
+            Target::Column(column) if self.out(column) => Action::None,
             Target::Column(column) => {
                 self.focus_on(column);
                 Action::None

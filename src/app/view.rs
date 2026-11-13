@@ -173,27 +173,8 @@ fn rule(frame: &mut Frame<'_>, area: Rect, style: Style) {
 // The rails arrangement.
 
 /// Each column's width when `focus` has settled, of `total` columns.
-/// The widths `progress` of the way from `from` to `to`, summing to `total`.
-fn blend(from: [u16; 3], to: [u16; 3], progress: f32, total: u16) -> [u16; 3] {
-    let mix = |a: u16, b: u16| -> u16 {
-        let at = f32::from(a) + (f32::from(b) - f32::from(a)) * progress;
-        // The result lies between two u16 values, so it fits.
-        #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let at = at.round().max(0.0) as u16;
-        at
-    };
-    let first = mix(from[0], to[0]);
-    let second = mix(from[1], to[1]).min(total.saturating_sub(first));
-    [first, second, total.saturating_sub(first + second)]
-}
-
 fn rails(frame: &mut Frame<'_>, app: &App, area: Rect, shown: Shown<'_>, hits: &mut Hits) {
-    let total = area.width.saturating_sub(2);
-    let to = widths(app.at(), total, app.wants);
-    let from = app
-        .moved
-        .map_or(to, |(was, _)| widths(was, total, app.wants));
-    let [a, b, c] = blend(from, to, app.progress(), total);
+    let [a, b, c] = app.layout();
     let [first, edge_a, second, edge_b, third] = Layout::horizontal([
         Constraint::Length(a),
         Constraint::Length(1),
@@ -562,7 +543,7 @@ fn single(frame: &mut Frame<'_>, app: &App, area: Rect, shown: Shown<'_>, hits: 
     view(frame, app, at, body, shown, hits);
     // The view slides in from the side it came from: deeper from the right,
     // back from the left.
-    if let Some((was, _)) = app.moved
+    if let Some(was) = app.moved.map(|moved| moved.was)
         && was.column() != at.column()
     {
         let sign: f32 = if at.column() > was.column() {
