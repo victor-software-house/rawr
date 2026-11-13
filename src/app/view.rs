@@ -3,9 +3,11 @@
 //! Drawing reads the state and writes cells, and records where each thing
 //! that takes a click landed, so a click never disagrees with the screen.
 
+use std::num::NonZeroU16;
 use std::time::Duration;
 
 use ratatui::Frame;
+use ratatui::buffer::{Buffer, CellDiffOption};
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -13,7 +15,7 @@ use ratatui::widgets::{
     Block, BorderType, Clear, Padding, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
 };
 
-use crate::app::facts::Facts;
+use crate::app::facts::{Facts, Pr};
 use crate::app::feed::Pane;
 use crate::app::state::{App, Button, Focus, Link, Scroll, Target};
 use crate::app::theme;
@@ -625,15 +627,12 @@ fn facts_panel(frame: &mut Frame<'_>, area: Rect, agent: &Agent, facts: Option<&
         truncate(&format!("{span}   {}", agent.short_cwd()), width),
         theme::dim(),
     ));
-    if !facts.prs.is_empty() {
-        lines.push(Line::from(vec![
-            Span::styled("PRs  ", theme::dim()),
-            Span::styled(
-                truncate(&facts.prs.join("  "), width.saturating_sub(5)),
-                Style::new().fg(theme::ACCENT),
-            ),
-        ]));
-    }
+    // The pull requests go in after the text, as links: their line is held
+    // empty here.
+    let prs_at = (!facts.prs.is_empty()).then(|| {
+        lines.push(Line::default());
+        lines.len() - 1
+    });
     if let Some(prompt) = &facts.last_prompt {
         lines.push(Line::from(vec![
             Span::styled("Last  ", theme::dim()),
@@ -641,6 +640,88 @@ fn facts_panel(frame: &mut Frame<'_>, area: Rect, agent: &Agent, facts: Option<&
         ]));
     }
     frame.render_widget(Paragraph::new(lines), area);
+    if let Some(at) = prs_at.and_then(|at| u16::try_from(at).ok())
+        && at < area.height
+    {
+        pr_links(frame.buffer_mut(), row_at(area, area.y + at), &facts.prs);
+    }
+}
+
+/// The pull requests on one line, grouped by repository and named without
+/// the owner: `rawr #9 #15  hakkiri #145`. Each number is a link that a
+/// click opens.
+fn pr_links(buf: &mut Buffer, area: Rect, prs: &[Pr]) {
+    let mut repos: Vec<(&str, Vec<&Pr>)> = Vec::new();
+    for pr in prs {
+        let name = pr.repo.rsplit('/').next().unwrap_or(&pr.repo);
+        match repos.iter_mut().find(|(repo, _)| *repo == name) {
+            Some((_, list)) => list.push(pr),
+            None => repos.push((name, vec![pr])),
+        }
+    }
+    let end = area.right();
+    let mut x = buf
+        .set_stringn(
+            area.x,
+            area.y,
+            "PRs  ",
+            usize::from(area.width),
+            theme::dim(),
+        )
+        .0;
+    for (index, (repo, list)) in repos.iter().enumerate() {
+        let gap = if index == 0 { "" } else { "   " };
+        let label = format!("{gap}{repo}");
+        if x + u16::try_from(label.len() + 3).unwrap_or(u16::MAX) > end {
+            buf.set_string(x, area.y, "…", theme::dim());
+            return;
+        }
+        x = buf
+            .set_stringn(x, area.y, &label, usize::from(end - x), Style::new())
+            .0;
+        for pr in list {
+            let text = format!("#{}", pr.number);
+            let wide = u16::try_from(text.len()).unwrap_or(u16::MAX);
+            if x + 1 + wide > end {
+                buf.set_string(x.min(end.saturating_sub(1)), area.y, "…", theme::dim());
+                return;
+            }
+            x += 1;
+            hyperlink(
+                buf,
+                (x, area.y),
+                &text,
+                &pr.url,
+                Style::new().fg(theme::ACCENT),
+            );
+            x += wide;
+        }
+    }
+}
+
+/// Writes `text` at `at` as an OSC 8 hyperlink to `url`. The sequence rides
+/// in the first cell, forced to the text's width, and the cells it covers
+/// are skipped, so the columns around it stay where they are. A URL with
+/// anything but printable ASCII is written as plain text.
+fn hyperlink(buf: &mut Buffer, (x, y): (u16, u16), text: &str, url: &str, style: Style) {
+    let safe = url.starts_with("https://") && url.bytes().all(|byte| byte.is_ascii_graphic());
+    let wide = u16::try_from(text.chars().count()).unwrap_or(0);
+    let (true, Some(forced)) = (safe, NonZeroU16::new(wide)) else {
+        buf.set_string(x, y, text, style);
+        return;
+    };
+    if let Some(cell) = buf.cell_mut((x, y)) {
+        cell.set_symbol(&format!("\x1b]8;;{url}\x1b\\{text}\x1b]8;;\x1b\\"))
+            .set_style(style)
+            .set_diff_option(CellDiffOption::ForcedWidth(forced));
+    }
+    for (offset, glyph) in (1..wide).zip(text.chars().skip(1)) {
+        if let Some(cell) = buf.cell_mut((x + offset, y)) {
+            cell.set_char(glyph)
+                .set_style(style)
+                .set_diff_option(CellDiffOption::Skip);
+        }
+    }
 }
 
 /// How long ago `stamp`, a UTC time such as `2026-11-13T13:40:12.000Z`,

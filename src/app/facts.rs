@@ -20,8 +20,8 @@ use crate::session::sanitize;
 pub(crate) struct Facts {
     pub(crate) model: Option<String>,
     pub(crate) branch: Option<String>,
-    /// `owner/repo#n`, in the order the session opened them.
-    pub(crate) prs: Vec<String>,
+    /// The pull requests the session opened, in that order.
+    pub(crate) prs: Vec<Pr>,
     /// The first and last timestamps, as the transcript writes them.
     pub(crate) started: Option<String>,
     pub(crate) last: Option<String>,
@@ -32,6 +32,15 @@ pub(crate) struct Facts {
     pub(crate) last_prompt: Option<String>,
     /// How many sub-agents the session started.
     pub(crate) agents: usize,
+}
+
+/// A pull request a session opened.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Pr {
+    /// `owner/repo`.
+    pub(crate) repo: String,
+    pub(crate) number: u64,
+    pub(crate) url: String,
 }
 
 /// A file's size and modification time: when either moves, its facts are
@@ -119,6 +128,8 @@ struct Record {
     pr_repository: Option<String>,
     #[serde(rename = "prNumber", default)]
     pr_number: Option<u64>,
+    #[serde(rename = "prUrl", default)]
+    pr_url: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -163,8 +174,10 @@ fn read(path: &Path) -> Option<Facts> {
         }
         match record.kind.as_str() {
             "pr-link" => {
-                if let (Some(repo), Some(number)) = (record.pr_repository, record.pr_number) {
-                    let pr = format!("{repo}#{number}");
+                if let (Some(repo), Some(number), Some(url)) =
+                    (record.pr_repository, record.pr_number, record.pr_url)
+                {
+                    let pr = Pr { repo, number, url };
                     if !facts.prs.contains(&pr) {
                         facts.prs.push(pr);
                     }
