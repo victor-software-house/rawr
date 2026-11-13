@@ -9,10 +9,11 @@ The README describes the behaviour; this file holds the rules for changing it.
    `record` is the only writer; `pick` only reads.
 2. The index stays one file per live block.
    `record` deletes a file only after the Rex server has answered with its full block list; a failed or partial listing deletes nothing.
-3. `pick` writes only the chosen command to stdout and draws everything else on the terminal through stderr, so `$(rawr pick)` captures nothing but the command.
-   It exits non-zero, printing nothing, when there is no terminal, no index, nothing to resume, or the user dismisses it.
-4. The binary starts only `rex`.
-   It never starts `claude`; the shell runs the printed command.
+3. `pick` and `find` draw on the terminal through stderr and write nothing to stdout.
+   On a choice they restore the terminal, then replace their own process with `claude --resume <session id>` in the session's folder.
+   They exit non-zero, printing nothing, when there is no terminal, no index, nothing to resume, or the user dismisses the picker.
+4. The binary starts `rex`, and on a choice becomes `claude`; it starts nothing else.
+   Nothing resumes without a choice.
 5. The repository is public.
    Examples, fixtures and docs use invented session titles, folders and IDs, never ones taken from a real machine.
 

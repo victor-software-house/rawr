@@ -2,12 +2,14 @@
 //! it, its title, and how long ago it was active.
 
 use std::collections::HashSet;
+use std::convert::Infallible;
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom};
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use memchr::memmem;
 use rustix::process::{Pid, test_kill_process};
 use serde::Deserialize;
@@ -25,13 +27,22 @@ pub(crate) struct Agent {
 }
 
 impl Agent {
-    /// The shell line that resumes this session from its start folder.
-    pub(crate) fn resume_command(&self) -> String {
-        format!(
-            "cd -- {} && claude --resume {}",
-            shell_quote(&self.cwd),
-            shell_quote(&self.session_id)
-        )
+    /// Resumes this session in its start folder: the process becomes
+    /// `claude --resume <session id>` and returns only when that fails.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the start folder is gone or `claude` cannot start.
+    pub(crate) fn resume(&self) -> Result<Infallible> {
+        if !Path::new(&self.cwd).is_dir() {
+            bail!("{} no longer exists", self.cwd);
+        }
+        let error = std::process::Command::new("claude")
+            .arg("--resume")
+            .arg(&self.session_id)
+            .current_dir(&self.cwd)
+            .exec();
+        Err(error).context("start claude")
     }
 
     /// The start folder with the home directory written as `~`.
@@ -46,12 +57,6 @@ impl Agent {
             None => self.cwd.clone(),
         }
     }
-}
-
-/// Quotes a word for POSIX shells and zsh: single quotes, with each `'`
-/// written as `'\''`.
-fn shell_quote(word: &str) -> String {
-    format!("'{}'", word.replace('\'', r"'\''"))
 }
 
 /// The record Claude Code keeps per running process.
@@ -136,47 +141,109 @@ struct TitleRow {
     ai: Option<String>,
 }
 
-/// How much of a transcript's end [`transcript_title`] reads. Transcripts
-/// reach hundreds of megabytes, and Claude Code writes the title rows again
-/// every few dozen kilobytes, the user's title next to each generated one, so
-/// the end holds the current title.
-const TITLE_TAIL: u64 = 1 << 20;
+/// How much [`transcript_title`] reads from each end of a transcript: Claude
+/// Code's own session list reads the same 64 KiB at each end
+/// (`LITE_READ_BUF_SIZE`). Its writer appends the session's title rows again
+/// once 32 KiB have been written since the last time, and again at exit, so
+/// the last 64 KiB hold the current titles even after a long line. A title
+/// row anywhere else in the middle is not read.
+const TITLE_WINDOW: u64 = 64 << 10;
 
-/// The session's title: the last title the user set, else the last one
-/// Claude generated, from the transcript's last [`TITLE_TAIL`] bytes.
-fn transcript_title(path: &Path) -> Option<String> {
-    let custom_marker = memmem::Finder::new(br#""type":"custom-title""#);
-    let ai_marker = memmem::Finder::new(br#""type":"ai-title""#);
-    let mut file = File::open(path).ok()?;
-    let start = file.metadata().ok()?.len().saturating_sub(TITLE_TAIL);
-    file.seek(SeekFrom::Start(start)).ok()?;
-    let mut tail = Vec::new();
-    file.take(TITLE_TAIL).read_to_end(&mut tail).ok()?;
-    let whole = if start == 0 {
-        tail.as_slice()
-    } else {
-        let cut = memchr::memchr(b'\n', &tail)?;
-        &tail[cut + 1..]
-    };
-    let (mut custom, mut ai) = (None, None);
-    for line in whole.rsplit(|&byte| byte == b'\n') {
-        let is_custom = custom_marker.find(line).is_some();
-        if !is_custom && (ai.is_some() || ai_marker.find(line).is_none()) {
-            continue;
-        }
-        let Ok(row) = serde_json::from_slice::<TitleRow>(line) else {
-            continue;
-        };
-        if is_custom {
-            if let Some(title) = row.custom {
-                custom = Some(title);
-                break;
-            }
-        } else {
-            ai = row.ai;
+/// Which title row [`last_row`] looks for.
+#[derive(Debug, Clone, Copy)]
+enum Title {
+    /// A title the user set: `{"type":"custom-title","customTitle":...}`.
+    User,
+    /// A title Claude Code generated: `{"type":"ai-title","aiTitle":...}`.
+    Generated,
+}
+
+impl Title {
+    const fn marker(self) -> &'static [u8] {
+        match self {
+            Self::User => br#""type":"custom-title""#,
+            Self::Generated => br#""type":"ai-title""#,
         }
     }
-    custom.or(ai).filter(|title| !title.trim().is_empty())
+}
+
+/// The `custom-title.json` file Claude Code keeps beside a session's
+/// transcript, at `<project dir>/<session id>/custom-title.json`.
+#[derive(Debug, Deserialize)]
+struct TitleFile {
+    #[serde(rename = "customTitle")]
+    custom: String,
+}
+
+/// The session's title, found as Claude Code's session list finds it. The
+/// title the user set comes from the transcript's last 64 KiB, else from its
+/// `custom-title.json` file, else from the first 64 KiB. Failing that, the
+/// generated title comes from the last 64 KiB, else the first. Each window
+/// skips the partial line at its cut.
+pub(crate) fn transcript_title(path: &Path) -> Option<String> {
+    let mut file = File::open(path).ok()?;
+    let len = file.metadata().ok()?.len();
+    let tail = read_at(&mut file, len.saturating_sub(TITLE_WINDOW))?;
+    if len <= TITLE_WINDOW {
+        return last_row(&tail, Title::User)
+            .or_else(|| title_file(path))
+            .or_else(|| last_row(&tail, Title::Generated));
+    }
+    let tail_lines = after_first_break(&tail);
+    if let Some(title) = last_row(tail_lines, Title::User).or_else(|| title_file(path)) {
+        return Some(title);
+    }
+    let head = read_at(&mut file, 0)?;
+    let head_lines = before_last_break(&head);
+    last_row(head_lines, Title::User)
+        .or_else(|| last_row(tail_lines, Title::Generated))
+        .or_else(|| last_row(head_lines, Title::Generated))
+}
+
+/// Up to [`TITLE_WINDOW`] bytes of `file` from `offset`.
+fn read_at(file: &mut File, offset: u64) -> Option<Vec<u8>> {
+    file.seek(SeekFrom::Start(offset)).ok()?;
+    let mut bytes = Vec::new();
+    file.by_ref()
+        .take(TITLE_WINDOW)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    Some(bytes)
+}
+
+/// `tail` after the partial line it starts in; empty when it holds no other
+/// line break than the one ending the file.
+fn after_first_break(tail: &[u8]) -> &[u8] {
+    let body = tail.strip_suffix(b"\n").unwrap_or(tail);
+    memchr::memchr(b'\n', body).map_or(&[], |cut| &body[cut + 1..])
+}
+
+/// `head` before the partial line it ends in.
+fn before_last_break(head: &[u8]) -> &[u8] {
+    memchr::memrchr(b'\n', head).map_or(&[], |cut| &head[..cut])
+}
+
+/// The title in the last `kind` row of `lines` that parses, unless blank.
+fn last_row(lines: &[u8], kind: Title) -> Option<String> {
+    let marker = memmem::Finder::new(kind.marker());
+    lines
+        .rsplit(|&byte| byte == b'\n')
+        .filter(|line| marker.find(line).is_some())
+        .find_map(|line| {
+            let row = serde_json::from_slice::<TitleRow>(line).ok()?;
+            match kind {
+                Title::User => row.custom,
+                Title::Generated => row.ai,
+            }
+        })
+        .filter(|title| !title.trim().is_empty())
+}
+
+/// The title in the session's `custom-title.json`, unless missing or blank.
+fn title_file(transcript: &Path) -> Option<String> {
+    let bytes = fs::read(transcript.with_extension("").join("custom-title.json")).ok()?;
+    let file = serde_json::from_slice::<TitleFile>(&bytes).ok()?;
+    Some(file.custom).filter(|title| !title.trim().is_empty())
 }
 
 /// `text` safe to draw: control characters dropped, tabs and line breaks
@@ -223,11 +290,9 @@ mod tests {
     }
 
     #[test]
-    fn resume_command_quotes_the_folder() {
-        assert_eq!(
-            agent("/home/dev/code/it's shop").resume_command(),
-            r"cd -- '/home/dev/code/it'\''s shop' && claude --resume '6f1c2a90-3b7e-4d21-9c55-0a8e4f7b1d33'"
-        );
+    fn a_gone_folder_is_named_instead_of_resumed() {
+        let error = agent("/home/dev/code/gone").resume().unwrap_err();
+        assert_eq!(error.to_string(), "/home/dev/code/gone no longer exists");
     }
 
     #[test]
@@ -250,7 +315,7 @@ mod tests {
     }
 
     #[test]
-    fn the_title_comes_from_the_transcript_s_end() {
+    fn a_user_title_in_the_head_beats_a_generated_one_in_the_tail() {
         let dir = std::env::temp_dir().join(format!("rawr-tail-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("t.jsonl");
@@ -259,13 +324,86 @@ mod tests {
             "x".repeat(1000)
         );
         let mut text =
-            String::from("{\"type\":\"custom-title\",\"customTitle\":\"Too far back\"}\n");
+            String::from("{\"type\":\"custom-title\",\"customTitle\":\"Named first\"}\n");
         for _ in 0..2000 {
             text.push_str(&filler);
         }
         text.push_str("{\"type\":\"ai-title\",\"aiTitle\":\"Near the end\"}\n");
         fs::write(&path, text).unwrap();
-        assert_eq!(transcript_title(&path).as_deref(), Some("Near the end"));
+        assert_eq!(transcript_title(&path).as_deref(), Some("Named first"));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_user_title_beats_a_later_generated_one_across_the_window() {
+        let dir = std::env::temp_dir().join(format!("rawr-order-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("t.jsonl");
+        let filler = format!(
+            "{{\"type\":\"user\",\"message\":\"{}\"}}\n",
+            "x".repeat(1000)
+        );
+        let mut text = filler.repeat(100);
+        text.push_str("{\"type\":\"custom-title\",\"customTitle\":\"Named by me\"}\n");
+        text.push_str(&filler.repeat(40));
+        text.push_str("{\"type\":\"ai-title\",\"aiTitle\":\"Later guess\"}\n");
+        text.push_str(&filler.repeat(10));
+        fs::write(&path, text).unwrap();
+        assert_eq!(transcript_title(&path).as_deref(), Some("Named by me"));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_title_between_the_windows_is_not_read() {
+        let dir = std::env::temp_dir().join(format!("rawr-middle-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("t.jsonl");
+        let filler = format!(
+            "{{\"type\":\"user\",\"message\":\"{}\"}}\n",
+            "x".repeat(1000)
+        );
+        let mut text = filler.repeat(100);
+        text.push_str("{\"type\":\"ai-title\",\"aiTitle\":\"In the middle\"}\n");
+        text.push_str(&filler.repeat(100));
+        fs::write(&path, text).unwrap();
+        assert_eq!(transcript_title(&path), None);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_title_file_beats_a_generated_title_in_the_tail() {
+        let dir = std::env::temp_dir().join(format!("rawr-file-{}", std::process::id()));
+        fs::create_dir_all(dir.join("7c2e5a10-4b8d-4f61-9a3e-2d5b8c1f6e04")).unwrap();
+        let path = dir.join("7c2e5a10-4b8d-4f61-9a3e-2d5b8c1f6e04.jsonl");
+        fs::write(&path, "{\"type\":\"ai-title\",\"aiTitle\":\"A guess\"}\n").unwrap();
+        fs::write(
+            dir.join("7c2e5a10-4b8d-4f61-9a3e-2d5b8c1f6e04/custom-title.json"),
+            r#"{"customTitle":"Named in the file"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            transcript_title(&path).as_deref(),
+            Some("Named in the file")
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_user_title_in_the_tail_beats_the_title_file() {
+        let dir = std::env::temp_dir().join(format!("rawr-both-{}", std::process::id()));
+        fs::create_dir_all(dir.join("0b9d4e2a-6c71-4f3e-8a52-9e1c7d3b5f20")).unwrap();
+        let path = dir.join("0b9d4e2a-6c71-4f3e-8a52-9e1c7d3b5f20.jsonl");
+        fs::write(
+            &path,
+            "{\"type\":\"custom-title\",\"customTitle\":\"Named later\"}\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("0b9d4e2a-6c71-4f3e-8a52-9e1c7d3b5f20/custom-title.json"),
+            r#"{"customTitle":"Named earlier"}"#,
+        )
+        .unwrap();
+        assert_eq!(transcript_title(&path).as_deref(), Some("Named later"));
         fs::remove_dir_all(&dir).unwrap();
     }
 

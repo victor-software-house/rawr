@@ -24,7 +24,7 @@ queue:
     blocked_by: []
     acceptance:
       - Typing filters the list on each key press, matching titles, folders, prompts and session IDs.
-      - Search reads one prompt-history file and stats transcripts; it opens no transcript it does not show.
+      - Search reads one prompt-history file, one projects listing, and the first and last 64 KiB and the custom-title.json of each listed transcript, once per load.
     notes:
       - Local sessions only; older sessions are a horizon row.
     plan: openspec/changes/session-search/proposal.md
@@ -37,12 +37,13 @@ queue:
       Code records sessions after one explicit command.
     blocked_by: []
     acceptance:
-      - rawr init <bash|zsh|fish> prints a static script, and pick and find quote for that shell.
       - rawr setup claude adds the SessionStart hook once and reports added or unchanged; --dry-run changes nothing.
+      - rawr init <bash|zsh|fish> prints a static script that runs rawr pick once before the first prompt in a Rex pane.
     plan: openspec/changes/install-and-shells/proposal.md
     notes:
-      - 2026-11-07, ctl-core owns init and per-shell quoting as a shared shell-integration feature, stacked on ctl-core PR 180; rawr adopts it after a ctl-core release.
       - 2026-11-07, setup claude stays in rawr, since it edits Claude Code settings only.
+      - 2026-11-07, pick and find resume the chosen session themselves, so rawr prints no command and needs no per-shell quoting; ctl-core shell integration keeps only the once-before-first-prompt hook.
+      - 2026-11-07, ctl-core owns init as a shared shell-integration feature in ctl-core stack 182; rawr adopts it after a ctl-core release.
 
   - id: RAWR-007
     title: Ship macOS arm64 and Linux glibc binaries with an install script

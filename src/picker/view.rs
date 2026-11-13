@@ -44,8 +44,8 @@ enum Look {
     Plain,
 }
 
-/// Wraps at spaces, never at a hyphen, so a session ID or a folder stays
-/// whole when it fits; a word wider than the row still breaks.
+/// Wraps at spaces, never at a hyphen, so a folder stays whole when it fits;
+/// a word wider than the row still breaks.
 fn wrapped(text: &str, width: usize) -> Vec<String> {
     let options = Options::new(width.max(MIN_TEXT)).word_splitter(WordSplitter::NoHyphenation);
     textwrap::wrap(text, options)
@@ -54,8 +54,9 @@ fn wrapped(text: &str, width: usize) -> Vec<String> {
         .collect()
 }
 
-/// One session's lines: its title, its folder and age, then its session ID,
-/// each wrapped to `width` columns after the gutter.
+/// One session's lines: its title, then its folder and age, each wrapped to
+/// `width` columns after the gutter. The session ID is not drawn: search still
+/// matches it, and the resume uses it.
 fn block(agent: &Agent, look: Look, width: usize) -> Vec<Line<'static>> {
     let text_width = width.saturating_sub(GUTTER);
     let dim = Style::new().add_modifier(Modifier::DIM);
@@ -83,14 +84,11 @@ fn block(agent: &Agent, look: Look, width: usize) -> Vec<Line<'static>> {
         ]));
     }
     let place = sanitize(&format!("{} · {}", agent.short_cwd(), ago(agent.idle)));
-    let id = sanitize(&agent.session_id);
-    for text in [place.as_str(), id.as_str()] {
-        for part in wrapped(text, text_width) {
-            lines.push(Line::from(vec![
-                Span::raw(" ".repeat(GUTTER)),
-                Span::styled(part, detail),
-            ]));
-        }
+    for part in wrapped(&place, text_width) {
+        lines.push(Line::from(vec![
+            Span::raw(" ".repeat(GUTTER)),
+            Span::styled(part, detail),
+        ]));
     }
     lines
 }
@@ -323,15 +321,17 @@ mod tests {
         assert_eq!(buffer[(3, top)].fg, ACCENT);
         assert!(buffer[(3, top)].modifier.contains(Modifier::BOLD));
         assert_eq!(row(&buffer, top + 1), "   /srv/code/shop · 2 h ago");
-        assert_eq!(
-            row(&buffer, top + 2),
-            "   6f1c2a90-3b7e-4d21-9c55-0a8e4f7b1d01"
-        );
-        assert_eq!(row(&buffer, top + 4), "   Add CSV export");
-        assert!(buffer[(3, top + 5)].modifier.contains(Modifier::DIM));
+        assert_eq!(row(&buffer, top + 2), "");
+        assert_eq!(row(&buffer, top + 3), "   Add CSV export");
+        assert!(buffer[(3, top + 4)].modifier.contains(Modifier::DIM));
         assert_eq!(drawn.rows[usize::from(top)], Some(0));
-        assert_eq!(drawn.rows[usize::from(top + 3)], None);
-        assert_eq!(drawn.rows[usize::from(top + 4)], Some(1));
+        assert_eq!(drawn.rows[usize::from(top + 2)], None);
+        assert_eq!(drawn.rows[usize::from(top + 3)], Some(1));
+        assert!(
+            !rows(&buffer).iter().any(|line| line.contains("6f1c2a90")),
+            "{:?}",
+            rows(&buffer)
+        );
         assert!(
             row(&buffer, 0).contains("2 sessions"),
             "{:?}",
@@ -358,15 +358,15 @@ mod tests {
         let moved = MouseEvent {
             kind: MouseEventKind::Moved,
             column: 4,
-            row: 6,
+            row: 5,
             modifiers: KeyModifiers::NONE,
         };
         state.on_mouse(moved, Some(1));
         let (buffer, _) = render(&agents, &state, 60, 14);
         let top = TOP;
-        assert_eq!(row(&buffer, top + 4), " ❯ Add CSV export");
-        assert!(!buffer[(3, top + 5)].modifier.contains(Modifier::DIM));
-        assert_ne!(buffer[(3, top + 4)].fg, ACCENT);
+        assert_eq!(row(&buffer, top + 3), " ❯ Add CSV export");
+        assert!(!buffer[(3, top + 4)].modifier.contains(Modifier::DIM));
+        assert_ne!(buffer[(3, top + 3)].fg, ACCENT);
     }
 
     #[test]
@@ -384,7 +384,7 @@ mod tests {
         assert!(
             shown
                 .iter()
-                .any(|line| line.trim() == "6f1c2a90-3b7e-4d21-9c55-0a8e4f7b1d01"),
+                .any(|line| line.trim() == "/srv/code/shop · 2 h ago"),
             "{shown:?}"
         );
     }
@@ -402,7 +402,6 @@ mod tests {
             shown.iter().any(|line| line.starts_with(" ❯ Task 7")),
             "{shown:?}"
         );
-        assert!(shown.iter().any(|line| line.contains("1d07")), "{shown:?}");
         assert!(
             shown.iter().any(|line| line.ends_with('┃')),
             "a scrollbar thumb: {shown:?}"

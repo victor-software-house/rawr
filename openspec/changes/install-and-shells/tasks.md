@@ -2,10 +2,9 @@
 
 ## 1. Shell integration
 
-- [ ] 1.1 `pick --shell` and `find --shell` quote through ctl-core's shell-integration feature; proved by a unit test in CI for the fish quote. Blocked on a ctl-core release with the feature.
-- [ ] 1.2 `rawr init <SHELL>` comes from ctl-core's shell-integration feature with rawr's two hooks; proved by a test that two runs match byte for byte. Blocked on the same release.
-- [ ] 1.3 `rawr setup claude [--dry-run]` adds the hook once; proved by unit tests over a fixture settings file in CI.
-- [ ] 1.4 `rawr completion <SHELL>` comes from ctl-core's completion verb; proved by a test that the bash script names every command. Blocked on a ctl-core release with the verb.
+- [ ] 1.1 `rawr init <SHELL>` comes from ctl-core's shell-integration feature with rawr's one hook; proved by a test that two runs match byte for byte. Blocked on a ctl-core release with the feature.
+- [ ] 1.2 `rawr setup claude [--dry-run]` adds the hook once; proved by unit tests over a fixture settings file in CI.
+- [ ] 1.3 `rawr completion <SHELL>` comes from ctl-core's completion verb; proved by a test that the bash script names every command. Blocked on a ctl-core release with the verb.
 
 ## 2. Release and install
 

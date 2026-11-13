@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Offer a restored Rex pane's Claude Code sessions in a full-screen picker, and hand the chosen one to the shell as a command.
+Offer a restored Rex pane's Claude Code sessions in a full-screen picker, and resume the one the user chooses.
 
 ## ADDED Requirements
 
@@ -20,19 +20,24 @@ Offer a restored Rex pane's Claude Code sessions in a full-screen picker, and ha
 - **WHEN** every listed session is running or its transcript is gone
 - **THEN** `pick` draws nothing, prints nothing and exits 1
 
-### Requirement: Hand the choice to the shell
+### Requirement: Resume the chosen session
 
-`pick` SHALL write only the chosen session's command to stdout, as `cd -- '<folder>' && claude --resume '<session id>'` with each value single-quoted, and SHALL draw everything else on stderr.
+On a choice, `pick` SHALL restore the terminal, then replace its own process with `claude --resume <session id>` running in the session's folder; it SHALL draw only on stderr and write nothing to stdout.
 
 #### Scenario: The user resumes a session
 
 - **WHEN** the user chooses the session `6f1c2a90-3b7e-4d21-9c55-0a8e4f7b1d33` that started in `/home/dev/code/it's shop`
-- **THEN** stdout holds exactly `cd -- '/home/dev/code/it'\''s shop' && claude --resume '6f1c2a90-3b7e-4d21-9c55-0a8e4f7b1d33'` and a newline, and `pick` exits 0
+- **THEN** the main screen is back, and the pane's process is `claude --resume 6f1c2a90-3b7e-4d21-9c55-0a8e4f7b1d33` with `/home/dev/code/it's shop` as its folder
+
+#### Scenario: The folder is gone
+
+- **WHEN** the user chooses a session whose folder no longer exists
+- **THEN** `pick` prints an error naming the folder on stderr, starts nothing, and exits non-zero
 
 #### Scenario: The user dismisses the picker
 
 - **WHEN** the user presses Esc, `q` or Ctrl+C
-- **THEN** stdout is empty and `pick` exits 1
+- **THEN** nothing is resumed, stdout is empty and `pick` exits 1
 
 ### Requirement: Full screen, restored on exit
 
@@ -50,7 +55,7 @@ The picker SHALL move the selection with Up, Down, `k`, `j`, Home, End, `g`, `G`
 #### Scenario: Pick by number
 
 - **WHEN** the picker offers four sessions and the user presses `3`
-- **THEN** `pick` prints the third session's command
+- **THEN** `pick` resumes the third session
 
 ### Requirement: Mouse control
 
@@ -64,7 +69,7 @@ The picker SHALL select the row under a left click when that row is not selected
 #### Scenario: Click the selected row
 
 - **WHEN** the second row is selected and the user clicks it
-- **THEN** `pick` prints the second session's command
+- **THEN** `pick` resumes the second session
 
 #### Scenario: Wheel
 
@@ -80,18 +85,27 @@ The picker SHALL show the row under the pointer in the default foreground instea
 - **WHEN** the pointer moves onto an unselected row
 - **THEN** that row's folder and age turn from dim to the default foreground and the pointer shape becomes `pointer`
 
+### Requirement: A title, then the folder and age
+
+The picker SHALL show each session as its title, then its folder and how long ago it was last active, and SHALL NOT draw its session ID.
+
+#### Scenario: One session's rows
+
+- **WHEN** the picker offers a session titled `Fix the login redirect` that started in `/srv/code/shop` and was last active two hours ago
+- **THEN** its rows read `Fix the login redirect` and `/srv/code/shop · 2 h ago`, and no row shows its session ID
+
 ### Requirement: Nothing is cut
 
-The picker SHALL wrap a title, folder or session ID that does not fit the pane's width at spaces, never at a hyphen, and break a word only when it is wider than the row.
+The picker SHALL wrap a title or folder that does not fit the pane's width at spaces, never at a hyphen, and break a word only when it is wider than the row.
 
 #### Scenario: A long title in a narrow pane
 
 - **WHEN** a title of 70 characters is shown in a pane 40 columns wide
-- **THEN** every word of the title appears, across two or more rows, and the session ID appears whole on one row
+- **THEN** every word of the title appears, across two or more rows, and the folder and age appear whole on the row below them
 
 ### Requirement: Safe titles
 
-The picker SHALL drop control characters from a title, folder and session ID, and turn their tabs and line breaks into spaces, before drawing them.
+The picker SHALL drop control characters from a title and a folder, and turn their tabs and line breaks into spaces, before drawing them.
 
 #### Scenario: A title holds an escape sequence
 

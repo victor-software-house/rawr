@@ -56,13 +56,28 @@ The binary is built from [ratatui] 0.30 on its [crossterm] 0.29 backend.
 8. **Pure state, pure view, thin loop.**
    `picker/state.rs` turns a key or mouse event into a state change, `picker/view.rs` draws the state into a frame and returns which screen row belongs to which session, and `picker.rs` only reads events and draws.
    Tests drive the state with events and draw the view on ratatui's `TestBackend`.
-9. **Titles, folders and IDs are sanitized before drawing.**
+9. **Titles and folders are sanitized before drawing.**
    They come from transcripts, hook input and the prompt history, so control characters are dropped and tabs and line breaks become spaces before any of them reaches the terminal.
-10. **A title comes from the transcript's last megabyte.**
-   Transcripts reach hundreds of megabytes, and Claude Code writes the title rows again every few dozen kilobytes, the user's title next to each generated one.
-   Reading the last 1 MiB finds the current title without reading the rest.
+10. **A title is found as Claude Code's own session list finds it.**
+   Its list reads 64 KiB at each end of a transcript and never parses the rest.
+   The user's title comes from the last 64 KiB, else from the session's `custom-title.json`, else from the first 64 KiB.
+   A generated title comes from the last 64 KiB, else the first, and a user title wins over it.
+   Claude Code's writer appends the title rows again once 32 KiB have been written since, and at exit, so a long line such as a large tool result is followed by fresh title rows.
+   Of 272 local transcripts, this order titles 174, and the last 64 KiB alone 173: one transcript's only title row is its first line.
+   Alternative: read the last 1 MiB when the last 64 KiB hold no title.
+   It lost: 99 of the 272 hold no title there, the wider read found none, and it read 59.3 MB more on every load.
    Alternative: read the whole transcript.
    It lost: the picker runs as a shell starts, and local transcripts measured up to 417 MB, each read whole at every start.
+11. **A session shows two lines: its title, then its folder and age.**
+   The session ID drew a third line under every session, and nobody reads it to choose: the title and folder say which session it is.
+   Search still matches the ID, and the resume still uses it.
+   Alternative: show the ID on the selected session only.
+   It lost: the selected block would grow and shrink as the selection moves, so the rows under it would jump.
+12. **rawr resumes the chosen session itself.**
+   On a choice it restores the terminal, then replaces its process with `claude --resume <session id>` in the session's folder, so the pane runs Claude Code with nothing in between.
+   Nothing resumes without a choice: the picker only offers.
+   Alternative: print a `cd` and `claude --resume` line for a shell hook to evaluate.
+   It lost: it needs a wrapper and a quoting rule per shell, and run without the hook the picker printed a line and did nothing.
 
 ## Risks / Trade-offs
 

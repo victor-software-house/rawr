@@ -17,7 +17,7 @@ The picker SHALL search the sessions named in `~/.claude/history.jsonl` whose tr
 
 ### Requirement: Match every word
 
-A session SHALL match a query when each whitespace-separated word of the query, ignoring case, occurs in one of its prompts, its folder or its session ID.
+A session SHALL match a query when each whitespace-separated word of the query, ignoring case, occurs in one of its prompts, its title, its folder or its session ID.
 
 #### Scenario: Two words in different prompts
 
@@ -59,18 +59,33 @@ In the picker, `/` SHALL open a search line whose text filters the list on each 
 
 ### Requirement: Find from any shell
 
-`rawr find [WORDS…]` SHALL open the picker on the search line with `WORDS` as the query, inside or outside a Rex pane, and SHALL print the chosen command as `pick` does.
+`rawr find [WORDS…]` SHALL open the picker on the search line with `WORDS` as the query, inside or outside a Rex pane, and SHALL resume the chosen session as `pick` does.
 
 #### Scenario: Find outside Rex
 
 - **WHEN** `REX_BLOCK` is unset and the user runs `rawr find login`, then presses `Enter`
-- **THEN** stdout holds the first match's resume command and `find` exits 0
+- **THEN** the first match resumes in its folder, as `pick` resumes a session
 
-### Requirement: Search without opening transcripts
+### Requirement: Reads from each transcript
 
-Searching SHALL read only `~/.claude/history.jsonl`, the session records under `~/.claude/sessions/` and one listing of `~/.claude/projects/*/`, and SHALL open no transcript.
+Searching SHALL read `~/.claude/history.jsonl`, the session records under `~/.claude/sessions/`, one listing of `~/.claude/projects/*/`, the first and last 64 KiB of each listed session's transcript, and its `custom-title.json`, once per catalog load.
 
 #### Scenario: A large transcript
 
-- **WHEN** a matching session's transcript is 50 MB
-- **THEN** the search reads none of it, and the row's title is the session's first prompt that is not a slash command
+- **WHEN** a matching session's transcript is 50 MB and its last 64 KiB hold a generated title `Weekly notes draft`
+- **THEN** the search reads only its ends, and the row's title is `Weekly notes draft`
+
+### Requirement: Titles in Claude Code's order
+
+A row's title SHALL be the last title the user set, from the transcript's last 64 KiB, else its `custom-title.json`, else the first 64 KiB.
+Failing that, it SHALL be the last title Claude Code generated, from the last 64 KiB, else the first, and then the session's first prompt that is not a slash command.
+
+#### Scenario: A title in the session's title file
+
+- **WHEN** a session's last 64 KiB hold only a generated title `Draft notes`, and its `custom-title.json` holds `Release checklist`
+- **THEN** the row's title is `Release checklist`
+
+#### Scenario: A transcript with no title row
+
+- **WHEN** a session's transcript holds no title row and its first prompts are `/config` and `Fix the login page`
+- **THEN** the row's title is `Fix the login page`
