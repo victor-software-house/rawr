@@ -1291,6 +1291,10 @@ pub(crate) struct Carry {
     show_scratch: bool,
     panes_top: u16,
     wants: [u16; 3],
+    /// The column drawn out, which the new window opens drawn out, so a
+    /// go-to picked from the drawer keeps it in sight.
+    #[serde(default)]
+    drawn_out: Option<Focus>,
 }
 
 impl App {
@@ -1306,6 +1310,10 @@ impl App {
             show_scratch: self.show_scratch,
             panes_top: self.scroll_of(Focus::Panes).top,
             wants: self.wants,
+            drawn_out: self
+                .drawer
+                .filter(|drawer| drawer.open)
+                .map(|drawer| drawer.column),
         }
     }
 
@@ -1326,6 +1334,15 @@ impl App {
         self.show_scratch = carry.show_scratch;
         self.scroll_mut(Focus::Panes).top = carry.panes_top;
         self.wants = carry.wants;
+        // Out all the way, with no animation: the window it replaces showed
+        // it so.
+        self.drawer = carry.drawn_out.map(|column| Drawer {
+            column,
+            at: Instant::now()
+                .checked_sub(Duration::from_secs(1))
+                .unwrap_or_else(Instant::now),
+            open: true,
+        });
         self.focus == Focus::Search && !self.query.trim().is_empty()
     }
 }
