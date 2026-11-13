@@ -152,7 +152,6 @@ The closest first-party models are Claude Code's own supervisor, which defers it
 [cc-mods]: https://code.claude.com/docs/en/plugins/mods/api
 [cc-dir]: https://code.claude.com/docs/en/claude-directory
 [cc-messaging]: https://code.claude.com/docs/en/cross-session-messaging
-[cc-settings]: https://code.claude.com/docs/en/settings
 [herdr]: https://github.com/herdrdev/herdr/blob/ee5bfb5041bb3e4a49d591c72308aae3c81ecdde/src/agent_resume.rs
 [cmux]: https://github.com/manaflow-ai/cmux/blob/d07cd34e57962278788305a8ce6b966bac40b47a/docs/agent-session-tracking-spec.md
 [resurrect]: https://github.com/tmux-plugins/tmux-resurrect/blob/cff343cf9e81983d3da0c8562b01616f12e8d548/scripts/save.sh
