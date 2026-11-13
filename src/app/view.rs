@@ -1618,8 +1618,21 @@ fn files(
         (None, facts.files.iter().enumerate().collect::<Vec<_>>()),
         (Some("Read"), read.collect()),
     ];
+    let mut scratch = 0;
     for (title, mut list) in lists {
         list.retain(|(_, (path, _))| state::passes(filter, path));
+        // Files in temporary folders, such as a session's scratch logs,
+        // stay out unless asked for, as scratch sessions do.
+        if !app.show_scratch_files {
+            let before = list.len();
+            list.retain(|(_, (path, _))| !state::in_temp(path));
+            scratch += before - list.len();
+        } else {
+            scratch += list
+                .iter()
+                .filter(|(_, (path, _))| state::in_temp(path))
+                .count();
+        }
         if list.is_empty() {
             continue;
         }
@@ -1657,6 +1670,26 @@ fn files(
             rows.push((lines.len(), Target::File(index)));
             lines.push(markup::fit(&line, width));
         }
+    }
+    if scratch > 0 {
+        let hovered = app.hover == Some(Target::ScratchFiles);
+        let text = if app.show_scratch_files {
+            format!("  − hide {scratch} files in temporary folders")
+        } else {
+            format!("  + {scratch} files in temporary folders")
+        };
+        if !lines.is_empty() {
+            lines.push(Line::default());
+        }
+        rows.push((lines.len(), Target::ScratchFiles));
+        lines.push(Line::styled(
+            text,
+            if hovered {
+                Style::new().fg(theme::ACCENT)
+            } else {
+                theme::dim()
+            },
+        ));
     }
 }
 

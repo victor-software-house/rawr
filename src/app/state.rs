@@ -144,6 +144,8 @@ pub(crate) enum Target {
     /// An entry of the prompts or the activity, which a click opens or
     /// folds, by the key the view gives it.
     Entry(u64),
+    /// The line that stands for the files in temporary folders.
+    ScratchFiles,
     /// A file of the files tab, by its place in the session's changed
     /// files and then its read ones; a click opens it in its default app.
     File(usize),
@@ -294,6 +296,8 @@ pub(crate) struct App {
     pub(crate) frame: usize,
     /// Whether a pane's untitled scratch sessions are listed.
     pub(crate) show_scratch: bool,
+    /// Whether the files tab lists the files in temporary folders.
+    pub(crate) show_scratch_files: bool,
     /// The entries opened by a click, by the view's key.
     pub(crate) open: HashSet<u64>,
     /// The pane to select once the feed lists it, by block ID.
@@ -372,6 +376,7 @@ impl App {
             frame: 0,
             show_scratch: false,
             open: HashSet::new(),
+            show_scratch_files: false,
             want: None,
             scrolls: [Scroll::default(); 4],
             wants: [48, 60, 72],
@@ -1161,6 +1166,11 @@ impl App {
                 Action::None
             }
             Target::File(index) => Action::OpenFile(index),
+            Target::ScratchFiles => {
+                self.focus_here(Focus::Session);
+                self.show_scratch_files = !self.show_scratch_files;
+                Action::None
+            }
         }
     }
 
@@ -1311,12 +1321,15 @@ fn moved_in(rows: &[usize], at: usize, by: isize) -> Option<usize> {
 /// A session with no title that started in a temporary folder: a scripted
 /// run, such as `claude -p`.
 pub(crate) fn is_scratch(agent: &Agent) -> bool {
-    let temp = std::env::temp_dir();
-    agent.title == "Untitled session"
-        && (["/tmp/", "/private/tmp/", "/var/folders/"]
-            .iter()
-            .any(|prefix| agent.cwd.starts_with(prefix))
-            || std::path::Path::new(&agent.cwd).starts_with(&temp))
+    agent.title == "Untitled session" && in_temp(&agent.cwd)
+}
+
+/// Whether `path` is in a temporary folder, which the system clears.
+pub(crate) fn in_temp(path: &str) -> bool {
+    ["/tmp/", "/private/tmp/", "/var/folders/"]
+        .iter()
+        .any(|prefix| path.starts_with(prefix))
+        || std::path::Path::new(path).starts_with(std::env::temp_dir())
 }
 
 /// How long ago a pane's newest session was active; a pane with no age
