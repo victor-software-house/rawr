@@ -10,8 +10,9 @@ use std::time::{Duration, SystemTime};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
-/// How many sessions a pane remembers.
-const KEEP: usize = 5;
+/// How long a session may go without a transcript file before the index drops
+/// it, so one that has not written its first message yet stays.
+const NO_TRANSCRIPT: Duration = Duration::from_hours(24);
 
 /// How far before its listing `prune` starts keeping new files. Linux stamps
 /// a file's mtime from a coarse clock that can lag the clock
@@ -49,11 +50,14 @@ pub(crate) struct HookInput {
 }
 
 impl HookInput {
-    pub(crate) fn into_entry(self) -> Entry {
+    /// The entry for this session, recorded at `recorded_at`.
+    pub(crate) fn into_entry(self, recorded_at: u64) -> Entry {
         Entry {
             session_id: self.session_id,
             transcript: self.transcript_path,
             cwd: self.cwd,
+            recorded_at,
+            transcript_seen: false,
         }
     }
 }
@@ -66,6 +70,14 @@ pub(crate) struct Entry {
     /// session through it.
     pub(crate) cwd: PathBuf,
     pub(crate) transcript: PathBuf,
+    /// Seconds since the Unix epoch when `record` stored the entry; 0 in a
+    /// file written before the field existed.
+    #[serde(default)]
+    pub(crate) recorded_at: u64,
+    /// Whether rawr has found the transcript file; a transcript that was
+    /// seen and is gone was swept by Claude Code.
+    #[serde(default)]
+    pub(crate) transcript_seen: bool,
 }
 
 /// The sessions of one pane, newest first.
@@ -99,16 +111,52 @@ impl PaneIndex {
     }
 
     /// Puts a session first, dropping its older entry and anything past
-    /// [`KEEP`].
-    pub(crate) fn add(&mut self, entry: Entry) {
+    /// `per_pane` sessions.
+    pub(crate) fn add(&mut self, mut entry: Entry, per_pane: usize) {
+        if let Some(old) = self
+            .entries
+            .iter()
+            .find(|e| e.session_id == entry.session_id)
+        {
+            entry.transcript_seen |= old.transcript_seen && old.transcript == entry.transcript;
+        }
         self.entries.retain(|e| e.session_id != entry.session_id);
         self.entries.insert(0, entry);
-        self.entries.truncate(KEEP);
+        self.entries.truncate(per_pane);
+    }
+
+    /// Marks each entry whose transcript file exists as seen, and drops an
+    /// entry whose transcript was seen and is gone, or that has had no
+    /// transcript for more than 24 hours since it was recorded. `now` is
+    /// seconds since the Unix epoch.
+    ///
+    /// A transcript that cannot be checked, such as behind an unreadable
+    /// folder, counts as present: nothing is dropped on a guess.
+    pub(crate) fn prune_missing(&mut self, now: u64) {
+        self.entries.retain_mut(|entry| {
+            let gone = matches!(
+                fs::metadata(&entry.transcript),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound
+            );
+            if gone {
+                return !entry.transcript_seen
+                    && now.saturating_sub(entry.recorded_at) <= NO_TRANSCRIPT.as_secs();
+            }
+            entry.transcript_seen = true;
+            true
+        });
     }
 
     pub(crate) fn entries(&self) -> &[Entry] {
         &self.entries
     }
+}
+
+/// Seconds since the Unix epoch.
+pub(crate) fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs())
 }
 
 /// `$XDG_STATE_HOME/rawr`, or `~/.local/state/rawr`.
@@ -213,8 +261,36 @@ mod tests {
             session_id: id.to_owned(),
             cwd: PathBuf::from("/tmp"),
             transcript: PathBuf::from(format!("/tmp/{id}.jsonl")),
+            recorded_at: 0,
+            transcript_seen: false,
         }
     }
+
+    /// An entry recorded at `recorded_at` whose transcript is `transcript`.
+    fn recorded(id: &str, transcript: &Path, recorded_at: u64) -> Entry {
+        Entry {
+            transcript: transcript.to_owned(),
+            recorded_at,
+            ..entry(id)
+        }
+    }
+
+    /// An empty folder of its own for a test to put transcripts in.
+    fn folder(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("rawr-index-{name}-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn ids(pane: &PaneIndex) -> Vec<&str> {
+        pane.entries()
+            .iter()
+            .map(|e| e.session_id.as_str())
+            .collect()
+    }
+
+    const HOUR: u64 = 60 * 60;
+    const NOW: u64 = 1_800_000_000;
 
     #[test]
     fn block_id_accepts_rex_ids() {
@@ -245,14 +321,126 @@ mod tests {
     fn add_moves_a_session_first_and_keeps_five() {
         let mut pane = PaneIndex::default();
         for id in ["a", "b", "c", "d", "e", "f"] {
-            pane.add(entry(id));
+            pane.add(entry(id), 5);
         }
-        pane.add(entry("c"));
-        let ids: Vec<&str> = pane
-            .entries()
-            .iter()
-            .map(|e| e.session_id.as_str())
-            .collect();
-        assert_eq!(ids, ["c", "f", "e", "d", "b"]);
+        pane.add(entry("c"), 5);
+        assert_eq!(ids(&pane), ["c", "f", "e", "d", "b"]);
+    }
+
+    #[test]
+    fn re_adding_a_seen_session_keeps_it_seen() {
+        let path = PathBuf::from("/tmp/s1.jsonl");
+        let mut pane = PaneIndex::default();
+        let mut seen = recorded("s1", &path, NOW - 60);
+        seen.transcript_seen = true;
+        pane.add(seen, 5);
+
+        pane.add(recorded("s1", &path, NOW), 5);
+        assert_eq!(ids(&pane), ["s1"]);
+        assert!(pane.entries()[0].transcript_seen);
+        assert_eq!(pane.entries()[0].recorded_at, NOW);
+
+        pane.add(recorded("s1", Path::new("/tmp/moved.jsonl"), NOW), 5);
+        assert!(!pane.entries()[0].transcript_seen);
+    }
+
+    #[test]
+    fn a_smaller_bound_drops_the_oldest() {
+        let mut pane = PaneIndex::default();
+        for id in ["a", "b", "c", "d", "e"] {
+            pane.add(entry(id), 4);
+        }
+        assert_eq!(ids(&pane), ["e", "d", "c", "b"]);
+    }
+
+    #[test]
+    fn a_file_written_before_the_new_fields_still_loads() {
+        let dir = folder("old-file");
+        let block = BlockId::try_new("block:0190f3a2-7c41").unwrap();
+        fs::write(
+            dir.join(block.file_name()),
+            r#"{"entries":[{"session_id":"s1","cwd":"/work/shop","transcript":"/work/s1.jsonl"}]}"#,
+        )
+        .unwrap();
+        let pane = PaneIndex::load(&dir, &block).unwrap();
+        fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(ids(&pane), ["s1"]);
+        assert_eq!(pane.entries()[0].recorded_at, 0);
+        assert!(!pane.entries()[0].transcript_seen);
+    }
+
+    #[test]
+    fn a_swept_transcript_is_dropped() {
+        let dir = folder("swept");
+        let path = dir.join("6f1c2a90-3b7e-4d21-9c55-0a8e4f7b1d33.jsonl");
+        fs::write(&path, "{}\n").unwrap();
+        let mut pane = PaneIndex::default();
+        pane.add(
+            recorded("6f1c2a90-3b7e-4d21-9c55-0a8e4f7b1d33", &path, NOW),
+            5,
+        );
+        pane.prune_missing(NOW);
+        assert!(pane.entries()[0].transcript_seen);
+
+        fs::remove_file(&path).unwrap();
+        pane.prune_missing(NOW);
+        fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(pane.entries(), []);
+    }
+
+    #[test]
+    fn a_session_just_started_stays() {
+        let dir = folder("just-started");
+        let path = dir.join("s1.jsonl");
+        let mut pane = PaneIndex::default();
+        pane.add(recorded("s1", &path, NOW - 60), 5);
+        pane.prune_missing(NOW);
+        fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(ids(&pane), ["s1"]);
+        assert!(!pane.entries()[0].transcript_seen);
+    }
+
+    #[test]
+    fn a_session_never_used_goes_after_a_day() {
+        let dir = folder("never-used");
+        let path = dir.join("s1.jsonl");
+        let mut pane = PaneIndex::default();
+        pane.add(recorded("s1", &path, NOW - 24 * HOUR), 5);
+        pane.prune_missing(NOW);
+        assert_eq!(ids(&pane), ["s1"], "24 hours exactly is not more than 24");
+
+        pane.prune_missing(NOW + 1);
+        assert_eq!(pane.entries(), []);
+
+        pane.add(recorded("s2", &path, NOW - 25 * HOUR), 5);
+        pane.prune_missing(NOW);
+        fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(pane.entries(), []);
+    }
+
+    #[test]
+    fn an_entry_without_a_record_time_and_without_a_transcript_is_old() {
+        let dir = folder("no-time");
+        let path = dir.join("s1.jsonl");
+        let mut pane = PaneIndex::default();
+        pane.add(recorded("s1", &path, 0), 5);
+        pane.prune_missing(NOW);
+        fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(pane.entries(), []);
+    }
+
+    #[test]
+    fn a_transcript_found_later_marks_the_entry_seen() {
+        let dir = folder("found-later");
+        let path = dir.join("s1.jsonl");
+        let mut pane = PaneIndex::default();
+        pane.add(recorded("s1", &path, NOW - 60), 5);
+        pane.prune_missing(NOW);
+        assert!(!pane.entries()[0].transcript_seen);
+
+        fs::write(&path, "{}\n").unwrap();
+        pane.prune_missing(NOW);
+        fs::remove_dir_all(&dir).unwrap();
+        assert!(pane.entries()[0].transcript_seen);
     }
 }
