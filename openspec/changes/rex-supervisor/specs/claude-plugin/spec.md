@@ -55,7 +55,7 @@ The submitted hand-off turn SHALL become the carrying turn and SHALL NOT be inte
 #### Scenario: A long build during a drain
 
 - **WHEN** `drain.interrupt` is `2m` and a session is still running a foreground build 2 minutes after `d-7a21` was appended
-- **THEN** the mod cancels the turn, the build stops, and, once the cancelled turn completes with `reason` `aborted`, the session starts its hand-off turn
+- **THEN** the mod cancels the turn, the build stops, and, once the cancelled turn completes with `reason` `aborted` or `error`, the session starts its hand-off turn
 
 #### Scenario: The hand-off turn itself runs long
 
@@ -65,8 +65,8 @@ The submitted hand-off turn SHALL become the carrying turn and SHALL NOT be inte
 ### Requirement: Acknowledge an interrupted request after its hand-off
 
 Once it has called `$.turn.abort`, the mod SHALL wait for the cancelled turn's `turn.complete` before submitting the hand-off.
-If that completion's `reason` is `aborted`, the mod SHALL submit the hand-off with `$.prompt.submit` and SHALL acknowledge only when the hand-off turn completes.
-If its `reason` is anything else, the turn ended before the abort took effect: the mod SHALL submit no hand-off and SHALL acknowledge on that completion.
+If that completion's `reason` is `aborted` or `error`, the mod SHALL submit the hand-off with `$.prompt.submit` and SHALL acknowledge only when the hand-off turn completes.
+If its `reason` is `answer` or `refusal`, the turn ended before the abort took effect: the mod SHALL submit no hand-off and SHALL acknowledge on that completion.
 
 #### Scenario: The cancelled turn reports the abort
 
@@ -77,3 +77,8 @@ If its `reason` is anything else, the turn ended before the abort took effect: t
 
 - **WHEN** the turn carrying `d-7a21` completes with `reason` `answer` before the mod's `$.turn.abort` takes effect
 - **THEN** the mod submits no hand-off and acknowledges `d-7a21`
+
+#### Scenario: The cancelled turn ends in an error
+
+- **WHEN** the mod cancels the turn carrying `d-7a21` and that turn's `turn.complete` has `reason` `error`
+- **THEN** the mod submits the hand-off and does not acknowledge `d-7a21` until the hand-off turn completes

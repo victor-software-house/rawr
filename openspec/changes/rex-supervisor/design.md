@@ -97,11 +97,11 @@ The closest first-party models are Claude Code's own supervisor, which defers it
      A session that starts while a drain is open reads it on its first read, like any other.
    - An idle session gets the hand-off request through `$.prompt.submit`, which Claude Code marks as sent by the rawr mod.
    - A busy session gets it through `$.session.append` before its next step.
-   - A busy session that has not settled after `drain.interrupt` (default 2 minutes) gets its running turn cancelled with `$.turn.abort`, which stops the turn's running tools, and, once that turn's `turn.complete` arrives with `reason` `aborted`, the hand-off request through `$.prompt.submit`.
+   - A busy session that has not settled after `drain.interrupt` (default 2 minutes) gets its running turn cancelled with `$.turn.abort`, which stops the turn's running tools, and, once that turn's `turn.complete` arrives with `reason` `aborted` or `error`, the hand-off request through `$.prompt.submit`.
      That happens once per request ID, only for a request delivered through `$.session.append`; the submitted hand-off turn becomes the turn that carries the request, and it is not interrupted again.
      No mod call moves a running tool to the background, as `ctrl+b` does for the user, so cancelling the turn is the one way to cut a long tool call short.
    - The mod acknowledges a request with `rawr drain ack <id>` on `turn.complete` of the turn that carried it.
-     After a `$.turn.abort` for `drain.interrupt`, the mod waits for the cancelled turn's `turn.complete`: with `reason` `aborted` it submits the hand-off and acknowledges only when the hand-off turn completes; with any other `reason` the turn ended before the abort took effect, so it submits no hand-off and acknowledges on that completion.
+     After a `$.turn.abort` for `drain.interrupt`, the mod waits for the cancelled turn's `turn.complete`: with `reason` `aborted` or `error` it submits the hand-off and acknowledges only when the hand-off turn completes; with `reason` `answer` or `refusal` the turn ended before the abort took effect, so it submits no hand-off and acknowledges on that completion.
      That event fires however the turn ends: its `reason` is `answer`, `aborted`, `refusal` or `error`.
      A user who presses Esc during the hand-off turn also ends it; the pane then settles without a hand-off, since the user stepped in.
      The acknowledgement sits under the session's block, keyed by the drain's ID and the session's ID, and counts only for the block's current session, so neither an earlier drain's acknowledgement nor an earlier session's in the same pane counts.
