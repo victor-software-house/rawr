@@ -74,32 +74,37 @@ impl FakeServer {
     }
 }
 
+/// Accepts only `GET /api/control` that offers `rex.control.v1`, and answers
+/// with that subprotocol.
+#[expect(
+    clippy::result_large_err,
+    reason = "tungstenite's Callback fixes the error type"
+)]
+fn accept_control(request: &Request, mut response: Response) -> Result<Response, ErrorResponse> {
+    let offered = request
+        .headers()
+        .get(SEC_WEBSOCKET_PROTOCOL)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.split(',').any(|name| name.trim() == "rex.control.v1"));
+    if request.uri().path() != "/api/control" || !offered {
+        let mut refusal = ErrorResponse::new(Some(
+            "expected GET /api/control with rex.control.v1".to_owned(),
+        ));
+        *refusal.status_mut() = StatusCode::BAD_REQUEST;
+        return Err(refusal);
+    }
+    response.headers_mut().insert(
+        SEC_WEBSOCKET_PROTOCOL,
+        HeaderValue::from_static("rex.control.v1"),
+    );
+    Ok(response)
+}
+
 fn serve(listener: &UnixListener, steps: Vec<Step>) -> Result<()> {
     let (stream, _) = listener.accept()?;
     stream.set_read_timeout(Some(PATIENCE))?;
-    let mut socket = tungstenite::accept_hdr(
-        stream,
-        |request: &Request, mut response: Response| -> Result<Response, ErrorResponse> {
-            let offered = request
-                .headers()
-                .get(SEC_WEBSOCKET_PROTOCOL)
-                .and_then(|value| value.to_str().ok())
-                .is_some_and(|value| value.split(',').any(|name| name.trim() == "rex.control.v1"));
-            if request.uri().path() != "/api/control" || !offered {
-                let mut refusal = ErrorResponse::new(Some(
-                    "expected GET /api/control with rex.control.v1".to_owned(),
-                ));
-                *refusal.status_mut() = StatusCode::BAD_REQUEST;
-                return Err(refusal);
-            }
-            response.headers_mut().insert(
-                SEC_WEBSOCKET_PROTOCOL,
-                HeaderValue::from_static("rex.control.v1"),
-            );
-            Ok(response)
-        },
-    )
-    .map_err(|error| anyhow!("the fake server's handshake failed: {error}"))?;
+    let mut socket = tungstenite::accept_hdr(stream, accept_control)
+        .map_err(|error| anyhow!("the fake server's handshake failed: {error}"))?;
     for step in steps {
         match step {
             Step::Expect(expected) => {

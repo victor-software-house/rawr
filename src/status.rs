@@ -43,8 +43,10 @@ impl Status {
     ///
     /// Only records of Claude Code count: a program that took the pane over
     /// after Claude exited reports its own status, and the pane's Claude has
-    /// stopped. A running child record is a background task, so the pane is
-    /// working whatever its root record says.
+    /// stopped. A root record that waits for the user reads Needs input even
+    /// while a child runs, because the user has to act. Otherwise a root that
+    /// is working, or any working child record (a background task), reads
+    /// Working; a child that has finished counts for nothing.
     pub(crate) fn from_records(records: &[StatusRecord]) -> Self {
         let claude: Vec<&StatusRecord> = records
             .iter()
@@ -52,19 +54,21 @@ impl Status {
                 record.effective_app.as_deref().or(record.app.as_deref()) == Some(CLAUDE)
             })
             .collect();
-        let has_child = claude.iter().any(|record| !record.id.is_empty());
-        let Some(root) = claude.iter().find(|record| record.id.is_empty()) else {
-            return if has_child {
-                Self::Working
-            } else {
-                Self::Stopped
-            };
-        };
-        match (root.state, has_child) {
-            (State::Working, _) | (_, true) => Self::Working,
-            (State::Blocked, false) => Self::NeedsInput,
-            (State::Error, false) => Self::Failed,
-            (State::Idle | State::Done, false) => Self::Idle,
+        if claude.is_empty() {
+            return Self::Stopped;
+        }
+        let root = claude
+            .iter()
+            .find(|record| record.id.is_empty())
+            .map(|record| record.state);
+        let working_child = claude
+            .iter()
+            .any(|record| !record.id.is_empty() && record.state == State::Working);
+        match (root, working_child) {
+            (Some(State::Blocked), _) => Self::NeedsInput,
+            (Some(State::Working), _) | (_, true) => Self::Working,
+            (Some(State::Error), false) => Self::Failed,
+            (Some(State::Idle | State::Done) | None, false) => Self::Idle,
         }
     }
 
@@ -217,11 +221,32 @@ mod tests {
     }
 
     #[test]
-    fn a_child_record_makes_the_pane_working_whatever_its_root_says() {
-        let child = record("agent-1", State::Idle, "claude-code");
-        for state in [State::Blocked, State::Error, State::Idle] {
+    fn a_working_child_makes_an_idle_or_failed_pane_working() {
+        let child = record("agent-1", State::Working, "claude-code");
+        for state in [State::Error, State::Idle, State::Done] {
             let status = Status::from_records(&[record("", state, "claude-code"), child.clone()]);
             assert_eq!(status, Status::Working);
+        }
+    }
+
+    #[test]
+    fn a_pane_waiting_for_the_user_needs_input_while_a_child_runs() {
+        let status = Status::from_records(&[
+            record("", State::Blocked, "claude-code"),
+            record("agent-1", State::Working, "claude-code"),
+        ]);
+        assert_eq!(status, Status::NeedsInput);
+    }
+
+    #[test]
+    fn a_finished_child_does_not_make_the_pane_working() {
+        for child in [State::Done, State::Idle, State::Error] {
+            let finished = record("agent-1", child, "claude-code");
+            let root = |state| record("", state, "claude-code");
+            let word = |state| Status::from_records(&[root(state), finished.clone()]);
+            assert_eq!(word(State::Blocked), Status::NeedsInput);
+            assert_eq!(word(State::Done), Status::Idle);
+            assert_eq!(word(State::Error), Status::Failed);
         }
     }
 

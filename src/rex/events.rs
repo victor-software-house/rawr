@@ -201,7 +201,7 @@ impl Client {
             .context("encode session.attach_all arguments")?;
         let mut arrived = Vec::new();
         let (value, seq) = self.request_with("session.attach_all", Some(payload), |event| {
-            arrived.push(event)
+            arrived.push(event);
         })?;
         let snapshot: Snapshot =
             serde_json::from_value(value).context("read the session.attach_all result")?;
@@ -261,7 +261,10 @@ impl Iterator for Events {
             match message.into_event() {
                 Ok(Some(event)) => return Some(Ok(event)),
                 Ok(None) => {}
-                Err(error) => return Some(Err(error)),
+                Err(error) => {
+                    self.ended = true;
+                    return Some(Err(error));
+                }
             }
         }
         None

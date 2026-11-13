@@ -15,6 +15,7 @@ const LISTING: &str = include_str!("../../testdata/rex/listing.jsonl");
 const PROGRAM_STATUS: &str = include_str!("../../testdata/rex/program-status.jsonl");
 const REFUSED: &str = include_str!("../../testdata/rex/refused.jsonl");
 const EVENTS: &str = include_str!("../../testdata/rex/events.jsonl");
+const EVENTS_MALFORMED: &str = include_str!("../../testdata/rex/events-malformed.jsonl");
 const REVISION_WELCOME: &str = include_str!("../../testdata/rex/revision-welcome.jsonl");
 const REVISION_REFUSED: &str = include_str!("../../testdata/rex/revision-refused.jsonl");
 
@@ -167,7 +168,7 @@ fn a_refused_call_names_its_code_and_leaves_the_connection_usable() {
         error.to_string(),
         "the Rex server refused session.list_blocks: session_not_found (404), session not found"
     );
-    assert!(client.sessions().unwrap().is_empty());
+    assert_eq!(client.sessions().unwrap(), Vec::<Session>::new());
     drop(client);
     server.finish();
 }
@@ -209,5 +210,16 @@ fn events_skip_what_rawr_does_not_follow() {
             },
         ]
     );
+    server.finish();
+}
+
+#[test]
+fn the_events_end_after_the_first_error() {
+    let (server, client) = open("events-malformed", &[HANDSHAKE, EVENTS_MALFORMED]);
+    let mut events = client.watch().unwrap().events;
+    let error = events.next().unwrap().unwrap_err();
+    assert_eq!(error.to_string(), "read a block_created event");
+    assert!(events.next().is_none());
+    drop(events);
     server.finish();
 }
