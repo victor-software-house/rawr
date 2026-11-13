@@ -13,6 +13,8 @@ use super::client::Client;
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct View {
     #[serde(default)]
+    pub(crate) active_window_id: Option<String>,
+    #[serde(default)]
     pub(crate) windows: Vec<Window>,
 }
 
@@ -23,6 +25,9 @@ pub(crate) struct Window {
     pub(crate) label: Option<String>,
     #[serde(default)]
     pub(crate) layers: Vec<Layer>,
+    /// The block drawn over the whole window, when one is zoomed.
+    #[serde(default)]
+    pub(crate) zoomed_block_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -31,6 +36,10 @@ pub(crate) struct Layer {
     pub(crate) kind: String,
     /// `[x, y, w, h]`, fractions of the window.
     pub(crate) bounds: [f64; 4],
+    /// `minimized` for a floating layer that is not drawn.
+    #[serde(default)]
+    pub(crate) state: Option<String>,
+    pub(crate) layer_id: String,
     #[serde(default)]
     pub(crate) blocks: Vec<LayerBlock>,
 }
@@ -43,6 +52,10 @@ pub(crate) struct LayerBlock {
 impl Layer {
     pub(crate) fn floats(&self) -> bool {
         self.kind != "tiled"
+    }
+
+    pub(crate) fn minimized(&self) -> bool {
+        self.state.as_deref() == Some("minimized")
     }
 
     fn holds(&self, block_id: &str) -> bool {
@@ -218,6 +231,40 @@ impl Client {
         self.call::<_, IgnoredAny>(
             "block.close",
             &json!({ "session_id": session_id, "block_id": block_id, "keep_last": true }),
+        )?;
+        Ok(())
+    }
+}
+
+impl Client {
+    /// Undoes the zoom in the window that holds `block_id`, so every block
+    /// in it shows.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the server refuses the call.
+    pub(crate) fn unzoom(&mut self, session_id: &str, block_id: &str) -> Result<()> {
+        self.call::<_, IgnoredAny>(
+            "session.zoom_block",
+            &json!({ "session_id": session_id, "block_id": block_id, "zoom": false }),
+        )?;
+        Ok(())
+    }
+
+    /// Draws a minimized floating layer again, raised and focused.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the server refuses the call.
+    pub(crate) fn restore_layer(&mut self, session_id: &str, layer_id: &str) -> Result<()> {
+        self.call::<_, IgnoredAny>(
+            "session.set_layer_state",
+            &json!({
+                "session_id": session_id,
+                "layer_id": layer_id,
+                "state": "normal",
+                "focus": true,
+            }),
         )?;
         Ok(())
     }

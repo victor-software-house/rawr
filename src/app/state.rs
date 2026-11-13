@@ -123,6 +123,8 @@ pub(crate) struct App {
     /// Whether a pane's untitled scratch sessions are listed.
     pub(crate) show_scratch: bool,
     /// The panes, sessions and results lists, in that order.
+    /// The pane to select once the feed lists it, by block ID.
+    pub(crate) want: Option<String>,
     scrolls: [Scroll; 3],
 }
 
@@ -171,6 +173,7 @@ impl App {
             dragging: false,
             frame: 0,
             show_scratch: false,
+            want: None,
             scrolls: [Scroll::default(); 3],
         }
     }
@@ -210,13 +213,25 @@ impl App {
                 .cmp(&rank(b.status))
                 .then_with(|| newest(a).cmp(&newest(b)))
         });
-        let kept = self.selected().map(|pane| pane.block_id.clone());
+        // The pane asked for, until the feed lists it; then the one selected.
+        let kept = self
+            .want
+            .clone()
+            .or_else(|| self.selected().map(|pane| pane.block_id.clone()));
+        let before = self.pane;
         self.panes = panes;
         self.link = Link::Live;
-        self.pane = kept
-            .and_then(|id| self.panes.iter().position(|pane| pane.block_id == id))
-            .unwrap_or(0)
-            .min(self.panes.len().saturating_sub(1));
+        let found = kept
+            .as_ref()
+            .and_then(|id| self.panes.iter().position(|pane| &pane.block_id == id));
+        if found.is_some() {
+            self.want = None;
+        }
+        self.pane = found.unwrap_or(0).min(self.panes.len().saturating_sub(1));
+        // A pane that moved in the list stays in view.
+        if self.pane != before {
+            self.scroll_mut(Focus::Panes).follow = true;
+        }
         self.session = self.session.min(self.session_count().saturating_sub(1));
     }
 

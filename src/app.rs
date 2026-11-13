@@ -52,7 +52,7 @@ enum Msg {
     clippy::wildcard_enum_match_arm,
     reason = "focus and paste events change nothing"
 )]
-pub(crate) fn run() -> Result<Option<Agent>> {
+pub(crate) fn run(select: Option<String>) -> Result<Option<Agent>> {
     let (send, receive) = mpsc::channel();
     let input = send.clone();
     thread::spawn(move || {
@@ -75,6 +75,7 @@ pub(crate) fn run() -> Result<Option<Agent>> {
     });
 
     let mut app = App::new(std::env::var("REX_BLOCK").ok());
+    app.want = select;
     let mut found: Option<Arc<Vec<Found>>> = None;
     // One worker reads transcripts for the newest query only: each new
     // query bumps the generation, and the worker drops a stale one between
@@ -285,16 +286,13 @@ enum Went {
     Handed,
 }
 
-/// Shows `block_id` in the Rex app. When this app floats, it floats over the
-/// pane it went to: moved there within its own session, or started there
-/// afresh in another session, since a block stays in its session.
+/// Shows `block_id` in the Rex app, and moves this app over it only once
+/// the pane is in view. When this app floats, it floats over the pane it
+/// went to: moved there within its own session, or started there afresh in
+/// another session, since a block stays in its session.
 fn go_to(session_id: &str, block_id: &str) -> Result<Went> {
     let mut client = Client::connect(&Endpoint::from_environment()?)?;
-    let target = client.view(session_id)?;
-    let (_, window, _) = target
-        .find(block_id)
-        .context("the pane is no longer in its session")?;
-    let window_id = window.window_id.clone();
+    let window_id = reveal(&mut client, session_id, block_id)?;
     let here = std::env::var("REX_SESSION").ok();
     let me = std::env::var("REX_BLOCK").ok();
     let floating = match (&here, &me) {
@@ -305,12 +303,12 @@ fn go_to(session_id: &str, block_id: &str) -> Result<Went> {
             .map(|(_, _, layer)| layer.bounds),
         _ => None,
     };
-    client.focus_block(session_id, block_id)?;
     client.show(
         here.as_deref().unwrap_or(session_id),
         session_id,
         &window_id,
     )?;
+    shown(&mut client, session_id, block_id, &window_id)?;
     let (Some(bounds), Some(here), Some(me)) = (floating, here, me) else {
         return Ok(Went::Stayed);
     };
@@ -321,9 +319,59 @@ fn go_to(session_id: &str, block_id: &str) -> Result<Went> {
         return Ok(Went::Stayed);
     }
     let exe = std::env::current_exe().context("find the rawr binary")?;
-    client.float_command(session_id, &window_id, bounds, &[exe.display().to_string()])?;
+    client.float_command(
+        session_id,
+        &window_id,
+        bounds,
+        &[
+            exe.display().to_string(),
+            "--select".to_owned(),
+            block_id.to_owned(),
+        ],
+    )?;
     // The copy floating here goes, by its own block ID: never by a label,
     // which a session or program may share, and never with its layer.
     client.close_block(&here, &me)?;
     Ok(Went::Handed)
+}
+
+/// Brings `block_id` into view in its session: its window active, no other
+/// block zoomed over it, and its floating layer drawn. Returns its window.
+fn reveal(client: &mut Client, session_id: &str, block_id: &str) -> Result<String> {
+    let view = client.view(session_id)?;
+    let (_, window, layer) = view
+        .find(block_id)
+        .context("the pane is no longer in its session")?;
+    let window_id = window.window_id.clone();
+    if window
+        .zoomed_block_id
+        .as_deref()
+        .is_some_and(|zoomed| zoomed != block_id)
+    {
+        client.unzoom(session_id, block_id)?;
+    }
+    if layer.minimized() {
+        client.restore_layer(session_id, &layer.layer_id)?;
+    }
+    client.focus_block(session_id, block_id)?;
+    Ok(window_id)
+}
+
+/// Checks that Rex now draws `block_id`: its window is the active one, no
+/// other block is zoomed over it, and its layer is not minimized.
+fn shown(client: &mut Client, session_id: &str, block_id: &str, window_id: &str) -> Result<()> {
+    let view = client.view(session_id)?;
+    let (_, window, layer) = view
+        .find(block_id)
+        .context("the pane is no longer in its session")?;
+    let active = view.active_window_id.as_deref() == Some(window_id);
+    let covered = window
+        .zoomed_block_id
+        .as_deref()
+        .is_some_and(|zoomed| zoomed != block_id);
+    anyhow::ensure!(
+        active && !covered && !layer.minimized(),
+        "the pane did not come into view, so rawr stayed where it is"
+    );
+    Ok(())
 }

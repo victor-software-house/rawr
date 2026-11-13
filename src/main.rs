@@ -38,6 +38,10 @@ use crate::setup::{Change, Mode};
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
+    /// The pane the app opens with selected, by its Rex block ID. The app
+    /// passes it on when it moves to another Rex session.
+    #[arg(long, hide = true, value_name = "BLOCK")]
+    select: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -164,7 +168,7 @@ fn main() -> ExitCode {
             ) => View::new(OutputFormat::Pretty, ColorMode::Auto),
         })
         .run(|cli| match cli.command {
-            None => open_app(),
+            None => open_app(cli.select),
             Some(Command::Record) => record().map(|()| Outcome::Recorded),
             Some(Command::Pick) => pick(),
             Some(Command::Find { words }) => find(&words),
@@ -256,12 +260,12 @@ fn find(words: &[String]) -> Result<Outcome> {
 }
 
 /// Opens the app, and resumes the session the user chooses.
-fn open_app() -> Result<Outcome> {
+fn open_app(select: Option<String>) -> Result<Outcome> {
     if !std::io::stderr().is_terminal() {
         eprintln!("rawr needs a terminal; rawr status --format json lists the panes");
         return Ok(Outcome::Nothing);
     }
-    match app::run()? {
+    match app::run(select)? {
         Some(agent) => match agent.resume()? {},
         None => Ok(Outcome::Recorded),
     }
