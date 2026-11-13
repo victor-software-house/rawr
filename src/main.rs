@@ -202,7 +202,7 @@ mod tests {
 
     use super::{Cli, Outcome};
 
-    fn shown(outcome: &Outcome) -> (String, Stream) {
+    fn shown(outcome: &Outcome) -> (String, Destination) {
         let captured = View::new(OutputFormat::Pretty, ColorMode::Never)
             .capture(outcome)
             .expect("an outcome serializes");
