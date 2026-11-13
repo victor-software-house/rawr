@@ -8,7 +8,7 @@ Lay the picker out like Claude Code's own screen, show a few sessions at a time,
 
 ### Requirement: Few rows, expand on request
 
-The picker SHALL show at most `picker.rows` sessions, then one row `+N earlier · ctrl+o`, and `ctrl+o` SHALL show and hide the rest.
+The picker SHALL show at most `picker.rows` sessions and, only when more sessions exist, one row `+N earlier · ctrl+o`; `ctrl+o` SHALL show and hide the rest.
 
 #### Scenario: Seven sessions, three rows
 
@@ -32,3 +32,8 @@ After Esc, `q` or `ctrl+c`, `rawr pick` SHALL print one line on stderr naming `r
 
 - **WHEN** the picker is open and the user presses Esc
 - **THEN** stderr ends with `rawr pick reopens this pane's sessions · rawr find searches all`
+
+#### Scenario: No more sessions than rows
+
+- **WHEN** a pane's index lists two sessions and `picker.rows` is 3
+- **THEN** two rows show, and no `earlier` row

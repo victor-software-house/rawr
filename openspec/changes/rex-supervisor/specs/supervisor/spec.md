@@ -27,12 +27,13 @@ Show the state of every Claude Code session running in Rex, and restart the Rex 
 
 ### Requirement: Restart waits for idle
 
-`rawr restart` SHALL open a drain, and SHALL stop and start the Rex server only when every live Claude block has acknowledged the drain and reads `Idle` or `Failed` with no child record since, or when `--force` is given.
+`rawr restart` SHALL open a drain, and SHALL stop and start the Rex server only when every live Claude block has acknowledged the drain and reads `Idle` or `Failed` with no child record on a check made right before the stop, or when `--force` is given.
+On a timeout or any other non-zero exit, `rawr restart` SHALL close the drain it opened.
 
 #### Scenario: One pane stays busy past the wait
 
 - **WHEN** `restart.wait` is `30m` and block `block:0190f3a2-7c41-7e10-8b2d-5d9e6a4c1f08` still reads `Working` 30 minutes after `rawr restart`
-- **THEN** the Rex server keeps running, and `rawr restart` exits non-zero naming that block
+- **THEN** the Rex server keeps running, the drain is closed, and `rawr restart` exits non-zero naming that block
 
 #### Scenario: Every pane was already idle
 

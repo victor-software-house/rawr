@@ -85,7 +85,7 @@ The closest first-party models are Claude Code's own supervisor, which defers it
      The search box sits at the bottom, drawn like Claude Code's prompt box, with the pane's name in its top rule and the key line under it.
    - Each row holds the glyph and status word, the title, the folder, and a right-aligned age, after the agents view's columns.
    - The newest rows show first, up to `picker.rows` (default 3).
-     A dim `+N earlier · ctrl+o` row stands for the rest, and `ctrl+o` expands and collapses them, as it does for detail in Claude Code.
+     When more sessions exist, a dim `+N earlier · ctrl+o` row stands for the rest, and `ctrl+o` expands and collapses them, as it does for detail in Claude Code.
    - Esc, `q` and `ctrl+c` leave one dim line in the shell: `rawr pick reopens this pane's sessions · rawr find searches all`.
 6. **The history per pane is a setting.**
    `history.per_pane` (default 10) bounds each pane's index.
@@ -114,14 +114,17 @@ The closest first-party models are Claude Code's own supervisor, which defers it
    - A block whose session has no rawr mod, such as one started before `rawr setup`, is named at once as one that cannot acknowledge.
      It counts as settled once it has read Idle with no child record for `drain.grace` (default 2 minutes).
    - Past `restart.wait` (default 30 minutes, Claude Code's own cap), the restart fails and names each pane as busy, waiting on input, or not acknowledged.
-   - Once every block is idle, the daemon stops the Rex server, starts it again, and closes the drain.
+   - Once every block has settled, the daemon checks every block once more right before the stop.
+   - It then stops the Rex server, starts it again, and closes the drain.
+   - On a timeout or any other failure, the daemon closes the drain, so no session goes on winding down for a restart that will not come.
    - `--force` skips the wait, and so does a second `rawr restart` during the wait, after the self-hosted runner's second-signal rule.
 9. **The daemon offers restored panes their sessions.**
    After a restart, each block comes back with no program status.
    For each block with sessions in the index whose foreground process is a shell, the daemon runs the picker there, as the "Resume Claude here" Rex action does today.
    The shell snippet becomes optional, for those who want the picker without the daemon.
 10. **The index cleans itself.**
-    - An entry goes when its transcript is gone; Claude Code deletes transcripts with no message after `cleanupPeriodDays`, 30 days by default ([settings][cc-settings]).
+    - An entry goes when its transcript existed and is gone; Claude Code deletes transcripts with no message after `cleanupPeriodDays`, 30 days by default ([settings][cc-settings]).
+    - An entry with no transcript goes 24 hours after it was recorded, so a session that has not written its first message yet stays.
     - A block event never deletes a file by itself.
       It marks the pane, and the file goes only when a later full listing from a running Rex server confirms the block is gone.
       A Rex crash, upgrade or manual restart that emits removal events on shutdown therefore deletes nothing.
