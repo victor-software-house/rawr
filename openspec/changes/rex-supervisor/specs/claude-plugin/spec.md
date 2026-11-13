@@ -64,13 +64,14 @@ The submitted hand-off turn SHALL become the carrying turn and SHALL NOT be inte
 
 ### Requirement: Acknowledge an interrupted request after its hand-off
 
-Once it has called `$.turn.abort`, the mod SHALL ignore the cancelled turn's `turn.complete` whatever its `reason`, and SHALL acknowledge only when the hand-off turn completes.
-When the turn completes before the abort takes effect, the mod SHALL submit no hand-off and SHALL acknowledge on that completion.
+Once it has called `$.turn.abort`, the mod SHALL wait for the cancelled turn's `turn.complete` before submitting the hand-off.
+If that completion's `reason` is `aborted`, the mod SHALL submit the hand-off with `$.prompt.submit` and SHALL acknowledge only when the hand-off turn completes.
+If its `reason` is anything else, the turn ended before the abort took effect: the mod SHALL submit no hand-off and SHALL acknowledge on that completion.
 
-#### Scenario: The cancelled turn reports an error
+#### Scenario: The cancelled turn reports the abort
 
-- **WHEN** the mod cancels the turn carrying `d-7a21` and that turn's `turn.complete` has `reason` `error`
-- **THEN** the mod does not acknowledge `d-7a21` until the hand-off turn completes
+- **WHEN** the mod cancels the turn carrying `d-7a21` and that turn's `turn.complete` has `reason` `aborted`
+- **THEN** the mod submits the hand-off and does not acknowledge `d-7a21` until the hand-off turn completes
 
 #### Scenario: The turn ends just before the abort
 
