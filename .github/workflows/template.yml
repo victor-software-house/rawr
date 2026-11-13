@@ -38,7 +38,7 @@ jobs:
   # installs its tools through the release mirror with a session token.
   template:
     if: ${{ !github.event.pull_request.draft }}
-    uses: victor-software-house/actions/.github/workflows/template-check.yml@bead5c01b61e14ecf1e923a5bcff97e8c421f151 # main, 2026-11-11
+    uses: victor-software-house/actions/.github/workflows/template-check.yml@4f2318e8587711ead93246fc6a73174803264c3c # main, 2026-11-13
     permissions:
       contents: read
       # The mise action exchanges it for the mirror's session token.

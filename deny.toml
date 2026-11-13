@@ -21,7 +21,12 @@ allow = [
 confidence-threshold = 0.93
 
 [bans]
-multiple-versions = "warn"
+# Two versions of one crate fail. A repository whose dependencies still need
+# two versions, after updating each to its latest release, adds a skip below
+# deny = [...], one entry per crate with the reason, and removes it when the
+# graph converges:
+# skip = [{ crate = "syn@2", reason = "<crate> <version>, the latest, requires syn 2" }]
+multiple-versions = "deny"
 wildcards = "deny"
 # Path dependencies carry no version; wildcards stay denied for the rest.
 allow-wildcard-paths = true

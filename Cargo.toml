@@ -2,11 +2,10 @@
 name = "rawr"
 version = "0.0.3"
 edition = "2024"
-rust-version = "1.99.1"
+rust-version = "1.100.0"
 description = "Bring Claude Code agents back into their Rex panes after a Rex server restart"
 license = "MIT"
 repository = "https://github.com/victor-software-house/rawr"
-readme = "README.md"
 keywords = ["rex", "claude", "terminal", "resume", "tui"]
 categories = ["command-line-utilities"]
 publish = false
@@ -70,6 +69,19 @@ invalid_codeblock_attributes = "deny"
 # Allow-by-default, so a -D warnings rustdoc build never fires it: an unbalanced
 # backtick renders the rest of the paragraph as code.
 unescaped_backticks = "deny"
+# New in Rust 1.100 and warn by default: an unescaped `|` in a table row drops
+# cells.
+invalid_markdown_table = "deny"
+
+[lints.cargo]
+# Cargo's own lints, new in Rust 1.100. Clippy's -D warnings does not reach
+# them, so each group is denied here; correctness is deny already.
+# unused_dependencies (style) checks [dependencies] and [build-dependencies]
+# from what the compiler used. cargo-machete in `deps` still covers
+# [dev-dependencies].
+style = { level = "deny", priority = -1 }
+suspicious = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
 
 [lints.clippy]
 all = { level = "deny", priority = -1 }
@@ -107,8 +119,12 @@ multiple_unsafe_ops_per_block = "deny"
 # idiomatic path and mod.rs the older style (ch07-05, "Alternate File Paths").
 # Many files named mod.rs blur together in an editor.
 mod_module_files = "deny"
+# An item from another module comes in through `use`, and the code names it
+# by its last segment, or a function by its module: `fs::read`, never
+# `std::fs::read` inline. The default limit is two segments.
+absolute_paths = "deny"
 # Duplicate versions come from transitive dependencies the crate does not
-# control; cargo-deny reports them (`bans.multiple-versions`).
+# control; cargo-deny fails on them (`bans.multiple-versions`).
 multiple_crate_versions = "allow"
 
 # The smallest binary that keeps its speed. Against opt-level 3 with thin LTO,
