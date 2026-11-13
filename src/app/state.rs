@@ -110,6 +110,9 @@ pub(crate) enum Action {
     /// Open the session's file at this place in its files, in the file's
     /// default app.
     OpenFile(usize),
+    /// Narrow the files tab to the folder of the session's file at this
+    /// place in its files.
+    FilterFolder(usize),
     /// Show this pane in the Rex app.
     GoTo {
         session_id: String,
@@ -146,9 +149,26 @@ pub(crate) enum Target {
     Entry(u64),
     /// The line that stands for the files in temporary folders.
     ScratchFiles,
+    /// A chip of the files tab that shows all files, the changed or the
+    /// read ones.
+    FileKind(Shown),
+    /// A chip of the files tab that shows one file type, by its key.
+    FileType(u64),
+    /// A file's folder in the files tab, by the file's place; a click
+    /// narrows the tab to that folder.
+    Folder(usize),
     /// A file of the files tab, by its place in the session's changed
     /// files and then its read ones; a click opens it in its default app.
     File(usize),
+}
+
+/// Which of the session's files the files tab lists.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum Shown {
+    #[default]
+    All,
+    Changed,
+    Read,
 }
 
 /// A column's movable edge: the column it sizes, and where the column
@@ -298,6 +318,10 @@ pub(crate) struct App {
     pub(crate) show_scratch: bool,
     /// Whether the files tab lists the files in temporary folders.
     pub(crate) show_scratch_files: bool,
+    /// Which of the session's files the files tab lists.
+    pub(crate) files_shown: Shown,
+    /// The one file type the files tab lists, by its chip's key.
+    pub(crate) file_type: Option<u64>,
     /// The entries opened by a click, by the view's key.
     pub(crate) open: HashSet<u64>,
     /// The pane to select once the feed lists it, by block ID.
@@ -377,6 +401,8 @@ impl App {
             show_scratch: false,
             open: HashSet::new(),
             show_scratch_files: false,
+            files_shown: Shown::All,
+            file_type: None,
             want: None,
             scrolls: [Scroll::default(); 4],
             wants: [48, 60, 72],
@@ -1166,6 +1192,17 @@ impl App {
                 Action::None
             }
             Target::File(index) => Action::OpenFile(index),
+            Target::FileKind(shown) => {
+                self.focus_here(Focus::Session);
+                self.files_shown = shown;
+                Action::None
+            }
+            Target::FileType(key) => {
+                self.focus_here(Focus::Session);
+                self.file_type = (self.file_type != Some(key)).then_some(key);
+                Action::None
+            }
+            Target::Folder(index) => Action::FilterFolder(index),
             Target::ScratchFiles => {
                 self.focus_here(Focus::Session);
                 self.show_scratch_files = !self.show_scratch_files;

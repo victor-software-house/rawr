@@ -232,7 +232,7 @@ pub(crate) fn run(view: Option<u64>) -> Result<Option<Agent>> {
             match action {
                 Action::None => {}
                 Action::Quit => return Ok(None),
-                Action::OpenFile(index) => {
+                Action::OpenFile(index) | Action::FilterFolder(index) => {
                     let file = app
                         .current()
                         .and_then(|agent| facts.get(&agent.transcript))
@@ -244,8 +244,15 @@ pub(crate) fn run(view: Option<u64>) -> Result<Option<Agent>> {
                                 .or_else(|| known.read.get(index.checked_sub(known.files.len())?))
                         })
                         .map(|(path, _)| PathBuf::from(path));
-                    if let Some(file) = file {
-                        open_file(file, &mut app);
+                    match (action, file) {
+                        (Action::OpenFile(_), Some(file)) => open_file(file, &mut app),
+                        (_, Some(file)) => {
+                            let folder = file.parent().map(|folder| folder.display().to_string());
+                            app.filters[state::Focus::Session.index()] = folder
+                                .map(|folder| format!("{folder}/"))
+                                .unwrap_or_default();
+                        }
+                        (_, None) => {}
                     }
                 }
                 Action::Resume(agent) => {
