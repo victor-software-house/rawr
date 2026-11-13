@@ -8,9 +8,8 @@ Restart the Rex server only once every Claude Code session in it has settled, wi
 
 ### Requirement: Restart waits for idle
 
-`rawr restart` SHALL open a drain, and SHALL stop and start the Rex server only when every live Claude block's current session has acknowledged the current drain ID and the block reads `Idle` or `Failed` with no child record in `working` on a check made right before the stop, or when `--force` is given.
+`rawr restart` SHALL open a drain, and SHALL stop and start the Rex server only when every live Claude block's current session has acknowledged the current drain ID, or settled as "A session without the mod settles on idle" allows, and the block reads `Idle` or `Failed` with no child record in `working` on a check made right before the stop, or when `--force` is given.
 The set of live blocks SHALL change as Claude sessions start and exit during the drain.
-On a timeout, an interrupt or any other non-zero exit, `rawr restart` SHALL close the drain it opened.
 
 #### Scenario: Every pane was already idle
 
@@ -64,15 +63,21 @@ On a timeout, an interrupt or any other non-zero exit, `rawr restart` SHALL clos
 
 ### Requirement: A session without the mod settles on idle
 
-A block whose session has no rawr mod SHALL be named at once as one that cannot acknowledge, and SHALL count as settled for "Restart waits for idle" once it has read `Idle` with no child record in `working` for `drain.grace`.
+A block whose session has no rawr mod SHALL be named at once as one that cannot acknowledge, and SHALL count as settled for "Restart waits for idle" once it has read `Idle` with no child record in `working` for `drain.grace` without a break.
 
 #### Scenario: A session started before rawr setup
 
 - **WHEN** a block's session has no rawr mod and the block reads `Idle` with no child record in `working` for `drain.grace` during a restart
 - **THEN** the restart counts that block as settled, and does not wait for its acknowledgement
 
+#### Scenario: The session works again before the grace ends
+
+- **WHEN** a block whose session has no rawr mod reads `Idle`, then `Working` before `drain.grace` has passed, then `Idle` again
+- **THEN** `drain.grace` counts again from the second `Idle`
+
 ### Requirement: A drain left open is closed
 
+On a timeout, an interrupt or any other non-zero exit, `rawr restart` SHALL close the drain it opened.
 `drain.yaml` SHALL record the daemon's process ID and start time.
 The mod SHALL deliver nothing from a drain whose owner is no longer running.
 At start, the daemon SHALL close any open drain unless its restart record says a restart is pending.
