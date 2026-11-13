@@ -83,6 +83,9 @@ pub(crate) fn run(view: Option<u64>) -> Result<Option<Agent>> {
     let mut reporter = Reporter::default();
     let started = std::time::Instant::now();
     loop {
+        // Frames come on a fixed beat while the columns move, however long
+        // one takes to draw.
+        let beat = std::time::Instant::now();
         reporter.send(own_status(&app))?;
         app.frame = usize::try_from(started.elapsed().as_millis() / SPIN.as_millis()).unwrap_or(0);
         let mut hits = view::Hits::default();
@@ -100,7 +103,6 @@ pub(crate) fn run(view: Option<u64>) -> Result<Option<Agent>> {
             .and_then(|agent| facts.get(&agent.transcript));
         let shown = agent.as_ref().map(|agent| (agent, known));
         screen
-            .terminal()
             .draw(|frame| hits = view::draw(frame, &app, shown))
             .context("draw the app")?;
         app.settle(&hits.tops);
@@ -124,7 +126,7 @@ pub(crate) fn run(view: Option<u64>) -> Result<Option<Agent>> {
         let first = if app.animating() {
             // A moving focus draws at the screen's rate; a spinner at its own.
             let wait = if app.moving() {
-                FRAME
+                FRAME.saturating_sub(beat.elapsed())
             } else {
                 SPIN.saturating_mul(u32::try_from(tick + 1).unwrap_or(u32::MAX))
                     .saturating_sub(elapsed)

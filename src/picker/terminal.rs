@@ -2,7 +2,7 @@
 //! mouse reporting and a hidden cursor, all on stderr, since stdout carries
 //! only the chosen command. One guard takes the terminal and gives it back.
 
-use std::io::{self, Stderr, Write};
+use std::io::{self, BufWriter, Stderr, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
@@ -14,14 +14,22 @@ use ratatui::crossterm::event::{
     self, DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
     EnableFocusChange, EnableMouseCapture,
 };
-use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
-    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+    BeginSynchronizedUpdate, EndSynchronizedUpdate, EnterAlternateScreen, LeaveAlternateScreen,
+    disable_raw_mode, enable_raw_mode,
 };
+use ratatui::crossterm::{execute, queue};
 
 /// How long input is read and dropped after mouse reporting stops, so reports
 /// already on their way are not typed into the shell.
 const DRAIN: Duration = Duration::from_millis(50);
+
+/// How much of a frame the screen holds before writing it: a full frame of
+/// a large terminal, so each frame goes out in one write.
+const FRAME_BYTES: usize = 1 << 18;
+
+/// The terminal's writer: stderr, buffered so a frame is written whole.
+type Out = CrosstermBackend<BufWriter<Stderr>>;
 
 /// Whether the picker holds the terminal now. It is one per process, as the
 /// terminal is, and lets the panic hook and the guard give it back once.
@@ -58,7 +66,7 @@ impl Pointer {
 
 /// The terminal, taken over for the picker; dropping it gives it back.
 pub(crate) struct Screen {
-    terminal: Terminal<CrosstermBackend<Stderr>>,
+    terminal: Terminal<Out>,
     pointer: Pointer,
 }
 
@@ -110,7 +118,11 @@ impl Screen {
             })
             .context("take the screen")
             .and_then(|()| {
-                Terminal::new(CrosstermBackend::new(io::stderr())).context("start drawing")
+                Terminal::new(CrosstermBackend::new(BufWriter::with_capacity(
+                    FRAME_BYTES,
+                    io::stderr(),
+                )))
+                .context("start drawing")
             });
         match taken {
             Ok(terminal) => Ok(Self {
@@ -124,8 +136,19 @@ impl Screen {
         }
     }
 
-    pub(crate) fn terminal(&mut self) -> &mut Terminal<CrosstermBackend<Stderr>> {
-        &mut self.terminal
+    /// Draws one frame and writes it whole, inside a synchronized update,
+    /// so the terminal never shows half of one.
+    ///
+    /// # Errors
+    ///
+    /// Fails when a write to stderr fails.
+    pub(crate) fn draw(&mut self, render: impl FnOnce(&mut ratatui::Frame<'_>)) -> Result<()> {
+        queue!(self.terminal.backend_mut(), BeginSynchronizedUpdate).context("start the frame")?;
+        self.terminal.draw(render).context("draw the frame")?;
+        let out = self.terminal.backend_mut();
+        queue!(out, EndSynchronizedUpdate).context("end the frame")?;
+        out.flush().context("write the frame")?;
+        Ok(())
     }
 
     /// Sets the pointer shape, writing only when it changes.

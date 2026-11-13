@@ -85,7 +85,6 @@ pub(crate) fn choose(
         } else {
             let mut result = None;
             screen
-                .terminal()
                 .draw(|frame| result = Some(view::draw(frame, &rows, &state, offset)))
                 .context("draw the picker")?;
             result.context("the picker drew no frame")?
