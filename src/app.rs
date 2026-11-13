@@ -209,7 +209,24 @@ pub(crate) fn run(
             match action {
                 Action::None => {}
                 Action::Quit => return Ok(None),
-                Action::Resume(agent) => return Ok(Some(agent)),
+                Action::Resume(agent) => {
+                    // A floating app resumes in a tab of its own; a tiled one
+                    // becomes the session.
+                    let session = match app.focus {
+                        state::Focus::Search => None,
+                        state::Focus::Panes | state::Focus::Sessions => {
+                            app.selected().map(|pane| pane.session_id.clone())
+                        }
+                    };
+                    match floats() {
+                        Ok(true) => {
+                            if let Err(error) = resume_in_tab(&agent, session.as_deref()) {
+                                app.notice = Some(format!("{error:#}"));
+                            }
+                        }
+                        Ok(false) | Err(_) => return Ok(Some(agent)),
+                    }
+                }
                 Action::GoTo {
                     session_id,
                     block_id,
@@ -321,7 +338,7 @@ fn go_to(session_id: &str, block_id: &str) -> Result<()> {
     };
     let size = client.terminal_size(here, me)?;
     let exe = std::env::current_exe().context("find the rawr binary")?;
-    let copy = client.float_command(
+    client.float_command(
         session_id,
         &window_id,
         bounds,
@@ -334,8 +351,8 @@ fn go_to(session_id: &str, block_id: &str) -> Result<()> {
             "--replace-block".to_owned(),
             me.clone(),
         ],
+        &size,
     )?;
-    client.resize(session_id, &copy, &size)?;
     Ok(())
 }
 
@@ -399,4 +416,41 @@ fn shown(client: &mut Client, session_id: &str, block_id: &str, window_id: &str)
         "the pane did not come into view, so rawr stayed where it is"
     );
     Ok(())
+}
+
+/// Whether this app floats over its window.
+fn floats() -> Result<bool> {
+    let (Ok(here), Ok(me)) = (std::env::var("REX_SESSION"), std::env::var("REX_BLOCK")) else {
+        return Ok(false);
+    };
+    let mut client = Client::connect(&Endpoint::from_environment()?)?;
+    Ok(client
+        .view(&here)?
+        .find(&me)
+        .is_some_and(|(_, _, layer)| layer.floats()))
+}
+
+/// Resumes `agent` in a new tab of `session_id`, or of this app's session,
+/// named by its title, and shows that tab.
+fn resume_in_tab(agent: &Agent, session_id: Option<&str>) -> Result<()> {
+    anyhow::ensure!(
+        std::path::Path::new(&agent.cwd).is_dir(),
+        "{} no longer exists",
+        agent.cwd
+    );
+    let here = std::env::var("REX_SESSION").context("rawr runs outside Rex")?;
+    let session = session_id.unwrap_or(&here);
+    let mut client = Client::connect(&Endpoint::from_environment()?)?;
+    let label: String = agent.title.chars().take(128).collect();
+    let window = client.open_tab(
+        session,
+        &label,
+        &agent.cwd,
+        &[
+            "claude".to_owned(),
+            "--resume".to_owned(),
+            agent.session_id.clone(),
+        ],
+    )?;
+    client.show(&here, session, &window)
 }

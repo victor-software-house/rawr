@@ -163,6 +163,7 @@ impl Client {
         window_id: &str,
         bounds: [f64; 4],
         command: &[String],
+        size: &Size,
     ) -> Result<String> {
         let created: Created = self.call(
             "session.new_layer",
@@ -174,7 +175,7 @@ impl Client {
                 "layout": { "block": {
                     "flavor": "com.superlogical.terminal.shell",
                     "label": "rawr",
-                    "options": { "command": command, "shell": "none" },
+                    "options": { "command": command, "size": size },
                 } },
             }),
         )?;
@@ -196,20 +197,6 @@ impl Client {
             "com.superlogical.terminal.size",
             &json!({ "session_id": session_id, "block_id": block_id, "args": {} }),
         )
-    }
-
-    /// Sizes the terminal in `block_id` to `size`. A terminal no app has
-    /// shown yet takes it at once.
-    ///
-    /// # Errors
-    ///
-    /// Fails when the server refuses the call.
-    pub(crate) fn resize(&mut self, session_id: &str, block_id: &str, size: &Size) -> Result<()> {
-        self.call::<_, IgnoredAny>(
-            "com.superlogical.terminal.resize",
-            &json!({ "session_id": session_id, "block_id": block_id, "args": size }),
-        )?;
-        Ok(())
     }
 }
 
@@ -279,4 +266,42 @@ impl Client {
         )?;
         Ok(())
     }
+}
+
+impl Client {
+    /// Opens a tab in `session_id`, labelled `label`, that runs `command` in
+    /// `cwd` through the user's login shell, so it finds what their own
+    /// terminals find. The tab becomes the session's active one. Returns
+    /// its window.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the server refuses the call.
+    pub(crate) fn open_tab(
+        &mut self,
+        session_id: &str,
+        label: &str,
+        cwd: &str,
+        command: &[String],
+    ) -> Result<String> {
+        let created: NewWindow = self.call(
+            "session.new_window",
+            &json!({
+                "session_id": session_id,
+                "window_label": label,
+                "focus": true,
+                "layout": { "block": {
+                    "flavor": "com.superlogical.terminal.shell",
+                    "label": "claude",
+                    "options": { "command": command, "cwd": cwd },
+                } },
+            }),
+        )?;
+        Ok(created.window_id)
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct NewWindow {
+    window_id: String,
 }
