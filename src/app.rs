@@ -123,23 +123,36 @@ pub(crate) fn run(view: Option<u64>) -> Result<Option<Agent>> {
         let elapsed = started.elapsed();
         let tick = elapsed.as_millis() / SPIN.as_millis();
         app.frame = usize::try_from(tick).unwrap_or(0);
-        let first = if app.animating() {
+        // A pointer gone past the window's edge shuts the drawer when it
+        // has stayed away a moment; the loop wakes for that too.
+        app.tick();
+        let away = app
+            .wake_at()
+            .map(|at| at.saturating_duration_since(std::time::Instant::now()));
+        let wait = if app.moving() {
             // A moving focus draws at the screen's rate; a spinner at its own.
-            let wait = if app.moving() {
-                FRAME.saturating_sub(beat.elapsed())
-            } else {
+            Some(FRAME.saturating_sub(beat.elapsed()))
+        } else if app.animating() {
+            Some(
                 SPIN.saturating_mul(u32::try_from(tick + 1).unwrap_or(u32::MAX))
-                    .saturating_sub(elapsed)
-            };
-            match receive.recv_timeout(wait) {
+                    .saturating_sub(elapsed),
+            )
+        } else {
+            None
+        };
+        let wait = match (wait, away) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        let first = match wait {
+            Some(wait) => match receive.recv_timeout(wait) {
                 Ok(msg) => Some(msg),
                 Err(mpsc::RecvTimeoutError::Timeout) => None,
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
                     anyhow::bail!("the app's inputs closed")
                 }
-            }
-        } else {
-            Some(receive.recv().context("the app's inputs closed")?)
+            },
+            None => Some(receive.recv().context("the app's inputs closed")?),
         };
         for msg in first.into_iter().chain(receive.try_iter()) {
             let action = match msg {

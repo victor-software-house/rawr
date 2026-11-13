@@ -194,6 +194,10 @@ pub(crate) const FULL: u16 = 28;
 /// it and have it open again.
 const GRACE: Duration = Duration::from_millis(200);
 
+/// How long the pointer may stay past the window's edge before the drawer
+/// shuts, so a pointer that slips out and back keeps it.
+const AWAY: Duration = Duration::from_millis(600);
+
 /// How fast a column's edge moves on screen, in columns a second, so a
 /// long move and a short one go at the same speed.
 const SPEED: f32 = 320.0;
@@ -290,6 +294,8 @@ pub(crate) struct App {
     pub(crate) drawer: Option<Drawer>,
     /// When the pointer left the drawer.
     left: Option<Instant>,
+    /// When the pointer went past the window's edge, while it stays there.
+    outside: Option<Instant>,
     /// The screen's width as last drawn, which sets how far a move goes.
     pub(crate) cols: u16,
     /// The edge being dragged.
@@ -358,6 +364,7 @@ impl App {
             wants: [48, 60, 72],
             drawer: None,
             left: None,
+            outside: None,
             cols: 0,
             dragging: None,
         }
@@ -929,7 +936,7 @@ impl App {
                 // A folded column draws out while the pointer is on it, and
                 // goes back when the pointer leaves it.
                 if self.focus != Focus::Search {
-                    self.follow_pointer(edge, mouse.column == 0, under);
+                    self.follow_pointer(edge, under);
                 }
                 Action::None
             }
@@ -975,27 +982,52 @@ impl App {
     /// Opens or shuts the drawer as the pointer moves. It opens on a rail,
     /// and shuts once the pointer is past its edge by a little slack; a
     /// pointer back in it soon after, or on its rail, opens it again.
-    fn follow_pointer(&mut self, edge: bool, left_edge: bool, under: Under) {
-        // Past the window's left side is beside the panes' rail, so it
-        // keeps their drawer out as the drawer itself does.
-        let keep = under.keep || left_edge;
+    fn follow_pointer(&mut self, edge: bool, under: Under) {
+        // A report on the window's edge may be the pointer outside it: the
+        // drawer waits a moment, in case it comes back (see `tick`).
+        if edge {
+            if self.outside.is_none() {
+                self.outside = Some(Instant::now());
+            }
+            return;
+        }
+        self.outside = None;
         let Some(drawer) = self.drawer else {
-            if !edge && let Some(column) = under.rail {
+            if let Some(column) = under.rail {
                 self.draw_out(Some(column));
             }
             return;
         };
-        if !edge && let Some(column) = under.rail {
+        if let Some(column) = under.rail {
             self.draw_out(Some(column));
         } else if drawer.open {
-            if !keep {
+            if !under.keep {
                 self.left = Some(Instant::now());
                 self.draw_out(None);
             }
-        } else if (!edge && under.on_rail)
-            || (keep && self.left.is_some_and(|left| left.elapsed() < GRACE))
+        } else if under.on_rail
+            || (under.keep && self.left.is_some_and(|left| left.elapsed() < GRACE))
         {
             self.draw_out(Some(drawer.column));
+        }
+    }
+
+    /// When the loop must wake with no input: when a pointer past the
+    /// window's edge has been away long enough to shut the drawer.
+    pub(crate) fn wake_at(&self) -> Option<Instant> {
+        self.outside
+            .filter(|_| self.drawer.is_some_and(|drawer| drawer.open))
+            .map(|since| since + AWAY)
+    }
+
+    /// Shuts the drawer once the pointer has stayed past the window's edge.
+    pub(crate) fn tick(&mut self) {
+        if self.outside.is_some_and(|since| since.elapsed() >= AWAY) {
+            self.outside = None;
+            if self.drawer.is_some_and(|drawer| drawer.open) {
+                self.left = Some(Instant::now());
+                self.draw_out(None);
+            }
         }
     }
 
