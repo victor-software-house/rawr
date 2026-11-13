@@ -52,7 +52,7 @@ The closest first-party models are Claude Code's own supervisor, which defers it
    - The set of blocks is live: a block whose Claude exits or whose pane closes leaves it, and a Claude that starts during the drain joins it.
    - A block that reads Needs input is named at once, so the user can answer it, and the wait goes on.
    - A block whose session has no rawr mod, such as one started before `rawr setup`, is named at once as one that cannot acknowledge.
-     It counts as settled once it has read Idle with no child record in `working` for `drain.grace` (default 1 minute).
+     It counts as settled once it has read Idle or Failed with no child record in `working` for `drain.grace` (default 1 minute), without a break.
    - Past `restart.wait` (default 5 minutes), the restart fails, closes the drain so no later session receives its request, and names each pane as busy, waiting on input, or not acknowledged.
    - Once every block has settled, the daemon checks every block once more right before the stop.
    - It then stops the Rex server, starts it again, and closes the drain.

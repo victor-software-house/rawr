@@ -18,7 +18,7 @@ The set of live blocks SHALL change as Claude sessions start and exit during the
 
 #### Scenario: An idle block with no acknowledgement
 
-- **WHEN** block `block:0190f3a2-7c41-7e10-8b2d-5d9e6a4c1f08` reads `Idle` with no child record in `working` and has not acknowledged the current drain ID
+- **WHEN** block `block:0190f3a2-7c41-7e10-8b2d-5d9e6a4c1f08`, whose session has the rawr mod, reads `Idle` with no child record in `working` and has not acknowledged the current drain ID
 - **THEN** the daemon does not stop the Rex server
 
 #### Scenario: A second Claude in a pane that already acknowledged
@@ -63,7 +63,7 @@ The set of live blocks SHALL change as Claude sessions start and exit during the
 
 ### Requirement: A session without the mod settles on idle
 
-A block whose session has no rawr mod SHALL be named at once as one that cannot acknowledge, and SHALL count as settled for "Restart waits for idle" once it has read `Idle` with no child record in `working` for `drain.grace` without a break.
+A block whose session has no rawr mod SHALL be named at once as one that cannot acknowledge, and SHALL count as settled for "Restart waits for idle" once it has read `Idle` or `Failed` with no child record in `working` for `drain.grace` without a break.
 
 #### Scenario: A session started before rawr setup
 
