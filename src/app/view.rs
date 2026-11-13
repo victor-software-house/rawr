@@ -78,15 +78,21 @@ pub(crate) fn draw(
         Constraint::Fill(1),
     ])
     .areas(body);
+    // The sidebar starts a row down, as the main area does, so its fold
+    // button is off the outermost row.
+    let sidebar = pad(sidebar, 0, 1);
     if app.folded {
         rail(frame, app, sidebar, &mut hits);
     } else {
         side_panel(frame, app, sidebar, &mut hits);
     }
     edge_line(frame, app, edge, &mut hits);
-    let [content, search, footer] = Layout::vertical([
+    // The last row stays empty: a report there may be the pointer below the
+    // pane, so the footer sits above it.
+    let [content, search, footer, _] = Layout::vertical([
         Constraint::Fill(1),
         Constraint::Length(3),
+        Constraint::Length(1),
         Constraint::Length(1),
     ])
     .areas(main);

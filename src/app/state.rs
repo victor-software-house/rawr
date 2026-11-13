@@ -380,14 +380,15 @@ impl App {
         }
         match mouse.kind {
             MouseEventKind::Moved => {
-                // A terminal stops reporting once the pointer leaves the pane,
-                // and the window's padding has no cells, so a fast move can
-                // leave with its last report a cell or two inside. A band of
-                // two columns and one row at each side counts as outside.
+                // Rex goes on reporting while the pointer is outside the pane,
+                // in its padding or beyond, with the position clamped to the
+                // outermost cells. A report there may be the pointer outside,
+                // so the outermost ring never hovers; nothing that takes a
+                // click lies only in it.
                 let (width, height) = size;
-                let edge = mouse.column < 2
-                    || mouse.row < 1
-                    || mouse.column + 2 >= width
+                let edge = mouse.column == 0
+                    || mouse.row == 0
+                    || mouse.column + 1 >= width
                     || mouse.row + 1 >= height;
                 self.hover = if edge { None } else { hit };
                 Action::None
