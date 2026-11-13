@@ -51,7 +51,8 @@ The rawr mod SHALL acknowledge a drain request with the session's ID on `turn.co
 
 When a session that received a drain request through `$.session.append` has held it for `drain.interrupt` without its carrying turn ending, the rawr mod SHALL, once per request ID, cancel the running turn with `$.turn.abort` and submit the hand-off request with `$.prompt.submit`.
 The submitted hand-off turn SHALL become the carrying turn and SHALL NOT be interrupted again.
-The `aborted` completion of the cancelled turn SHALL NOT acknowledge the request.
+Once it has called `$.turn.abort`, the mod SHALL ignore the cancelled turn's `turn.complete` whatever its `reason`, and SHALL acknowledge only when the hand-off turn completes.
+When the turn completes before the abort takes effect, the mod SHALL submit no hand-off and SHALL acknowledge on that completion.
 
 #### Scenario: A long build during a drain
 

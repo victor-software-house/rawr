@@ -100,7 +100,9 @@ The closest first-party models are Claude Code's own supervisor, which defers it
    - A busy session that has not settled after `drain.interrupt` (default 2 minutes) gets its running turn cancelled with `$.turn.abort`, which stops the turn's running tools, and then the hand-off request through `$.prompt.submit` at once.
      That happens once per request ID, only for a request delivered through `$.session.append`; the submitted hand-off turn becomes the turn that carries the request, and it is not interrupted again.
      No mod call moves a running tool to the background, as `ctrl+b` does for the user, so cancelling the turn is the one way to cut a long tool call short.
-   - The mod acknowledges a request with `rawr drain ack <id>` on `turn.complete` of the turn that carried it, except the `aborted` completion of a turn the mod itself cancelled for `drain.interrupt`.
+   - The mod acknowledges a request with `rawr drain ack <id>` on `turn.complete` of the turn that carried it.
+     Once the mod has called `$.turn.abort` for `drain.interrupt`, it ignores the cancelled turn's `turn.complete` whatever its `reason`, and acknowledges only when the submitted hand-off turn completes.
+     When the turn completes before the abort takes effect, the mod submits no hand-off and acknowledges on that completion.
      That event fires however the turn ends: its `reason` is `answer`, `aborted`, `refusal` or `error`.
      A user who presses Esc during the hand-off turn also ends it; the pane then settles without a hand-off, since the user stepped in.
      The acknowledgement sits under the session's block, keyed by the drain's ID and the session's ID, and counts only for the block's current session, so neither an earlier drain's acknowledgement nor an earlier session's in the same pane counts.
