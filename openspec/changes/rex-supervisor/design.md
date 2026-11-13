@@ -117,13 +117,16 @@ The closest first-party models are Claude Code's own supervisor, which defers it
    - Once every block has settled, the daemon checks every block once more right before the stop.
    - It then stops the Rex server, starts it again, and closes the drain.
    - On a timeout or any other failure, the daemon closes the drain, so no session goes on winding down for a restart that will not come.
+   - The mod tells a session that acknowledged a cancelled drain that work can go on.
+   - `drain.yaml` records the daemon's process ID and start time; a drain whose owner is gone is stale, delivers nothing, and goes at the next daemon start.
    - `--force` skips the wait, and so does a second `rawr restart` during the wait, after the self-hosted runner's second-signal rule.
 9. **The daemon offers restored panes their sessions.**
    After a restart, each block comes back with no program status.
    For each block with sessions in the index whose foreground process is a shell, the daemon runs the picker there, as the "Resume Claude here" Rex action does today.
    The shell snippet becomes optional, for those who want the picker without the daemon.
 10. **The index cleans itself.**
-    - An entry goes when its transcript existed and is gone; Claude Code deletes transcripts with no message after `cleanupPeriodDays`, 30 days by default ([settings][cc-settings]).
+    - Each entry carries `transcript_seen`, set the first time rawr finds its transcript.
+    - An entry goes when `transcript_seen` is set and the transcript is gone; Claude Code deletes transcripts with no message after `cleanupPeriodDays`, 30 days by default ([settings][cc-settings]).
     - An entry with no transcript goes 24 hours after it was recorded, so a session that has not written its first message yet stays.
     - A block event never deletes a file by itself.
       It marks the pane, and the file goes only when a later full listing from a running Rex server confirms the block is gone.

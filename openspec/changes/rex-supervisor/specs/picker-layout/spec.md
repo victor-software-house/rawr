@@ -37,3 +37,8 @@ After Esc, `q` or `ctrl+c`, `rawr pick` SHALL print one line on stderr naming `r
 
 - **WHEN** a pane's index lists two sessions and `picker.rows` is 3
 - **THEN** two rows show, and no `earlier` row
+
+#### Scenario: As many sessions as rows
+
+- **WHEN** a pane's index lists three sessions and `picker.rows` is 3
+- **THEN** three rows show, and no `earlier` row

@@ -27,7 +27,7 @@ Show the state of every Claude Code session running in Rex, and restart the Rex 
 
 ### Requirement: Restart waits for idle
 
-`rawr restart` SHALL open a drain, and SHALL stop and start the Rex server only when every live Claude block has acknowledged the drain and reads `Idle` or `Failed` with no child record on a check made right before the stop, or when `--force` is given.
+`rawr restart` SHALL open a drain, and SHALL stop and start the Rex server only when every live Claude block has acknowledged the current drain ID and reads `Idle` or `Failed` with no child record on a check made right before the stop, or when `--force` is given.
 On a timeout or any other non-zero exit, `rawr restart` SHALL close the drain it opened.
 
 #### Scenario: One pane stays busy past the wait
@@ -58,3 +58,27 @@ The daemon SHALL delete no pane file on block events during a restart it runs, a
 
 - **WHEN** the daemon starts and the Rex server does not answer
 - **THEN** every pane file stays
+
+#### Scenario: An idle block with no acknowledgement
+
+- **WHEN** block `block:0190f3a2-7c41-7e10-8b2d-5d9e6a4c1f08` reads `Idle` with no child record and has not acknowledged the current drain ID
+- **THEN** the daemon does not stop the Rex server
+
+#### Scenario: A Claude starts during the drain
+
+- **WHEN** a Claude starts in a new block while drain `d-7a21` is open
+- **THEN** that block joins the wait, and its mod delivers and acknowledges `d-7a21` like the others
+
+#### Scenario: A block whose Claude exits during the drain
+
+- **WHEN** a block's Claude exits before acknowledging `d-7a21`, and the block reads `Stopped`
+- **THEN** the block leaves the wait
+
+### Requirement: A drain whose owner is gone is stale
+
+`drain.yaml` SHALL record the daemon's process ID and start time; the mod SHALL deliver nothing from a drain whose owner is no longer running, and the next daemon start SHALL remove that file.
+
+#### Scenario: The daemon was killed mid-drain
+
+- **WHEN** `drain.yaml` names a daemon process that no longer runs
+- **THEN** no session receives its hand-off request, and the next daemon start removes `drain.yaml`

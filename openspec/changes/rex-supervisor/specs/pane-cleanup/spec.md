@@ -8,7 +8,8 @@ Keep the pane index bounded without a number fixed in the code.
 
 ### Requirement: Drop entries whose transcript is gone
 
-rawr SHALL drop an index entry whose transcript file existed and no longer exists, or that has had no transcript file for more than 24 hours since it was recorded, whenever it reads that pane's index.
+Each index entry SHALL carry `transcript_seen`, set the first time rawr finds its transcript file.
+rawr SHALL drop an entry whose `transcript_seen` is set and whose transcript file no longer exists, or that has had no transcript file for more than 24 hours since it was recorded, whenever it reads that pane's index.
 
 #### Scenario: Claude Code swept an old transcript
 
@@ -28,3 +29,8 @@ A pane index SHALL hold at most `history.per_pane` sessions, newest first.
 
 - **WHEN** a session was recorded a minute ago and Claude Code has not written its transcript yet
 - **THEN** the index keeps the entry
+
+#### Scenario: A session opened and never used
+
+- **WHEN** a session was recorded 25 hours ago, its pane still exists, and it never wrote a transcript
+- **THEN** the index drops the entry, since `claude --resume` has nothing to resume
