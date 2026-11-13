@@ -19,7 +19,7 @@ use crate::session::{self, Agent};
 use crate::status::{self, Status};
 
 /// One Rex pane whose index lists a Claude session.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Pane {
     pub(crate) session_id: String,
     pub(crate) block_id: String,

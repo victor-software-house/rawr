@@ -16,7 +16,7 @@ const CLAUDE: &str = "claude-code";
 
 /// What a pane's Claude is doing, one word for every state and kind the
 /// Program Status Protocol has.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Status {
     /// `blocked` with `kind=permission`: approval to do something.

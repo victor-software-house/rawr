@@ -222,7 +222,7 @@ pub(crate) fn search(pane: &[Agent], catalog: &[Found], terms: &[String]) -> Vec
 }
 
 /// A session a search found, with the line that matched.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Hit {
     pub(crate) agent: Agent,
     /// The typed prompt, or the stretch of transcript, that holds the first

@@ -17,7 +17,7 @@ use serde::Deserialize;
 use crate::index::Entry;
 
 /// A session the picker can offer.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, Deserialize)]
 pub(crate) struct Agent {
     pub(crate) session_id: String,
     pub(crate) cwd: String,

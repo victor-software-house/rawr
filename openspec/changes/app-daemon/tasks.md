@@ -2,7 +2,7 @@
 
 ## 1. Daemon
 
-- [ ] 1.1 `rawr daemon` binds `daemon.sock` under `daemon.lock`, prints `ready`, follows Rex and sends `panes` and `link`; proved by tests with a fake Rex server and a socket in a temporary folder, in CI.
+- [ ] 1.1 `rawr daemon` binds `daemon.sock` under `daemon.lock`, leaves the terminal's session, prints `ready`, follows Rex and sends `panes` and `link`; proved by tests with a fake Rex server and a socket in a temporary folder, in CI.
 - [ ] 1.2 The daemon refuses a different build and shuts down on `shutdown`; proved by handshake tests in CI.
 - [ ] 1.3 `facts` and `search` run in the daemon, a newer search ends an older one, and the caches go with the last client; proved by tests in CI.
 - [ ] 1.4 A connection with 64 queued messages is closed; proved by a test in CI.

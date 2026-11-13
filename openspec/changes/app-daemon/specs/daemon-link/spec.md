@@ -17,7 +17,7 @@ A client SHALL draw the panes from the daemon's first `panes` message, without l
 
 ### Requirement: The first client starts the daemon
 
-A client that finds no daemon on `~/.local/state/rawr/daemon.sock` SHALL start `rawr daemon` under `daemon.lock`, wait for its `ready` line for at most 5 seconds, and connect; a second `rawr daemon` SHALL exit while the first holds the lock.
+A client that finds no daemon on `~/.local/state/rawr/daemon.sock` SHALL start `rawr daemon` under `start.lock`, wait for its `ready` line for at most 5 seconds, and connect; a second `rawr daemon` SHALL exit while the first holds the lock.
 
 #### Scenario: No daemon runs
 
@@ -28,6 +28,11 @@ A client that finds no daemon on `~/.local/state/rawr/daemon.sock` SHALL start `
 
 - **WHEN** two `rawr` windows find no daemon at the same moment
 - **THEN** one daemon starts and both windows connect to it
+
+#### Scenario: A daemon already holds the lock
+
+- **WHEN** a `rawr daemon` holds `~/.local/state/rawr/daemon.lock` and a second `rawr daemon` starts
+- **THEN** the second one prints `a rawr daemon already runs` on stderr and exits 1
 
 ### Requirement: A different binary replaces the daemon
 

@@ -33,9 +33,9 @@ rawr is smaller: one binary is both sides, the daemon only reads, and every mess
    - Considered: a protocol version, as `a` compares its major version.
      It lost: a rebuilt or upgraded binary keeps its version during development, and the old daemon would serve old code.
 4. **The first client starts the daemon.**
-   - With no answer on the socket, the client takes an exclusive lock on `daemon.lock`, checks the socket again, and starts `rawr daemon` detached in its own session, with its standard streams closed but one.
+   - With no answer on the socket, the client takes an exclusive lock on `start.lock`, checks the socket again, and starts `rawr daemon`, which leaves the terminal's session at once.
    - The daemon binds the socket, then prints `ready` on that stream; the client waits for that line, up to 5 seconds, and connects.
-   - The daemon holds the same lock for its life, so a second daemon exits at once.
+   - The daemon holds `daemon.lock` for its life, so a second daemon exits at once; a client never waits on that lock, so a daemon that stops answering cannot hold a client.
    - The `brew services` unit from [setup-and-tap][setup-and-tap] runs the same command at login.
    - Considered: only the service starts the daemon.
      It lost: a preview build and a fresh install would show no panes until the service is set up.

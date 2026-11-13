@@ -8,6 +8,7 @@
 mod app;
 mod catalog;
 mod config;
+mod daemon;
 mod index;
 mod picker;
 mod rex;
@@ -61,6 +62,11 @@ enum Command {
     /// A Claude Code `SessionStart` hook runs it. Outside a Rex pane it does
     /// nothing.
     Record,
+    /// Hold the Rex feed, transcript facts and search for every rawr window.
+    ///
+    /// A rawr window starts it when none runs; `brew services` keeps one from
+    /// login.
+    Daemon,
     /// Choose one of this pane's sessions and resume it.
     ///
     /// The picker draws on stderr. On a choice, rawr becomes `claude --resume`
@@ -174,7 +180,11 @@ fn main() -> ExitCode {
             Some(Command::Status(ref output)) => output.view(ColorMode::Auto),
             None
             | Some(
-                Command::Record | Command::Pick | Command::Find { .. } | Command::Setup { .. },
+                Command::Record
+                | Command::Daemon
+                | Command::Pick
+                | Command::Find { .. }
+                | Command::Setup { .. },
             ) => View::new(OutputFormat::Pretty, ColorMode::Auto),
         })
         .run(|cli| match cli.command {
@@ -184,6 +194,7 @@ fn main() -> ExitCode {
                 cli.carry,
             ),
             Some(Command::Record) => record().map(|()| Outcome::Recorded),
+            Some(Command::Daemon) => daemon::serve().map(|()| Outcome::Recorded),
             Some(Command::Pick) => pick(),
             Some(Command::Find { words }) => find(&words),
             Some(Command::Status(_)) => list_panes(),

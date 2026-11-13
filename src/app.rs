@@ -4,16 +4,16 @@
 //! Two threads feed one channel: the terminal's input and the Rex feed. The
 //! loop drains the channel and draws once after each batch, with no timer.
 
-mod facts;
-mod feed;
+pub(crate) mod facts;
+pub(crate) mod feed;
 mod report;
 mod state;
 mod theme;
 mod view;
 
-use std::collections::HashSet;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, mpsc};
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
@@ -24,10 +24,13 @@ use ratatui::crossterm::execute;
 use report::{Report, Reporter};
 use state::{Action, App, Link};
 
-use crate::catalog::{self, Found};
+use crate::app::facts::Facts;
+use crate::catalog;
+use crate::daemon::link::{self, Incoming};
+use crate::daemon::{FromDaemon, Reach, ToDaemon};
 use crate::picker::terminal::{Pointer, Screen};
 use crate::rex::{Client, Endpoint};
-use crate::session::{self, Agent};
+use crate::session::Agent;
 
 /// How often the spinner turns while a pane works; the loop waits on
 /// input with no timer otherwise.
@@ -35,11 +38,7 @@ const SPIN: Duration = Duration::from_millis(100);
 
 enum Msg {
     Input(Event),
-    Feed(feed::Update),
-    /// What a deep search found for the query of this generation.
-    Deep(u64, Vec<catalog::Hit>, (usize, usize)),
-    /// A transcript's facts arrived; drawing picks them up.
-    Wake,
+    Daemon(Incoming),
     /// Search again for the query in the box.
     Search,
 }
@@ -68,18 +67,10 @@ pub(crate) fn run(
             }
         }
     });
-    let deep_results = send.clone();
     let again = send.clone();
-    let wake = send.clone();
-    let (feed_send, feed_receive) = mpsc::channel();
-    thread::spawn(move || feed::run(&feed_send));
-    thread::spawn(move || {
-        while let Ok(update) = feed_receive.recv() {
-            if send.send(Msg::Feed(update)).is_err() {
-                break;
-            }
-        }
-    });
+    // The daemon holds the panes, the facts and the search; this window
+    // holds only its view.
+    let daemon = link::start(move |incoming| send.send(Msg::Daemon(incoming)).is_ok())?;
 
     let mut app = App::new(std::env::var("REX_BLOCK").ok());
     app.want.clone_from(&select);
@@ -89,64 +80,31 @@ pub(crate) fn run(
     {
         let _ = again.send(Msg::Search);
     }
-    let mut found: Option<Arc<Vec<Found>>> = None;
-    // One worker reads transcripts for the newest query only: each new
-    // query bumps the generation, and the worker drops a stale one between
-    // files.
-    let generation = Arc::new(AtomicU64::new(0));
-    let (deep_send, deep_receive) =
-        mpsc::channel::<(u64, Arc<Vec<Found>>, Vec<String>, HashSet<String>)>();
-    {
-        let generation = Arc::clone(&generation);
-        let results = deep_results;
-        thread::spawn(move || {
-            while let Ok(mut job) = deep_receive.recv() {
-                while let Ok(newer) = deep_receive.try_recv() {
-                    job = newer;
-                }
-                let (id, found, terms, skip) = job;
-                if generation.load(Ordering::Acquire) != id {
-                    continue;
-                }
-                // A few transcripts at a time, newest first, so matches show
-                // as they are found.
-                let stale = || generation.load(Ordering::Acquire) != id;
-                let total = found.len();
-                let mut read = 0;
-                let mut closed = false;
-                for chunk in found.chunks(4) {
-                    if stale() {
-                        break;
-                    }
-                    let hits = catalog::deep(chunk, &terms, &skip, stale);
-                    read += chunk.len();
-                    if results.send(Msg::Deep(id, hits, (read, total))).is_err() {
-                        closed = true;
-                        break;
-                    }
-                }
-                if closed {
-                    break;
-                }
-            }
-        });
-    }
+    // The newest search this window sent; hits for an older one are dropped.
+    let mut generation: u64 = 0;
+    let mut facts: HashMap<PathBuf, Facts> = HashMap::new();
+    let mut asked: Option<PathBuf> = None;
     let mut screen = Screen::enter_with(false)?;
     execute!(std::io::stderr(), SetCursorStyle::BlinkingBar).context("set the cursor shape")?;
     let mut reporter = Reporter::default();
-    let mut cache = facts::Cache::new(move || {
-        let _ = wake.send(Msg::Wake);
-    });
     let started = std::time::Instant::now();
     loop {
         reporter.send(own_status(&app))?;
         app.frame = usize::try_from(started.elapsed().as_millis() / SPIN.as_millis()).unwrap_or(0);
         let mut hits = view::Hits::default();
         let agent = app.current().cloned();
-        let facts = agent
+        if let Some(agent) = &agent
+            && asked.as_ref() != Some(&agent.transcript)
+        {
+            asked = Some(agent.transcript.clone());
+            daemon.send(ToDaemon::Facts {
+                path: agent.transcript.clone(),
+            });
+        }
+        let known = agent
             .as_ref()
-            .and_then(|agent| cache.get(&agent.transcript).cloned());
-        let shown = agent.as_ref().map(|agent| (agent, facts.as_ref()));
+            .and_then(|agent| facts.get(&agent.transcript));
+        let shown = agent.as_ref().map(|agent| (agent, known));
         screen
             .terminal()
             .draw(|frame| hits = view::draw(frame, &app, shown))
@@ -196,24 +154,57 @@ pub(crate) fn run(
                     app.on_blur();
                     Action::None
                 }
-                Msg::Input(_) | Msg::Wake => Action::None,
+                Msg::Input(_) => Action::None,
                 Msg::Search => Action::Search,
-                Msg::Deep(id, hits, progress) => {
-                    if id == generation.load(Ordering::Acquire) {
-                        app.add_results(hits, progress);
+                Msg::Daemon(Incoming::Connected) => {
+                    // What this window asked before the link went.
+                    asked = None;
+                    if app.focus == state::Focus::Search {
+                        Action::Search
+                    } else {
+                        Action::None
                     }
-                    Action::None
                 }
-                Msg::Feed(feed::Update::Panes(panes)) => {
-                    app.set_panes(panes);
-                    Action::None
-                }
-                Msg::Feed(feed::Update::Offline(why)) => {
-                    app.link = Link::Offline(why);
-                    Action::None
-                }
-                Msg::Feed(feed::Update::Stale(why)) => {
+                Msg::Daemon(Incoming::Lost(why)) => {
                     app.link = Link::Stale(why);
+                    Action::None
+                }
+                Msg::Daemon(Incoming::Message(message)) => {
+                    match message {
+                        FromDaemon::Panes { panes } => {
+                            app.set_panes(panes);
+                            // A pane's activity may have moved its transcript.
+                            asked = None;
+                        }
+                        FromDaemon::Link { state, reason } => {
+                            let why = reason.unwrap_or_default();
+                            app.link = match state {
+                                Reach::Live => Link::Live,
+                                Reach::Offline => Link::Offline(why),
+                                Reach::Stale => Link::Stale(why),
+                            };
+                        }
+                        FromDaemon::Facts { path, facts: read } => {
+                            facts.insert(path, read);
+                        }
+                        FromDaemon::Hits {
+                            id,
+                            hits,
+                            read,
+                            total,
+                        } if id == generation => {
+                            if read == 0 {
+                                app.set_results(hits);
+                                app.deep = total > 0;
+                                app.read = (0, total);
+                            } else {
+                                app.add_results(hits, (read, total));
+                            }
+                        }
+                        FromDaemon::Hits { .. }
+                        | FromDaemon::Welcome { .. }
+                        | FromDaemon::Refused { .. } => {}
+                    }
                     Action::None
                 }
             };
@@ -247,39 +238,16 @@ pub(crate) fn run(
                     }
                 }
                 Action::Search => {
-                    if found.is_none() {
-                        // Running sessions too: search finds them, and enter
-                        // goes to their pane.
-                        found = Some(Arc::new(catalog::load(
-                            &session::claude_dir()?,
-                            &HashSet::new(),
-                        )?));
-                    }
-                    let catalog = found.clone().unwrap_or_default();
-                    let pane: Vec<Agent> = app
-                        .selected()
-                        .map(|pane| {
-                            pane.sessions
-                                .iter()
-                                .map(|(agent, _)| agent.clone())
-                                .collect()
-                        })
-                        .unwrap_or_default();
-                    let terms = catalog::terms(&app.query);
-                    let id = generation.fetch_add(1, Ordering::AcqRel) + 1;
-                    if terms.is_empty() {
+                    generation += 1;
+                    if catalog::terms(&app.query).is_empty() {
                         app.set_results(Vec::new());
                         app.deep = false;
-                    } else {
-                        let hits = catalog::hits(&pane, &catalog, &terms);
-                        let skip = hits
-                            .iter()
-                            .map(|hit| hit.agent.session_id.clone())
-                            .collect();
-                        app.set_results(hits);
-                        app.deep = true;
-                        let _ = deep_send.send((id, catalog, terms, skip));
                     }
+                    daemon.send(ToDaemon::Search {
+                        id: generation,
+                        query: app.query.clone(),
+                        pane: app.selected().map(|pane| pane.block_id.clone()),
+                    });
                 }
             }
         }
