@@ -12,7 +12,7 @@ use crate::session::Agent;
 use crate::status::Status;
 
 /// Which list the keys move in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) enum Focus {
     /// The sidebar of panes.
     Panes,
@@ -627,5 +627,46 @@ impl App {
                 .and_then(|pane| pane.sessions.first())
                 .map(|(agent, _)| agent),
         }
+    }
+}
+
+/// What a copy of the app hands to the copy that replaces it, so the new
+/// one opens as the old one was: the same list, query, sidebar and scroll.
+/// The selected pane goes by its block ID, as `--select`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) struct Carry {
+    focus: Focus,
+    session: usize,
+    query: String,
+    sidebar: u16,
+    folded: bool,
+    show_scratch: bool,
+    panes_top: u16,
+}
+
+impl App {
+    pub(crate) fn carry(&self) -> Carry {
+        Carry {
+            focus: self.focus,
+            session: self.session,
+            query: self.query.clone(),
+            sidebar: self.sidebar,
+            folded: self.folded,
+            show_scratch: self.show_scratch,
+            panes_top: self.scroll_of(Focus::Panes).top,
+        }
+    }
+
+    /// Opens as `carry` says. Returns whether a search must run again for
+    /// the carried query.
+    pub(crate) fn restore(&mut self, carry: Carry) -> bool {
+        self.focus = carry.focus;
+        self.session = carry.session;
+        self.query = carry.query;
+        self.sidebar = carry.sidebar;
+        self.folded = carry.folded;
+        self.show_scratch = carry.show_scratch;
+        self.scroll_mut(Focus::Panes).top = carry.panes_top;
+        self.focus == Focus::Search && !self.query.trim().is_empty()
     }
 }

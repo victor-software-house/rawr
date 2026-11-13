@@ -40,6 +40,8 @@ enum Msg {
     Deep(u64, Vec<catalog::Hit>, (usize, usize)),
     /// A transcript's facts arrived; drawing picks them up.
     Wake,
+    /// Search again for the query in the box.
+    Search,
 }
 
 /// Opens the app and returns the session the user chose to resume, or
@@ -55,6 +57,7 @@ enum Msg {
 pub(crate) fn run(
     select: Option<String>,
     mut replace: Option<(String, String)>,
+    carry: Option<String>,
 ) -> Result<Option<Agent>> {
     let (send, receive) = mpsc::channel();
     let input = send.clone();
@@ -66,6 +69,7 @@ pub(crate) fn run(
         }
     });
     let deep_results = send.clone();
+    let again = send.clone();
     let wake = send.clone();
     let (feed_send, feed_receive) = mpsc::channel();
     thread::spawn(move || feed::run(&feed_send));
@@ -79,6 +83,12 @@ pub(crate) fn run(
 
     let mut app = App::new(std::env::var("REX_BLOCK").ok());
     app.want.clone_from(&select);
+    // A carried query searches again once the loop runs.
+    if let Some(carry) = carry.and_then(|json| serde_json::from_str(&json).ok())
+        && app.restore(carry)
+    {
+        let _ = again.send(Msg::Search);
+    }
     let mut found: Option<Arc<Vec<Found>>> = None;
     // One worker reads transcripts for the newest query only: each new
     // query bumps the generation, and the worker drops a stale one between
@@ -187,6 +197,7 @@ pub(crate) fn run(
                     Action::None
                 }
                 Msg::Input(_) | Msg::Wake => Action::None,
+                Msg::Search => Action::Search,
                 Msg::Deep(id, hits, progress) => {
                     if id == generation.load(Ordering::Acquire) {
                         app.add_results(hits, progress);
@@ -231,7 +242,7 @@ pub(crate) fn run(
                     session_id,
                     block_id,
                 } => {
-                    if let Err(error) = go_to(&session_id, &block_id) {
+                    if let Err(error) = go_to(&session_id, &block_id, &app.carry()) {
                         app.notice = Some(format!("{error:#}"));
                     }
                 }
@@ -310,7 +321,7 @@ fn own_status(app: &App) -> Report {
 /// size, with the pane selected; the copy draws, then switches the view
 /// and closes this one (see [`take_over`]), so nothing blank or resizing is
 /// ever on screen.
-fn go_to(session_id: &str, block_id: &str) -> Result<()> {
+fn go_to(session_id: &str, block_id: &str, carry: &state::Carry) -> Result<()> {
     let mut client = Client::connect(&Endpoint::from_environment()?)?;
     let window_id = client
         .view(session_id)?
@@ -350,6 +361,8 @@ fn go_to(session_id: &str, block_id: &str) -> Result<()> {
             here.clone(),
             "--replace-block".to_owned(),
             me.clone(),
+            "--carry".to_owned(),
+            serde_json::to_string(carry).context("write the app's state")?,
         ],
         &size,
     )?;
@@ -452,5 +465,10 @@ fn resume_in_tab(agent: &Agent, session_id: Option<&str>) -> Result<()> {
             agent.session_id.clone(),
         ],
     )?;
+    // The app learns of the new tab a moment after the server makes it, and
+    // a request to show a tab it has not heard of yet does nothing; asking
+    // once more after that moment lands either way.
+    client.show(&here, session, &window)?;
+    thread::sleep(Duration::from_millis(200));
     client.show(&here, session, &window)
 }
