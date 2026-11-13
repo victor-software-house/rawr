@@ -9,8 +9,10 @@ mod catalog;
 mod config;
 mod index;
 mod picker;
+mod rex;
 mod session;
 mod setup;
+mod status;
 
 use std::collections::HashSet;
 use std::io::IsTerminal;
@@ -24,6 +26,7 @@ use serde::Serialize;
 use crate::config::Config;
 use crate::index::{BlockId, HookInput, PaneIndex};
 use crate::picker::Start;
+use crate::rex::{Client, Endpoint};
 use crate::session::Agent;
 use crate::setup::{Change, Mode};
 
@@ -58,6 +61,13 @@ enum Command {
         /// folder or ID.
         words: Vec<String>,
     },
+    /// List each Rex pane that has a Claude session, and what its Claude is
+    /// doing.
+    ///
+    /// The word comes from the status Claude Code reports to Rex: Working,
+    /// Needs input, Idle, Failed, or Stopped when the pane has no Claude
+    /// running. The title and folder are the pane's newest session's.
+    Status(FormatArgs),
     /// Add rawr's hook to another tool's settings.
     Setup {
         #[command(subcommand)]
@@ -94,6 +104,8 @@ enum Outcome {
     Nothing,
     /// The user dismissed the picker; the hint says how to reopen it.
     Dismissed,
+    /// `status` listed the panes that have a session.
+    Status { panes: Vec<status::Row> },
     /// `setup` checked or changed a settings file.
     Setup { change: Change, path: String },
     /// `completion` printed a shell's registration script.
@@ -105,6 +117,8 @@ impl Present for Outcome {
         match self {
             Self::Recorded | Self::Nothing => Document::new(),
             Self::Dismissed => Document::new().paragraph(Text::new().muted(DISMISSED_HINT)),
+            Self::Status { panes } if panes.is_empty() => Document::new(),
+            Self::Status { panes } => Document::new().table(status::table(panes)),
             Self::Setup { change, path } => Document::new().verbatim(match change {
                 Change::Added => format!("Added the `{}` hook to {path}", setup::RECORD),
                 Change::WouldAdd => format!("Would add the `{}` hook to {path}", setup::RECORD),
@@ -119,15 +133,17 @@ impl Present for Outcome {
     fn outcome(&self) -> ctl_core::view::Outcome {
         match self {
             Self::Dismissed => ctl_core::view::Outcome::Error,
-            Self::Recorded | Self::Nothing | Self::Setup { .. } | Self::Completion(_) => {
-                ctl_core::view::Outcome::Success
-            }
+            Self::Recorded
+            | Self::Nothing
+            | Self::Status { .. }
+            | Self::Setup { .. }
+            | Self::Completion(_) => ctl_core::view::Outcome::Success,
         }
     }
 
     fn exit_code(&self) -> u8 {
         match self {
-            Self::Recorded | Self::Setup { .. } | Self::Completion(_) => 0,
+            Self::Recorded | Self::Status { .. } | Self::Setup { .. } | Self::Completion(_) => 0,
             Self::Nothing | Self::Dismissed => 1,
         }
     }
@@ -140,6 +156,7 @@ fn main() -> ExitCode {
         // terminal, as `source <(rawr completion zsh)` needs.
         .view(|cli| match cli.command {
             Command::Completion(_) => shell::view(OutputFormat::Pretty),
+            Command::Status(ref output) => output.view(ColorMode::Auto),
             Command::Record | Command::Pick | Command::Find { .. } | Command::Setup { .. } => {
                 View::new(OutputFormat::Pretty, ColorMode::Auto)
             }
@@ -148,6 +165,7 @@ fn main() -> ExitCode {
             Command::Record => record().map(|()| Outcome::Recorded),
             Command::Pick => pick(),
             Command::Find { words } => find(&words),
+            Command::Status(_) => list_panes(),
             Command::Setup {
                 target: Target::Claude { dry_run },
             } => setup_claude(if dry_run { Mode::DryRun } else { Mode::Write }),
@@ -234,6 +252,14 @@ fn find(words: &[String]) -> Result<Outcome> {
     )
 }
 
+/// Lists the Rex panes that have a session, each with what its Claude is
+/// doing.
+fn list_panes() -> Result<Outcome> {
+    let mut client = Client::connect(&Endpoint::from_environment()?)?;
+    let panes = status::rows(&mut client, &index::state_dir()?)?;
+    Ok(Outcome::Status { panes })
+}
+
 /// Adds the `rawr record` hook to Claude Code's user settings, or reports
 /// that it is there.
 fn setup_claude(mode: Mode) -> Result<Outcome> {
@@ -286,6 +312,44 @@ mod tests {
     fn nothing_to_offer_prints_no_hint() {
         let (text, _) = shown(&Outcome::Nothing);
         assert!(!text.contains("rawr pick reopens"), "{text}");
+    }
+
+    #[test]
+    fn status_lists_panes_as_a_table_and_as_json() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["rawr", "status", "--format", "json"])
+            .expect("status --format json parses");
+        let super::Command::Status(format) = cli.command else {
+            panic!("status is the status verb");
+        };
+        assert_eq!(format.format, OutputFormat::Json);
+
+        let panes = vec![super::status::Row {
+            pane: "work/shell".to_owned(),
+            title: "Fix checkout".to_owned(),
+            folder: "/work/shop".to_owned(),
+            status: super::status::Status::NeedsInput,
+        }];
+        let outcome = Outcome::Status { panes };
+        let (text, _) = shown(&outcome);
+        for cell in [
+            "Pane",
+            "work/shell",
+            "Fix checkout",
+            "/work/shop",
+            "Needs input",
+        ] {
+            assert!(text.contains(cell), "{cell} is missing from {text}");
+        }
+        let json = View::new(OutputFormat::Json, ColorMode::Never)
+            .capture(&outcome)
+            .expect("an outcome serializes");
+        let json: serde_json::Value =
+            serde_json::from_str(json.text()).expect("the output is JSON");
+        assert_eq!(json["outcome"], "status");
+        assert_eq!(json["panes"][0]["pane"], "work/shell");
+        assert_eq!(json["panes"][0]["status"], "needs_input");
+        assert_eq!(outcome.exit_code(), 0);
     }
 
     #[test]

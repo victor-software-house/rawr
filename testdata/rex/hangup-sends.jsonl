@@ -1,0 +1,2 @@
+{"send":{"type":"event","seq":9,"payload":{"type":"session_event","payload":{"session_id":"session:0190a000-0000-7000-8000-00000000000a","event":{"type":"block_closed","payload":{"block_id":"block:0190f3a2-7c41-7e10-8b2d-5d9e6a4c1f08"}}}}}}
+{"close":{"code":1000,"reason":"done"}}

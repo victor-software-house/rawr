@@ -33,6 +33,10 @@ serde_json = { version = "1.0.154", features = ["preserve_order"] }
 textwrap = { version = "0.16.4", default-features = false, features = [
   "unicode-width",
 ] }
+# handshake: the client side of the WebSocket upgrade, over a plain stream.
+tungstenite = { version = "0.30.0", default-features = false, features = [
+  "handshake",
+] }
 
 # clap's derive output names `::clap`, so the derives need clap as a direct
 # dependency even where the source imports Parser and Subcommand through
