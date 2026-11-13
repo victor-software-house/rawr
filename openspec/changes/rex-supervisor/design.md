@@ -37,33 +37,23 @@ The closest first-party models are Claude Code's own supervisor, which defers it
 
 ## Decisions
 
-1. **Homebrew is the install, with a service.**
-   - `victor-software-house/homebrew-tap` holds a `rawr` formula.
-   - The formula installs the binary and generates completions with `generate_completions_from_executable`.
-   - Its `service do` block runs `rawr daemon`, so `brew services start rawr` runs the daemon under launchd on macOS and a systemd user unit on Linux ([Homebrew services][brew-services]).
-   - The binary sits at `$(brew --prefix)/opt/rawr/bin/rawr`, a path that survives upgrades.
-   - The caveats print `rawr setup`; the formula writes nothing under the user's home.
-
-   Alternative: the install script or `mise use -g` as the main path.
-   They lost: neither registers a service.
-   They stay for Linux machines without Homebrew.
-2. **One process outside every pane: `rawr daemon`.**
+1. **One process outside every pane: `rawr daemon`.**
    It subscribes to Rex's events, keeps the index, prunes it, and runs drains and restarts.
    A restart ends every program in every pane, so the process that runs it cannot live in one.
    Alternative: `rawr restart` starts a detached helper on demand.
    It lost: a helper does nothing between restarts.
    The daemon also prunes the index as panes close and answers `rawr status` at once.
-3. **The Claude Code side is one mod, in a plugin this repository serves.**
+2. **The Claude Code side is one mod, in a plugin this repository serves.**
    - `.claude-plugin/marketplace.json` lists one plugin, `rawr`, whose `hooks/hooks.json` holds only `{ "modules": ["./register.ts"] }`.
    - On `session.start`, the mod records the session under `REX_BLOCK` through the rawr binary.
      It runs the binary at the path `rawr setup` stored in the plugin's data folder (`${CLAUDE_PLUGIN_DATA}`).
-   - While a drain is open, it carries the request into the session (decision 7) and shows the drain with `ui.status`.
+   - While a drain is open, it carries the request into the session (decision 4) and shows the drain with `ui.status`.
 
    The mods API is documented ([mods API][cc-mods]): `$.fs.read`, `$.process.run` with an argument list and no shell, `$.clock.every`, `$.prompt.submit` and `$.session.append`.
    Alternative: plain command hooks in `hooks.json` calling `rawr record`.
    It lost: a command hook finds `rawr` through the `PATH` of whatever started Claude Code.
    The drain also needs logic a command line cannot hold, so the Claude side would be split across two mechanisms.
-4. **Status comes from Rex only.**
+3. **Status comes from Rex only.**
    `rawr status` joins Rex's per-block program status with the index's newest session for each block.
    A block whose root record has `app=claude-code` runs a live Claude.
    The words follow Claude Code's agents view:
@@ -80,18 +70,7 @@ The closest first-party models are Claude Code's own supervisor, which defers it
    Its format is not documented ([.claude directory][cc-dir]), and Rex already marks which blocks run a live Claude.
    Alternative: `claude agents --json`, the documented outside view.
    It lost: it needs Claude Code's agent view on, and adds nothing for sessions that run in Rex.
-5. **The picker follows Claude Code's screen.**
-   - The list is on top.
-     The search box sits at the bottom, drawn like Claude Code's prompt box, with the pane's name in its top rule and the key line under it.
-   - Each row holds the glyph and status word, the title, the folder, and a right-aligned age, after the agents view's columns.
-   - The newest rows show first, up to `picker.rows` (default 3).
-     When more sessions exist, a dim `+N earlier · ctrl+o` row stands for the rest, and `ctrl+o` expands and collapses them, as it does for detail in Claude Code.
-   - Esc, `q` and `ctrl+c` leave one dim line in the shell: `rawr pick reopens this pane's sessions · rawr find searches all`.
-6. **The history per pane is a setting.**
-   `history.per_pane` (default 5) bounds each pane's index.
-   `picker.rows` bounds what shows before `ctrl+o`.
-   Both live in `$XDG_CONFIG_HOME/rawr/config.yaml`, read through ctl-core's `input` loader, so a bad value names its file and line.
-7. **A drain is a request in a file, and nothing types into a terminal.**
+4. **A drain is a request in a file, and nothing types into a terminal.**
    - `rawr drain [--reason TEXT]` makes the daemon write one request to `$XDG_STATE_HOME/rawr/drain.yaml`: an ID, the reason, and the time it opened.
    - Each session's mod reads that file every 2 seconds with `$.fs.read`, and acts once per request ID.
      A session that starts while a drain is open reads it on its first read, like any other.
@@ -110,7 +89,7 @@ The closest first-party models are Claude Code's own supervisor, which defers it
    Delivery does not depend on `crossSessionInbound` or on the inbox socket.
    Alternative: Claude Code's per-session inbox socket.
    It lost: delivery depends on each session's inbound policy, the message arrives framed as another session's, and the message format is not documented ([cross-session messaging][cc-messaging]).
-8. **A restart waits for idle, within a bound.**
+5. **A restart waits for idle, within a bound.**
    - `rawr restart` opens a drain.
    - The daemon then holds the restart until every live Claude block has settled, re-checking on each status event.
    - A block has settled when it has acknowledged the drain's ID and reads Idle or Failed with no child record.
@@ -130,62 +109,41 @@ The closest first-party models are Claude Code's own supervisor, which defers it
    - While it waits, `rawr restart` draws a live list of the panes and their state.
      `f` restarts at once, despite the panes still pending, and Esc cancels.
    - `--force` skips the wait, and so does a second `rawr restart` during the wait, after the self-hosted runner's second-signal rule.
-9. **The shell offers a restored pane its sessions.**
-   - A line in the shell's startup file runs `rawr pick` once, before the first prompt, so each restored pane with sessions opens the full-screen picker when Rex starts.
-   - `rawr setup` prints that line for the user's shell; `rawr init <shell>` prints the hook it loads, from ctl-core's shared shell integration.
-   - `rawr init` takes the shell as a required argument, as `direnv hook`, `zoxide init` and `starship init` do; `rawr setup` picks the shell for the line it prints from the running shell, then `$SHELL`, as `brew shellenv` does, through ctl-core's shell detection (CTC-057).
-   - Like those `init` commands, `rawr setup` prints the line and edits no startup file.
-   - The hook unhooks itself after its first run, since every shell's prompt hook fires on each prompt: `add-zsh-hook precmd` in zsh, `PROMPT_COMMAND` in bash, a `fish_prompt` event in fish.
-   - bash, zsh and fish come first, the shells ctl-core's `Shell` holds; nushell and PowerShell, which mise and direnv also cover, follow when ctl-core adds them.
-   - Alternative: the daemon types `rawr pick` into each restored shell, as the "Resume Claude here" Rex action does.
-     It lost: typed input can collide with what the user types first, and nothing else in rawr types into a terminal.
-10. **The index cleans itself.**
-    - Each entry carries `transcript_seen`, set the first time rawr finds its transcript.
-    - An entry goes when `transcript_seen` is set and the transcript is gone; Claude Code deletes transcripts with no message after `cleanupPeriodDays`, 30 days by default ([settings][cc-settings]).
-    - An entry with no transcript goes 24 hours after it was recorded, so a session that has not written its first message yet stays.
-    - A block event never deletes a file by itself.
-      It marks the pane, and the file goes only when a later full listing from a running Rex server confirms the block is gone.
-      A Rex crash, upgrade or manual restart that emits removal events on shutdown therefore deletes nothing.
-    - A listing counts only once the server reports its sessions restored, not merely when its socket answers.
-      After a restart, pruning resumes with the first such listing; a daemon that died mid-restart starts on the same rule.
-    - A failed or empty listing deletes nothing.
-      When every pane really is closed, the old files stay until a later non-empty listing, which costs a few small files and never a pane's history.
-    - The per-pane bound is `history.per_pane`.
-11. **`rawr setup` installs everything after the binary, and only what it names.**
-    - `rawr setup` adds this repository's marketplace and installs the plugin through Claude Code's plugin commands.
-    - It stores the binary's stable path in the plugin's data folder and starts the service when Homebrew installed rawr.
-    - It removes an old `SessionStart` hook that runs `rawr record`, when it finds one.
-    - `rawr setup status` reports each piece as current, outdated, missing or foreign, as `rex skill status` does.
-    - `rawr setup remove` removes only what `rawr setup` installed.
-12. **Rules in `AGENTS.md` that change.**
-    - Rule 1: the daemon becomes a second writer of the index, for pruning only; `record` stays the only writer of new entries.
-    - Rule 3: after a dismissal, `pick` prints the one hint line on stderr.
-    - Rule 4: the binary also talks to Claude Code's plugin commands during `rawr setup`.
-      Nothing resumes without a choice, as before.
-
-13. **rawr speaks Rex's documented control protocol, behind one client interface.**
-    - The Rex server documents its own API and serves the documentation from the same socket: `GET /llms.txt` describes the protocol, and `GET /api/help` lists every method with the JSON Schema of its arguments and result.
-    - The control connection is a WebSocket at `GET /api/control` with the subprotocol `rex.control.v1`.
-      Every message is one JSON object: the client sends one `hello`, then `request` messages; the server sends a `welcome`, a `response` per request, and `event` messages.
-    - The hello names the newest and oldest API revisions the client speaks, and the welcome names the revision the connection uses, so rawr pins the revision it was written for (13 today) and refuses a server outside its range.
-    - A `rex` module owns the connection and exposes typed calls and an event stream: list sessions and blocks, read a block's program status, watch status and block events, stop and start the server.
-    - Its request and response types come from `/api/help`'s schemas, and a test against a recorded exchange shows when a Rex change touches them.
-    - Nothing outside that module sees the protocol.
-    - Alternative: a Lua module in Rex's configuration, which uses only documented calls.
-      It lost: it runs inside the server, stops with it, and can hand rawr its findings only through a file or a process.
-    - Alternative: running `rex api call` per request.
-      It lost: one process per call, and no event stream.
-14. **The mods API comes from Claude Code's own types.**
-    Claude Code writes the mods API's TypeScript declarations into each mod's `.claude-plugin/types/claude-code/index.d.ts` when it loads the mod.
-    The calls this design uses, `$.turn.abort`, `$.prompt.submit`, `$.session.append`, `$.fs.read`, `$.clock.every` and the `turn.complete` reasons, are checked there for Claude Code 2.1.322, and the mod's type check runs against that file.
+6. **The daemon prunes pane files only against a confirmed listing.**
+   - A block event never deletes a file by itself.
+     It marks the pane, and the file goes only when a later full listing from a running Rex server confirms the block is gone.
+     A Rex crash, upgrade or manual restart that emits removal events on shutdown therefore deletes nothing.
+   - A listing counts only once the server reports its sessions restored, not merely when its socket answers.
+     After a restart, pruning resumes with the first such listing; a daemon that died mid-restart starts on the same rule.
+   - A failed or empty listing deletes nothing.
+     When every pane really is closed, the old files stay until a later non-empty listing, which costs a few small files and never a pane's history.
+   - Entries inside a pane file are cleaned on read, by [picker-and-index][picker-and-index].
+7. **`AGENTS.md` rule 1 changes.**
+   The daemon becomes a second writer of the index, for pruning only; `record` stays the only writer of new entries.
+8. **rawr speaks Rex's documented control protocol, behind one client interface.**
+   - The Rex server documents its own API and serves the documentation from the same socket: `GET /llms.txt` describes the protocol, and `GET /api/help` lists every method with the JSON Schema of its arguments and result.
+   - The control connection is a WebSocket at `GET /api/control` with the subprotocol `rex.control.v1`.
+     Every message is one JSON object: the client sends one `hello`, then `request` messages; the server sends a `welcome`, a `response` per request, and `event` messages.
+   - The hello names the newest and oldest API revisions the client speaks, and the welcome names the revision the connection uses, so rawr pins the revision it was written for (13 today) and refuses a server outside its range.
+   - A `rex` module owns the connection and exposes typed calls and an event stream: list sessions and blocks, read a block's program status, watch status and block events, stop and start the server.
+   - Its request and response types come from `/api/help`'s schemas, and a test against a recorded exchange shows when a Rex change touches them.
+   - Nothing outside that module sees the protocol.
+   - Alternative: a Lua module in Rex's configuration, which uses only documented calls.
+     It lost: it runs inside the server, stops with it, and can hand rawr its findings only through a file or a process.
+   - Alternative: running `rex api call` per request.
+     It lost: one process per call, and no event stream.
+9. **The mods API comes from Claude Code's own types.**
+   Claude Code writes the mods API's TypeScript declarations into each mod's `.claude-plugin/types/claude-code/index.d.ts` when it loads the mod.
+   The calls this design uses, `$.turn.abort`, `$.prompt.submit`, `$.session.append`, `$.fs.read`, `$.clock.every` and the `turn.complete` reasons, are checked there for Claude Code 2.1.322, and the mod's type check runs against that file.
 
 ## Not verified
 
 1. Whether Rex's program status records come back empty after a server restart; a user on the Rex feedback forum reports that they do.
 2. How a stopped Rex server starts again on macOS when the app started it, and whether `rex server install` is the right owner there.
 3. Whether `$.prompt.submit` keeps a half-typed prompt in the session's prompt box.
-4. Which Rex call or event marks a server whose sessions are restored, as decision 10 needs.
+4. Which Rex call or event marks a server whose sessions are restored, as decision 6 needs.
 
+[picker-and-index]: ../picker-and-index/design.md
 [pps]: https://www.superlogical.com/rex/docs/build/program-status
 [rex-events]: https://www.superlogical.com/rex/docs/reference/events#terminal-events
 [cc-terminal]: https://code.claude.com/docs/en/terminal-config
@@ -195,7 +153,6 @@ The closest first-party models are Claude Code's own supervisor, which defers it
 [cc-dir]: https://code.claude.com/docs/en/claude-directory
 [cc-messaging]: https://code.claude.com/docs/en/cross-session-messaging
 [cc-settings]: https://code.claude.com/docs/en/settings
-[brew-services]: https://docs.brew.sh/Formula-Cookbook#service-files
 [herdr]: https://github.com/herdrdev/herdr/blob/ee5bfb5041bb3e4a49d591c72308aae3c81ecdde/src/agent_resume.rs
 [cmux]: https://github.com/manaflow-ai/cmux/blob/d07cd34e57962278788305a8ce6b966bac40b47a/docs/agent-session-tracking-spec.md
 [resurrect]: https://github.com/tmux-plugins/tmux-resurrect/blob/cff343cf9e81983d3da0c8562b01616f12e8d548/scripts/save.sh
