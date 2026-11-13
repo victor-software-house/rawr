@@ -287,8 +287,8 @@ pub(crate) fn hits(pane: &[Agent], catalog: &[Found], terms: &[String]) -> Vec<H
 
 /// The sessions in `catalog` whose transcript holds every term, though no
 /// prompt or title does: what Claude wrote, tool output, file names. Each
-/// transcript is read whole, once per search; `skip` holds the sessions
-/// already found.
+/// transcript is read line by line through one buffer, and only until every
+/// term has turned up; `skip` holds the sessions already found.
 pub(crate) fn deep(
     catalog: &[Found],
     terms: &[String],
@@ -303,32 +303,7 @@ pub(crate) fn deep(
         .filter(|found| !skip.contains(&found.agent.session_id))
         .take_while(|_| !stale())
         .filter_map(|found| {
-            let bytes = fs::read(&found.transcript).ok()?;
-            // Only what the user and Claude wrote counts: the instructions,
-            // reminders and attachments Claude Code adds to every session
-            // would match everything.
-            let lines: Vec<(&[u8], Vec<u8>)> = bytes
-                .split(|byte| *byte == b'\n')
-                .map(|line| (line, line.to_ascii_lowercase()))
-                .filter(|(_, lower)| spoken(lower))
-                .collect();
-            let holds = |term: &String| {
-                lines
-                    .iter()
-                    .any(|(_, lower)| memchr::memmem::find(lower, term.as_bytes()).is_some())
-            };
-            if !terms.iter().all(holds) {
-                return None;
-            }
-            let (line, at) = lines.iter().find_map(|(line, lower)| {
-                memchr::memmem::find(lower, first.as_bytes()).map(|at| (*line, at))
-            })?;
-            let start = at.saturating_sub(SNIPPET_CHARS);
-            let end = (at + SNIPPET_CHARS * 2).min(line.len());
-            let raw = String::from_utf8_lossy(&line[start..end])
-                .replace("\\n", " ")
-                .replace("\\\"", "\"")
-                .replace("\\t", " ");
+            let raw = scan(&found.transcript, terms)?;
             Some(Hit {
                 agent: found.agent.clone(),
                 snippet: Some(around(&raw, first)),
@@ -338,13 +313,62 @@ pub(crate) fn deep(
         .collect()
 }
 
-/// Whether a transcript line, lowercase, holds words the user or Claude
-/// wrote: a user or assistant message, and not one Claude Code marks as its
-/// own, such as the loaded instructions or a reminder.
-fn spoken(lower: &[u8]) -> bool {
-    let has = |needle: &[u8]| memchr::memmem::find(lower, needle).is_some();
+/// Reads the transcript at `path` and returns the stretch around the first
+/// term's first spoken occurrence, once every term has occurred in a spoken
+/// line; `None` when one never does. Memory stays at the longest line.
+fn scan(path: &Path, terms: &[String]) -> Option<String> {
+    let first = terms.first()?;
+    let mut reader = BufReader::with_capacity(1 << 18, File::open(path).ok()?);
+    let mut line = Vec::new();
+    let mut lower = Vec::new();
+    let mut seen = vec![false; terms.len()];
+    let mut snippet = None;
+    loop {
+        line.clear();
+        if reader.read_until(b'\n', &mut line).ok()? == 0 {
+            return None;
+        }
+        // Only what the user and Claude wrote counts: the instructions,
+        // reminders and attachments Claude Code adds to every session would
+        // match everything.
+        if !spoken(&line) {
+            continue;
+        }
+        lower.clear();
+        lower.extend(line.iter().map(u8::to_ascii_lowercase));
+        for (term, seen) in terms.iter().zip(seen.iter_mut()) {
+            if *seen {
+                continue;
+            }
+            let Some(at) = memchr::memmem::find(&lower, term.as_bytes()) else {
+                continue;
+            };
+            *seen = true;
+            if term == first && snippet.is_none() {
+                let start = at.saturating_sub(SNIPPET_CHARS);
+                let end = (at + SNIPPET_CHARS * 2).min(line.len());
+                snippet = Some(
+                    String::from_utf8_lossy(&line[start..end])
+                        .replace("\\n", " ")
+                        .replace("\\\"", "\"")
+                        .replace("\\t", " "),
+                );
+            }
+        }
+        if seen.iter().all(|seen| *seen) {
+            return snippet;
+        }
+    }
+}
+
+/// Whether a transcript line holds words the user or Claude wrote: a user
+/// or assistant message, and not one Claude Code marks as its own, such as
+/// the loaded instructions or a reminder. Claude Code writes these keys in
+/// this case, so the raw line is checked.
+fn spoken(line: &[u8]) -> bool {
+    let has = |needle: &[u8]| memchr::memmem::find(line, needle).is_some();
     (has(b"\"type\":\"user\"") || has(b"\"type\":\"assistant\""))
-        && !has(b"\"ismeta\":true")
+        && !has(b"\"isMeta\":true")
         && !has(b"<system-reminder>")
         && !has(b"\"tool_use_id\"")
 }
