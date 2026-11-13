@@ -166,8 +166,14 @@ fn connect(build: &Build, view: Option<u64>) -> Result<Welcomed> {
     if let Ok(stream) = UnixStream::connect(&path) {
         match hello(stream, build, view)? {
             Hello::Welcome(welcomed) => return Ok(welcomed),
-            Hello::Refused(mut stream) => {
-                // Another binary: ask it to stop, and wait for its socket
+            Hello::Refused(mut stream, theirs) => {
+                // A daemon newer than this window stays: this window is the
+                // old code, and stopping it would only start a fight with the
+                // windows that run the new one.
+                if theirs.modified > build.modified {
+                    bail!("rawr was updated; quit and open it again");
+                }
+                // An older binary: ask it to stop, and wait for its socket
                 // to go quiet.
                 write(&mut stream, &ToDaemon::Shutdown)?;
                 drop(stream);
@@ -195,7 +201,7 @@ fn connect(build: &Build, view: Option<u64>) -> Result<Welcomed> {
     let stream = UnixStream::connect(&path).context("connect to the rawr daemon")?;
     match hello(stream, build, view)? {
         Hello::Welcome(welcomed) => Ok(welcomed),
-        Hello::Refused(_) => bail!("the rawr daemon it started runs another binary"),
+        Hello::Refused(..) => bail!("the rawr daemon it started runs another binary"),
     }
 }
 
@@ -208,7 +214,7 @@ struct Welcomed {
 
 enum Hello {
     Welcome(Welcomed),
-    Refused(UnixStream),
+    Refused(UnixStream, Build),
 }
 
 fn hello(mut stream: UnixStream, build: &Build, view: Option<u64>) -> Result<Hello> {
@@ -243,7 +249,7 @@ fn hello(mut stream: UnixStream, build: &Build, view: Option<u64>) -> Result<Hel
             view,
             carry,
         })),
-        FromDaemon::Refused { .. } => Ok(Hello::Refused(stream)),
+        FromDaemon::Refused { build } => Ok(Hello::Refused(stream, build)),
         _ => bail!("the rawr daemon did not answer the hello"),
     }
 }
