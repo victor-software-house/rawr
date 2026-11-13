@@ -32,6 +32,15 @@ pre-push:
   # empty, so a push of a branch other than the checked-out one ran no
   # command; a script has no such skip.
   scripts:
+    # Runs the repository's fast file checks, such as Markdown lint and
+    # typos, on the files the pushed commits change, at the pushed commit's
+    # content. The OpenSpec and workflow checks run when a file under their
+    # path changed. The task, mise-tasks/hooks/changed.sh, reads git's
+    # pre-push lines on stdin.
+    changed.sh:
+      runner: sh
+      env: *hookenv
+      use_stdin: true
     # Fails when a mise lockfile no longer matches its config
     # (mise-tasks/hooks/lockfile.sh). The task checks each committed
     # mise.<profile>.toml's lock in turn, except the hooks profile's, in a

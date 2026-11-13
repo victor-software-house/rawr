@@ -6,7 +6,8 @@
 # makes it walk the repository again inside the link until the path is too
 # long. The task hands it the tracked TOML files that are regular files, and
 # .taplo.toml's exclude still applies to them. The list goes through a file
-# so a git failure stops the task.
+# so a git failure stops the task. With files as arguments, the task reads
+# those instead of the tracked ones, and the exclude applies to them too.
 #
 # taplo reads each argument as a glob, so x[ab].toml would match xa.toml and
 # miss itself. Each glob character is wrapped in brackets, which matches it
@@ -14,7 +15,11 @@
 set -euo pipefail
 tracked=$(mktemp)
 trap 'rm -f "$tracked"' EXIT
-git ls-files -z ':(glob)**/*.toml' >"$tracked"
+if [ "$#" -gt 0 ]; then
+  printf '%s\0' "$@" >"$tracked"
+else
+  git ls-files -z ':(glob)**/*.toml' >"$tracked"
+fi
 files=()
 while IFS= read -r -d '' file; do
   [ -f "$file" ] || continue
