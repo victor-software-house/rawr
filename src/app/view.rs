@@ -574,7 +574,7 @@ fn facts_panel(frame: &mut Frame<'_>, area: Rect, agent: &Agent, facts: &Facts) 
         Style::new(),
     ));
     let span = match (&facts.started, &facts.last) {
-        (Some(started), Some(last)) => format!("{} → {}", when(started), when(last)),
+        (Some(started), Some(last)) => format!("started {} · active {}", when(started), when(last)),
         _ => String::new(),
     };
     lines.push(Line::styled(
@@ -599,11 +599,42 @@ fn facts_panel(frame: &mut Frame<'_>, area: Rect, agent: &Agent, facts: &Facts) 
     frame.render_widget(Paragraph::new(lines), area);
 }
 
-/// `2026-11-13T13:40:12.000Z` as `11-13 13:40`, in UTC as written.
+/// How long ago `stamp`, a UTC time such as `2026-11-13T13:40:12.000Z`,
+/// was: `5m ago`. Relative, so no time zone is needed.
 fn when(stamp: &str) -> String {
-    stamp
-        .get(5..16)
-        .map_or_else(|| stamp.to_owned(), |cut| cut.replace('T', " "))
+    let parse =
+        |range: std::ops::Range<usize>| stamp.get(range).and_then(|part| part.parse::<i64>().ok());
+    let (Some(year), Some(month), Some(day), Some(hour), Some(minute)) = (
+        parse(0..4),
+        parse(5..7),
+        parse(8..10),
+        parse(11..13),
+        parse(14..16),
+    ) else {
+        return stamp.to_owned();
+    };
+    // Days from 1970-01-01 to the date, by the civil-calendar formula.
+    let (y, m) = if month <= 2 {
+        (year - 1, month + 9)
+    } else {
+        (year, month - 3)
+    };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * m + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    let then = days * 86_400 + hour * 3_600 + minute * 60;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| i64::try_from(since.as_secs()).unwrap_or(0));
+    let ago = u64::try_from(now - then).unwrap_or(0);
+    let age = short_age(Some(Duration::from_secs(ago)));
+    if age == "now" {
+        age
+    } else {
+        format!("{age} ago")
+    }
 }
 
 /// `123456` as `123k`.
