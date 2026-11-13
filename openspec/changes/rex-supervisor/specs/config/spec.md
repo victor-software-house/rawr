@@ -8,7 +8,7 @@ Hold the user's bounds and waits in one config file.
 
 ### Requirement: Config keys with defaults
 
-rawr SHALL read `$XDG_CONFIG_HOME/rawr/config.yaml`, or `~/.config/rawr/config.yaml`, with `history.per_pane` (default 10), `picker.rows` (default 3) and `restart.wait` (default `30m`), and SHALL use the defaults when the file is absent.
+rawr SHALL read `$XDG_CONFIG_HOME/rawr/config.yaml`, or `~/.config/rawr/config.yaml`, with `history.per_pane` (default 10), `picker.rows` (default 3), `restart.wait` (default `30m`) and `drain.grace` (default `2m`), and SHALL use the defaults when the file is absent.
 
 #### Scenario: A bad value
 

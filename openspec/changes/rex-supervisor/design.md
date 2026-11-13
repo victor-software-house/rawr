@@ -94,9 +94,11 @@ The closest first-party models are Claude Code's own supervisor, which defers it
 7. **A drain is a request in a file, and nothing types into a terminal.**
    - `rawr drain [--reason TEXT]` makes the daemon write one request to `$XDG_STATE_HOME/rawr/drain.yaml`: an ID, the reason, and the time it opened.
    - Each session's mod reads that file every 2 seconds with `$.fs.read`, and acts once per request ID.
-   - Once it has delivered a request, the mod acknowledges it by running `rawr drain ack <id>`, which records the acknowledgement under the session's block.
+     A session that starts while a drain is open reads it on its first read, like any other.
    - An idle session gets the hand-off request through `$.prompt.submit`, which Claude Code marks as sent by the rawr mod.
    - A busy session gets it through `$.session.append` before its next step.
+   - The mod acknowledges a request with `rawr drain ack <id>` only when the turn that carried it ends (`turn.complete`).
+     The acknowledgement sits under the session's block, keyed by the drain's ID, so an acknowledgement of an earlier drain never counts for a later one.
    - The request text covers finishing the current step, committing or noting what is unfinished, writing a hand-off, starting no new work, and ending the turn.
 
    Delivery does not depend on `crossSessionInbound` or on the inbox socket.
@@ -104,10 +106,14 @@ The closest first-party models are Claude Code's own supervisor, which defers it
    It lost: delivery depends on each session's inbound policy, the message arrives framed as another session's, and the message format is not documented ([cross-session messaging][cc-messaging]).
 8. **A restart waits for idle, within a bound.**
    - `rawr restart` opens a drain.
-   - The daemon then holds the restart until every live Claude block has acknowledged the drain's ID and has since settled, re-checking on each status event.
-   - A block has settled when it reads Idle or Failed with no child record after its acknowledgement.
+   - The daemon then holds the restart until every live Claude block has settled, re-checking on each status event.
+   - A block has settled when it has acknowledged the drain's ID and reads Idle or Failed with no child record.
+     Since the acknowledgement comes at the end of the hand-off turn, an Idle reading from before that turn started cannot count.
+   - The set of blocks is live: a block whose Claude exits or whose pane closes leaves it, and a Claude that starts during the drain joins it.
    - A block that reads Needs input is named at once, so the user can answer it, and the wait goes on.
-   - Past `restart.wait` (default 30 minutes, Claude Code's own cap), the restart fails and names the panes still busy or unacknowledged.
+   - A block whose session has no rawr mod, such as one started before `rawr setup`, is named at once as one that cannot acknowledge.
+     It counts as settled once it has read Idle with no child record for `drain.grace` (default 2 minutes).
+   - Past `restart.wait` (default 30 minutes, Claude Code's own cap), the restart fails and names each pane as busy, waiting on input, or not acknowledged.
    - Once every block is idle, the daemon stops the Rex server, starts it again, and closes the drain.
    - `--force` skips the wait, and so does a second `rawr restart` during the wait, after the self-hosted runner's second-signal rule.
 9. **The daemon offers restored panes their sessions.**
@@ -116,8 +122,13 @@ The closest first-party models are Claude Code's own supervisor, which defers it
    The shell snippet becomes optional, for those who want the picker without the daemon.
 10. **The index cleans itself.**
     - An entry goes when its transcript is gone; Claude Code deletes transcripts with no message after `cleanupPeriodDays`, 30 days by default ([settings][cc-settings]).
-    - A pane's file goes when Rex removes the block, on the daemon's block events outside a restart the daemon runs.
-    - At daemon start, files go only against a full listing that a running Rex server returned; a failed or empty listing deletes nothing.
+    - A block event never deletes a file by itself.
+      It marks the pane, and the file goes only when a later full listing from a running Rex server confirms the block is gone.
+      A Rex crash, upgrade or manual restart that emits removal events on shutdown therefore deletes nothing.
+    - A listing counts only once the server reports its sessions restored, not merely when its socket answers.
+      After a restart, pruning resumes with the first such listing; a daemon that died mid-restart starts on the same rule.
+    - A failed or empty listing deletes nothing.
+      When every pane really is closed, the old files stay until a later non-empty listing, which costs a few small files and never a pane's history.
     - The per-pane bound is `history.per_pane`.
 11. **`rawr setup` installs everything after the binary, and only what it names.**
     - `rawr setup` adds this repository's marketplace and installs the plugin through Claude Code's plugin commands.
@@ -138,13 +149,14 @@ The closest first-party models are Claude Code's own supervisor, which defers it
    - Speaking the socket directly gives one connection and streamed events with no process per call, but the protocol can change without notice.
    - A Lua module in Rex's configuration uses only documented calls (`rex.call`, `terminal.program_status_changed`) and runs inside the server, but it stops with the server and must hand rawr what it needs.
 2. **Who offers restored panes their sessions:** the daemon (decision 9), or the shell snippet as today.
-3. **The defaults:** 10 sessions kept per pane, 3 rows shown before `ctrl+o`, and 30 minutes of drain wait.
+3. **The defaults:** 10 sessions kept per pane, 3 rows shown before `ctrl+o`, 30 minutes of drain wait, and 2 minutes of grace for a session with no rawr mod.
 
 ## Not verified
 
 1. Whether Rex's program status records come back empty after a server restart; a user on the Rex feedback forum reports that they do.
 2. How a stopped Rex server starts again on macOS when the app started it, and whether `rex server install` is the right owner there.
 3. Whether `$.prompt.submit` keeps a half-typed prompt in the session's prompt box.
+4. Which Rex call or event marks a server whose sessions are restored, as decision 10 needs.
 
 [pps]: https://www.superlogical.com/rex/docs/build/program-status
 [rex-events]: https://www.superlogical.com/rex/docs/reference/events#terminal-events
