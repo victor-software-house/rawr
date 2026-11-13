@@ -213,6 +213,7 @@ queue:
     notes:
       - 2026-11-13, the tab listed 3 files for a session that wrote dozens through Bash (operator, 2026-11-13).
       - '2026-11-13, step 1 done: NotebookEdit counts by notebook_path, and files only read list under Read; Bash-written files are next.'
+      - '2026-11-13, step 2 done: redirects, tee, sed -i, perl -i and sd count as changes; the firescale session went from 142 to more than 300 changed files.'
 
   - id: RAWR-020
     title: Filter the files tab
