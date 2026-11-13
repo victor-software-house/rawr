@@ -81,6 +81,30 @@ queue:
     plan: openspec/changes/install-and-shells/proposal.md
     notes:
       - ctl-core owns the verb; its research and OpenSpec change come first, in that repository.
+
+  - id: RAWR-010
+    title: Complete rawr's verbs and flags in bash, zsh and fish
+    scope: src/main.rs
+    outcome: >-
+      rawr completion <shell> prints a registration script, and Tab completes from
+      the installed binary
+    blocked_by: []
+    acceptance:
+      - rawr completion zsh prints a script for rawr and exits 0, proved by the unit test in CI
+      - In zsh with the script loaded, rawr <Tab> offers every verb
+    plan: openspec/changes/shell-completion/proposal.md
+
+  - id: RAWR-011
+    title: Mark a waiting picker's pane as needing attention in Rex
+    scope: src/picker/terminal.rs
+    outcome: >-
+      While the picker is open, its Rex tab shows a needs-attention dot, cleared when
+      the picker closes
+    blocked_by: []
+    acceptance:
+      - Both OSC 7501 sequences match the protocol, proved by the unit test in CI
+      - A background tab running rawr pick shows the dot, and the dot is gone after Esc
+    plan: openspec/changes/pane-status/proposal.md
 archive:
   - id: RAWR-002
     title: Parse and report through ctl-core

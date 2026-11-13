@@ -35,6 +35,7 @@ Rex keeps a pane's block ID across a server restart, so the block ID is the pane
 | `rawr pick` | The shell, when it starts in a Rex pane | Offers the pane's sessions that no running Claude Code holds, and resumes the chosen one in its folder |
 | `rawr find [WORDS…]` | You, from any shell | Opens the picker on the search line, and resumes the chosen session as `pick` does |
 | `rawr setup claude [--dry-run]` | You, once | Adds the `SessionStart` hook that runs `rawr record` to Claude Code's user settings |
+| `rawr completion bash\|zsh\|fish` | Your shell, at start | Prints the shell's completion script; Tab then completes from the installed binary |
 
 ## Shell integration
 
@@ -72,6 +73,8 @@ The hook it adds:
   }
 }
 ```
+
+Load completion at shell start: `source <(rawr completion zsh)` in `~/.zshrc` after `compinit`, `source <(rawr completion bash)` in `~/.bashrc`, or `rawr completion fish | source` in `~/.config/fish/config.fish`.
 
 ## License
 
