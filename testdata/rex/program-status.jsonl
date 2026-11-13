@@ -1,0 +1,6 @@
+{"expect":{"type":"request","id":"2","method":"com.superlogical.terminal.program_status","payload":{"session_id":"session:0190a000-0000-7000-8000-00000000000a","block_id":"block:0190f3a2-7c41-7e10-8b2d-5d9e6a4c1f08","args":{}}}}
+{"send":{"type":"response","id":"2","seq":0,"payload":{"records":[{"state":"blocked","kind":"permission","app":"claude-code","effective_app":"claude-code","updated_at":"2026-11-13T07:26:27.888954-03:00","future_field":"x"},{"id":"agent-1","state":"working","effective_app":"claude-code","updated_at":"2026-11-13T07:26:30.000000-03:00"},{"id":"agent-2","state":"waiting-for-the-future","updated_at":"2026-11-13T07:26:31.000000-03:00"}]}}}
+{"expect":{"type":"request","id":"3","method":"com.superlogical.terminal.program_status","payload":{"session_id":"session:0190a000-0000-7000-8000-00000000000a","block_id":"block:0190f3a2-7c41-7e10-8b2d-5d9e6a4c1f09","args":{}}}}
+{"send":{"type":"response","id":"3","seq":0,"payload":{"records":[]}}}
+{"expect":{"type":"request","id":"4","method":"com.superlogical.terminal.program_status","payload":{"session_id":"session:0190a000-0000-7000-8000-00000000000a","block_id":"block:0190f3a2-7c41-7e10-8b2d-5d9e6a4c1f0f","args":{}}}}
+{"send":{"type":"response","id":"4","seq":0,"error":{"code":"not_found","message":"block not found","status":404}}}

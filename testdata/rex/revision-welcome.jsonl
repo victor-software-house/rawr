@@ -1,0 +1,2 @@
+{"expect":{"type":"hello","api_revision":13,"api_min_revision":13,"client":{"kind":"cli","name":"rawr"}}}
+{"send":{"type":"welcome","protocol":"rex.control.v1","limits":{"max_message_bytes":1048576},"api_revision":12,"api_server_revision":12,"api_min_revision":0}}

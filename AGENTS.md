@@ -13,7 +13,7 @@ The README describes the behaviour; this file holds the rules for changing it.
    On a choice they restore the terminal, then replace their own process with `claude --resume <session id>` in the session's folder.
    They exit non-zero, printing nothing, when there is no terminal, no index or nothing to resume.
    When the user dismisses the picker, they exit non-zero and print one hint line on stderr.
-4. The binary starts `rex`, and on a choice becomes `claude`; it starts nothing else.
+4. The binary talks to the Rex server over its control protocol instead of starting `rex`, and on a choice becomes `claude`; it starts nothing else.
    Nothing resumes without a choice.
 5. The repository is public.
    Examples, fixtures and docs use invented session titles, folders and IDs, never ones taken from a real machine.

@@ -1,0 +1,8 @@
+{"expect":{"type":"request","id":"2","method":"session.list"}}
+{"send":{"type":"notice","text":"a message type that a newer server may add"}}
+{"send":{"type":"event","seq":1,"payload":{"type":"keymap_changed","payload":{}}}}
+{"send":{"type":"response","id":"2","seq":1,"payload":{"sessions":[{"session_id":"session:0190a000-0000-7000-8000-00000000000a","label":"work","future_field":1},{"session_id":"session:0190a000-0000-7000-8000-00000000000b","label":"notes"}]}}}
+{"expect":{"type":"request","id":"3","method":"session.list_blocks","payload":{"session_id":"session:0190a000-0000-7000-8000-00000000000a"}}}
+{"send":{"type":"response","id":"3","seq":1,"payload":{"blocks":[{"block_id":"block:0190f3a2-7c41-7e10-8b2d-5d9e6a4c1f08","label":"shell","creator_name":"com.superlogical.terminal","flavor":"com.superlogical.terminal.shell","placement":"placed","window_id":"window:0190a000-0000-7000-8000-0000000000d1"},{"block_id":"block:0190f3a2-7c41-7e10-8b2d-5d9e6a4c1f09","label":"","creator_name":"com.superlogical.terminal","placement":"detached"}]}}}
+{"expect":{"type":"request","id":"4","method":"session.list_blocks","payload":{"session_id":"session:0190a000-0000-7000-8000-00000000000b"}}}
+{"send":{"type":"response","id":"4","seq":1,"payload":{"blocks":[{"block_id":"block:0190f3a2-7c41-7e10-8b2d-5d9e6a4c1f0a","label":"welcome","creator_name":"com.superlogical.onboarding","placement":"placed"}]}}}

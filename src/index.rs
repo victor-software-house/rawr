@@ -4,11 +4,12 @@
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
+
+use crate::rex::{Client, Endpoint};
 
 /// How long a session may go without a transcript file before the index drops
 /// it, so one that has not written its first message yet stays.
@@ -170,51 +171,14 @@ pub(crate) fn state_dir() -> Result<PathBuf> {
     Ok(base.join("rawr"))
 }
 
-#[derive(Debug, Deserialize)]
-struct SessionList {
-    sessions: Vec<SessionRow>,
-}
-
-#[derive(Debug, Deserialize)]
-struct SessionRow {
-    session_id: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct BlockList {
-    blocks: Vec<BlockRow>,
-}
-
-#[derive(Debug, Deserialize)]
-struct BlockRow {
-    block_id: String,
-}
-
-/// Runs `rex` and parses its JSON output.
-fn rex_json<T: for<'de> Deserialize<'de>>(args: &[&str]) -> Result<T> {
-    let output = Command::new("rex")
-        .args(args)
-        .output()
-        .context("start rex")?;
-    if !output.status.success() {
-        bail!(
-            "rex {} failed: {}",
-            args.join(" "),
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
-    serde_json::from_slice(&output.stdout).with_context(|| format!("parse rex {}", args.join(" ")))
-}
-
 /// Every block the Rex server has now. Fails if any listing fails, so a
 /// partial answer never counts as the whole server.
 fn live_blocks() -> Result<HashSet<BlockId>> {
-    let sessions: SessionList = rex_json(&["ls", "--json"])?;
+    let mut client = Client::connect(&Endpoint::from_environment()?)?;
     let mut blocks = HashSet::new();
-    for session in sessions.sessions {
-        let list: BlockList = rex_json(&["block", "ls", "-s", &session.session_id, "--json"])?;
-        for block in list.blocks {
-            blocks.insert(BlockId::try_new(&block.block_id)?);
+    for session in client.sessions()? {
+        for block in client.blocks(&session)? {
+            blocks.insert(BlockId::try_new(&block.id)?);
         }
     }
     Ok(blocks)

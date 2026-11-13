@@ -1,0 +1,2 @@
+{"expect":{"type":"hello","api_revision":13,"api_min_revision":13,"client":{"kind":"cli","name":"rawr"}}}
+{"close":{"code":1008,"reason":"no common API revision: the server speaks 0 to 12, the client speaks 13 to 13"}}

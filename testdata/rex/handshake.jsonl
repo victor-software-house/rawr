@@ -1,0 +1,4 @@
+{"expect":{"type":"hello","api_revision":13,"api_min_revision":13,"client":{"kind":"cli","name":"rawr"}}}
+{"send":{"type":"welcome","protocol":"rex.control.v1","limits":{"max_message_bytes":1048576},"client":{"id":"client:0190a000-0000-7000-8000-0000000000c1","reconnect_token":"invented-token"},"api_revision":13,"api_server_revision":13,"api_min_revision":0,"future_field":true}}
+{"expect":{"type":"request","id":"1","method":"session.attach_all","payload":{"event_scope":"session"}}}
+{"send":{"type":"response","id":"1","seq":0,"payload":{"sessions":[{"session_id":"session:0190a000-0000-7000-8000-00000000000a","label":"work"}]}}}

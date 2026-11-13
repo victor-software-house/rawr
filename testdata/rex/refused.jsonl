@@ -1,0 +1,4 @@
+{"expect":{"type":"request","id":"2","method":"session.list_blocks","payload":{"session_id":"session:0190a000-0000-7000-8000-0000000000ff"}}}
+{"send":{"type":"response","id":"2","seq":0,"error":{"code":"session_not_found","message":"session not found","status":404}}}
+{"expect":{"type":"request","id":"3","method":"session.list"}}
+{"send":{"type":"response","id":"3","seq":0,"payload":{"sessions":null}}}
