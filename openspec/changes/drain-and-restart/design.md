@@ -23,10 +23,11 @@ The closest first-party models are Claude Code's own supervisor, which defers it
      Each backgrounded call returns at once with a "running in the background" result, so the turn reaches its next step, and the request, without waiting for the call.
      The mods API has no call that backgrounds a task, so a key is the one way.
    - The mod marks a Bash or Agent call in flight when its `tool.call` hook starts and clears it when `next(e)` resolves, so it asks for the key only while a call runs.
-     Right before the write, the binary reads the block's program status and writes only while the root record reads `working`; a permission prompt reads `blocked`, so the key never lands in it.
+     Right before the write, the binary reads the block's program status and writes only while the root record reads `working`; a permission prompt reads `blocked`, so the key does not go to one that is already open.
      The read and the write go out back to back on one connection, so the gap between them is the time between two messages.
      A call that ends inside that gap leaves the key in the prompt box, where Claude Code 2.1.323 moves the cursor one character left on `ctrl+b`, as emacs does; it deletes nothing.
      No `ctrl+x` chord in the prompt box ends in `ctrl+b` (its chords end in `ctrl+k`, `enter`, `ctrl+s`, `ctrl+e`, `ctrl+a` and `tab`).
+     A permission prompt that opens inside the gap, for the next call or for a subagent's tool under a running Agent call, receives the key instead.
    - A busy session that has not settled after `drain.interrupt` (default 2 minutes) gets its running turn cancelled with `$.turn.abort`, which stops the turn's running tools, and, once that turn's `turn.complete` arrives with `reason` `aborted` or `error`, the hand-off request through `$.prompt.submit`.
      That happens once per request ID, only for a request delivered through `$.session.append`; the submitted hand-off turn becomes the turn that carries the request, and it is not interrupted again.
      It covers what the key cannot: a long model response, or a tool other than Bash and Agent.
@@ -70,6 +71,7 @@ The closest first-party models are Claude Code's own supervisor, which defers it
 2. Whether `$.prompt.submit` keeps a half-typed prompt in the session's prompt box.
 3. Whether a byte written by Rex reaches Claude Code as `ctrl+b`, or the pair as `ctrl+x ctrl+b`, while Claude Code has the kitty keyboard protocol on.
 4. What the prompt box does with `ctrl+x` followed by a key no chord binds, which only the chord path can leave there.
+5. What a permission prompt does with `ctrl+b` or `ctrl+x ctrl+b`; Claude Code 2.1.323 binds neither in its `Confirmation` context.
 
 [cc-agent-view]: https://code.claude.com/docs/en/agent-view
 [cc-runner]: https://code.claude.com/docs/en/self-hosted-environments-deploy

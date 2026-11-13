@@ -62,6 +62,15 @@ On a timeout, an interrupt or any other non-zero exit, `rawr restart` SHALL clos
 - **WHEN** two blocks still read `Working` and the user presses `f` in the `rawr restart` view
 - **THEN** the daemon stops and starts the Rex server at once and closes the drain
 
+### Requirement: A session without the mod settles on idle
+
+A block whose session has no rawr mod SHALL be named at once as one that cannot acknowledge, and SHALL count as settled for "Restart waits for idle" once it has read `Idle` with no child record in `working` for `drain.grace`.
+
+#### Scenario: A session started before rawr setup
+
+- **WHEN** a block's session has no rawr mod and the block reads `Idle` with no child record in `working` for `drain.grace` during a restart
+- **THEN** the restart counts that block as settled, and does not wait for its acknowledgement
+
 ### Requirement: A drain left open is closed
 
 `drain.yaml` SHALL record the daemon's process ID and start time.
