@@ -20,7 +20,7 @@ jobs:
       contents: write # tags, Releases, assets, and verctl/release/main without the App
       pull-requests: write # the Version PR without the App
       id-token: write # the called workflow's publish job requests it
-    uses: victor-software-house/verctl/.github/workflows/release.yml@61f95f1cd5eba628938dd883f217289690f126e7 # v0.8.3
+    uses: victor-software-house/verctl/.github/workflows/release.yml@894850b6d761dc0015b25d07517e7ed0abacf02b # v0.8.4
     with:
       mise-version: 2026.11.6
       mise-env: ci,release
