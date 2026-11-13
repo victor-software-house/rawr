@@ -145,6 +145,7 @@ pub(crate) fn run(view: Option<u64>) -> Result<Option<Agent>> {
                     mouse,
                     hits.target(mouse.column, mouse.row),
                     hits.list(mouse.column, mouse.row),
+                    hits.rail(mouse.column, mouse.row),
                     (hits.width, hits.height),
                 ),
                 Msg::Input(Event::Paste(text)) => app.on_paste(&text),

@@ -608,12 +608,14 @@ impl App {
     }
 
     /// Handles a mouse report. `hit` is what the last frame drew under the
-    /// pointer, `list` the list under it, and `size` the screen's size.
+    /// pointer, `list` the list under it, `rail` the folded column under
+    /// it, and `size` the screen's size.
     pub(crate) fn on_mouse(
         &mut self,
         mouse: MouseEvent,
         hit: Option<Target>,
         list: Option<Focus>,
+        rail: Option<Focus>,
         size: (u16, u16),
     ) -> Action {
         if self.help {
@@ -634,6 +636,16 @@ impl App {
                     || mouse.column + 1 >= width
                     || mouse.row + 1 >= height;
                 self.hover = if edge { None } else { hit };
+                // A folded column opens as soon as the pointer is over it.
+                // Not while the columns move, or a column folding under the
+                // pointer would open again.
+                if !edge
+                    && !self.moving()
+                    && self.focus != Focus::Search
+                    && let Some(column) = rail
+                {
+                    self.focus_on(column);
+                }
                 Action::None
             }
             MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => {

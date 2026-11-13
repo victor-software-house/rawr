@@ -43,6 +43,8 @@ const SLIDE: f32 = 10.0;
 pub(crate) struct Hits {
     targets: Vec<(Rect, Target)>,
     lists: Vec<(Rect, Focus)>,
+    /// The folded columns, which open when the pointer comes over them.
+    rails: Vec<(Rect, Focus)>,
     /// The screen's size.
     pub(crate) width: u16,
     pub(crate) height: u16,
@@ -61,6 +63,14 @@ impl Hits {
             .map(|(_, target)| *target)
     }
 
+    pub(crate) fn rail(&self, column: u16, row: u16) -> Option<Focus> {
+        let at = Position::new(column, row);
+        self.rails
+            .iter()
+            .find(|(area, _)| area.contains(at))
+            .map(|(_, focus)| *focus)
+    }
+
     pub(crate) fn list(&self, column: u16, row: u16) -> Option<Focus> {
         let at = Position::new(column, row);
         self.lists
@@ -77,6 +87,7 @@ impl Hits {
     fn cover(&mut self, area: Rect) {
         self.targets.retain(|(under, _)| !under.intersects(area));
         self.lists.retain(|(under, _)| !under.intersects(area));
+        self.rails.retain(|(under, _)| !under.intersects(area));
     }
 }
 
@@ -103,6 +114,7 @@ pub(crate) fn draw(frame: &mut Frame<'_>, app: &App, shown: Shown<'_>) -> Hits {
     search_box(frame, app, search, &mut hits);
     if app.help {
         hits.targets.clear();
+        hits.rails.clear();
         hits.cursor = None;
         help(frame);
     }
@@ -395,6 +407,7 @@ fn rail(
         }
     }
     hits.add(area, Target::Column(column));
+    hits.rails.push((area, column));
 }
 
 /// One column's content.
