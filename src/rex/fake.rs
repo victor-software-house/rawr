@@ -4,6 +4,7 @@
 //! the client must send next, a message the server sends, or a close.
 
 use std::fs;
+use std::io::ErrorKind;
 use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
 use std::thread::JoinHandle;
@@ -100,6 +101,11 @@ fn accept_control(request: &Request, mut response: Response) -> Result<Response,
     Ok(response)
 }
 
+/// Whether an I/O error says the peer is gone.
+fn hung_up(kind: ErrorKind) -> bool {
+    matches!(kind, ErrorKind::BrokenPipe | ErrorKind::ConnectionReset)
+}
+
 fn serve(listener: &UnixListener, steps: Vec<Step>) -> Result<()> {
     let (stream, _) = listener.accept()?;
     stream.set_read_timeout(Some(PATIENCE))?;
@@ -118,7 +124,16 @@ fn serve(listener: &UnixListener, steps: Vec<Step>) -> Result<()> {
                     "the client sent {actual}, the script expected {expected}"
                 );
             }
-            Step::Send(message) => socket.send(Message::text(message.to_string()))?,
+            Step::Send(message) => match socket.send(Message::text(message.to_string())) {
+                Ok(()) => {}
+                // The client has what it came for and hung up: the exchange is
+                // over.
+                Err(tungstenite::Error::ConnectionClosed | tungstenite::Error::AlreadyClosed) => {
+                    return Ok(());
+                }
+                Err(tungstenite::Error::Io(error)) if hung_up(error.kind()) => return Ok(()),
+                Err(error) => return Err(error.into()),
+            },
             Step::Close { code, reason } => socket.close(Some(CloseFrame {
                 code: CloseCode::from(code),
                 reason: reason.into(),

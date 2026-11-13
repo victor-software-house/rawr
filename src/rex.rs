@@ -25,5 +25,5 @@ mod protocol;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use client::{Client, Endpoint};
+pub(crate) use client::{Client, Endpoint, session_is_gone};
 pub(crate) use protocol::{Block, Session, State, StatusRecord};

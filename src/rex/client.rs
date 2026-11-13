@@ -308,7 +308,7 @@ impl Client {
     }
 
     /// The program status records of a terminal block, the root record first.
-    /// `None` when the block closed since it was listed.
+    /// `None` when the block or its session closed since it was listed.
     ///
     /// # Errors
     ///
@@ -328,13 +328,7 @@ impl Client {
         );
         match result {
             Ok(status) => Ok(Some(status.records.unwrap_or_default())),
-            Err(error)
-                if error
-                    .downcast_ref::<ErrorResponse>()
-                    .is_some_and(|refused| refused.code == "not_found") =>
-            {
-                Ok(None)
-            }
+            Err(error) if refused_with(&error, &["not_found", "session_not_found"]) => Ok(None),
             Err(error) => Err(error),
         }
     }
@@ -354,6 +348,19 @@ impl Client {
         self.call::<_, IgnoredAny>("server.stop", &NoArgs {})?;
         Ok(())
     }
+}
+
+/// Whether the server refused a call with one of `codes`.
+fn refused_with(error: &anyhow::Error, codes: &[&str]) -> bool {
+    error
+        .downcast_ref::<ErrorResponse>()
+        .is_some_and(|refused| codes.contains(&refused.code.as_str()))
+}
+
+/// Whether the server refused a call because the session it names is gone,
+/// which Rex answers with `session_not_found`.
+pub(crate) fn session_is_gone(error: &anyhow::Error) -> bool {
+    refused_with(error, &["session_not_found"])
 }
 
 /// Checks that the welcome speaks the control protocol at the revision rawr

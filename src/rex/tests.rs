@@ -128,7 +128,7 @@ fn sessions_and_blocks_are_listed() {
 }
 
 #[test]
-fn program_status_reads_the_records_and_a_closed_block_has_none() {
+fn program_status_reads_the_records_and_a_closed_block_or_session_has_none() {
     let (server, mut client) = open("program-status", &[HANDSHAKE, PROGRAM_STATUS]);
     let work = session(WORK, "work");
 
@@ -155,6 +155,14 @@ fn program_status_reads_the_records_and_a_closed_block_has_none() {
 
     let closed = terminal("block:0190f3a2-7c41-7e10-8b2d-5d9e6a4c1f0f", "");
     assert_eq!(client.program_status(&work, &closed).unwrap(), None);
+
+    let gone = session("session:0190a000-0000-7000-8000-0000000000ff", "gone");
+    assert_eq!(
+        client
+            .program_status(&gone, &terminal(SHELL, "shell"))
+            .unwrap(),
+        None
+    );
     drop(client);
     server.finish();
 }

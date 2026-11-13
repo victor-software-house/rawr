@@ -8,7 +8,7 @@ use ctl_core::prelude::*;
 use serde::Serialize;
 
 use crate::index::{BlockId, Entry, PaneIndex};
-use crate::rex::{Block, Client, Session, State, StatusRecord};
+use crate::rex::{Block, Client, Session, State, StatusRecord, session_is_gone};
 use crate::session;
 
 /// The program name Claude Code reports its status under.
@@ -148,7 +148,13 @@ pub(crate) fn table(rows: &[Row]) -> Table {
 pub(crate) fn rows(client: &mut Client, dir: &Path) -> Result<Vec<Row>> {
     let mut rows = Vec::new();
     for session in client.sessions()? {
-        for block in client.blocks(&session)? {
+        // A session that closed since the listing has no rows.
+        let blocks = match client.blocks(&session) {
+            Ok(blocks) => blocks,
+            Err(error) if session_is_gone(&error) => continue,
+            Err(error) => return Err(error),
+        };
+        for block in blocks {
             if !block.is_terminal() {
                 continue;
             }
@@ -156,7 +162,7 @@ pub(crate) fn rows(client: &mut Client, dir: &Path) -> Result<Vec<Row>> {
             let Some(newest) = pane.entries().first() else {
                 continue;
             };
-            // A block that closed since the listing has no row.
+            // A block or session that closed since the listing has no row.
             let Some(records) = client.program_status(&session, &block)? else {
                 continue;
             };
