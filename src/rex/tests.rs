@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 
 use super::events::Event;
-use super::fake::FakeServer;
+use super::fake::{FakeServer, after_hang_up};
 use super::{Block, Client, Endpoint, Session, State, StatusRecord};
 
 const HANDSHAKE: &str = include_str!("../../testdata/rex/handshake.jsonl");
@@ -16,6 +16,8 @@ const PROGRAM_STATUS: &str = include_str!("../../testdata/rex/program-status.jso
 const REFUSED: &str = include_str!("../../testdata/rex/refused.jsonl");
 const EVENTS: &str = include_str!("../../testdata/rex/events.jsonl");
 const EVENTS_MALFORMED: &str = include_str!("../../testdata/rex/events-malformed.jsonl");
+const HANGUP_SENDS: &str = include_str!("../../testdata/rex/hangup-sends.jsonl");
+const HANGUP_EXPECT: &str = include_str!("../../testdata/rex/hangup-expect.jsonl");
 const REVISION_WELCOME: &str = include_str!("../../testdata/rex/revision-welcome.jsonl");
 const REVISION_REFUSED: &str = include_str!("../../testdata/rex/revision-refused.jsonl");
 
@@ -230,4 +232,18 @@ fn the_events_end_after_the_first_error() {
     assert!(events.next().is_none());
     drop(events);
     server.finish();
+}
+
+#[test]
+fn a_client_that_hangs_up_with_sends_left_ends_the_exchange_cleanly() {
+    after_hang_up(&[HANGUP_SENDS]).unwrap();
+}
+
+#[test]
+fn a_client_that_hangs_up_with_an_expect_due_fails_the_exchange() {
+    let error = after_hang_up(&[HANGUP_EXPECT]).unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        r#"the client hung up with 1 expected message(s) unplayed: {"type":"request","id":"3","method":"session.list"}"#
+    );
 }

@@ -3,6 +3,7 @@
 //! A script is JSON lines under `testdata/rex/`, each one a [`Step`]: a message
 //! the client must send next, a message the server sends, or a close.
 
+use std::collections::VecDeque;
 use std::fs;
 use std::io::ErrorKind;
 use std::os::unix::net::UnixListener;
@@ -36,6 +37,15 @@ enum Step {
     Close { code: u16, reason: String },
 }
 
+fn script(parts: &[&str]) -> Vec<Step> {
+    parts
+        .iter()
+        .flat_map(|part| part.lines())
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect()
+}
+
 /// A server on a Unix socket in a folder of its own, running a script on a
 /// thread.
 #[derive(Debug)]
@@ -48,12 +58,7 @@ pub(crate) struct FakeServer {
 impl FakeServer {
     /// Starts a server that plays the lines of `parts`, in order.
     pub(crate) fn start(name: &str, parts: &[&str]) -> Self {
-        let steps: Vec<Step> = parts
-            .iter()
-            .flat_map(|part| part.lines())
-            .filter(|line| !line.trim().is_empty())
-            .map(|line| serde_json::from_str(line).unwrap())
-            .collect();
+        let steps = script(parts);
         let dir = std::env::temp_dir().join(format!("rawr-rex-{name}-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         let socket = dir.join("s.sock");
@@ -101,17 +106,50 @@ fn accept_control(request: &Request, mut response: Response) -> Result<Response,
     Ok(response)
 }
 
-/// Whether an I/O error says the peer is gone.
-fn hung_up(kind: ErrorKind) -> bool {
-    matches!(kind, ErrorKind::BrokenPipe | ErrorKind::ConnectionReset)
+/// Whether a failed write says the peer is gone.
+fn hung_up(error: &tungstenite::Error) -> bool {
+    matches!(
+        error,
+        tungstenite::Error::ConnectionClosed | tungstenite::Error::AlreadyClosed
+    ) || matches!(
+        error,
+        tungstenite::Error::Io(io) if matches!(io.kind(), ErrorKind::BrokenPipe | ErrorKind::ConnectionReset)
+    )
+}
+
+/// Ends the exchange after the client hung up. That is fine while only sends
+/// and closes are left, since the client has stopped reading; a message the
+/// script still expects from the client was never sent, and fails the test.
+fn hung_up_with(left: impl IntoIterator<Item = Step>) -> Result<()> {
+    let due: Vec<String> = left
+        .into_iter()
+        .filter_map(|step| match step {
+            Step::Expect(message) => Some(message.to_string()),
+            Step::Send(_) | Step::Close { .. } => None,
+        })
+        .collect();
+    ensure!(
+        due.is_empty(),
+        "the client hung up with {} expected message(s) unplayed: {}",
+        due.len(),
+        due.join(", ")
+    );
+    Ok(())
+}
+
+/// The outcome of a client that hangs up before the end of `parts`, which
+/// start with the step it hung up on.
+pub(super) fn after_hang_up(parts: &[&str]) -> Result<()> {
+    hung_up_with(script(parts))
 }
 
 fn serve(listener: &UnixListener, steps: Vec<Step>) -> Result<()> {
+    let mut steps = VecDeque::from(steps);
     let (stream, _) = listener.accept()?;
     stream.set_read_timeout(Some(PATIENCE))?;
     let mut socket = tungstenite::accept_hdr(stream, accept_control)
         .map_err(|error| anyhow!("the fake server's handshake failed: {error}"))?;
-    for step in steps {
+    while let Some(step) = steps.pop_front() {
         match step {
             Step::Expect(expected) => {
                 let message = socket.read()?;
@@ -126,12 +164,7 @@ fn serve(listener: &UnixListener, steps: Vec<Step>) -> Result<()> {
             }
             Step::Send(message) => match socket.send(Message::text(message.to_string())) {
                 Ok(()) => {}
-                // The client has what it came for and hung up: the exchange is
-                // over.
-                Err(tungstenite::Error::ConnectionClosed | tungstenite::Error::AlreadyClosed) => {
-                    return Ok(());
-                }
-                Err(tungstenite::Error::Io(error)) if hung_up(error.kind()) => return Ok(()),
+                Err(error) if hung_up(&error) => return hung_up_with(steps),
                 Err(error) => return Err(error.into()),
             },
             Step::Close { code, reason } => socket.close(Some(CloseFrame {
