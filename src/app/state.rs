@@ -173,7 +173,7 @@ pub(crate) const FULL: u16 = 28;
 
 /// How soon after a drawer starts to shut the pointer may come back into
 /// it and have it open again.
-const GRACE: Duration = Duration::from_millis(400);
+const GRACE: Duration = Duration::from_millis(200);
 
 /// How fast a column's edge moves on screen, in columns a second, so a
 /// long move and a short one go at the same speed.
