@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 
 /// How long a session may go without a transcript file before the index drops
 /// it, so one that has not written its first message yet stays.
-const NO_TRANSCRIPT: Duration = Duration::from_secs(24 * 60 * 60);
+const NO_TRANSCRIPT: Duration = Duration::from_hours(24);
 
 /// How far before its listing `prune` starts keeping new files. Linux stamps
 /// a file's mtime from a coarse clock that can lag the clock
@@ -385,7 +385,7 @@ mod tests {
         fs::remove_file(&path).unwrap();
         pane.prune_missing(NOW);
         fs::remove_dir_all(&dir).unwrap();
-        assert!(pane.entries().is_empty());
+        assert_eq!(pane.entries(), []);
     }
 
     #[test]
@@ -410,12 +410,12 @@ mod tests {
         assert_eq!(ids(&pane), ["s1"], "24 hours exactly is not more than 24");
 
         pane.prune_missing(NOW + 1);
-        assert!(pane.entries().is_empty());
+        assert_eq!(pane.entries(), []);
 
         pane.add(recorded("s2", &path, NOW - 25 * HOUR), 5);
         pane.prune_missing(NOW);
         fs::remove_dir_all(&dir).unwrap();
-        assert!(pane.entries().is_empty());
+        assert_eq!(pane.entries(), []);
     }
 
     #[test]
@@ -426,7 +426,7 @@ mod tests {
         pane.add(recorded("s1", &path, 0), 5);
         pane.prune_missing(NOW);
         fs::remove_dir_all(&dir).unwrap();
-        assert!(pane.entries().is_empty());
+        assert_eq!(pane.entries(), []);
     }
 
     #[test]
