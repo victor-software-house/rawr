@@ -818,6 +818,22 @@ impl App {
                 self.focus_on(order[(at + by) % order.len()]);
                 Action::None
             }
+            // In the session, the arrows walk its tabs; past the first one,
+            // they go back to the panes.
+            KeyCode::Right | KeyCode::Char('l') if self.focus == Focus::Session => {
+                if self.tab != Tab::Files {
+                    self.tab = self.tab.shift(1);
+                    *self.scroll_mut(Focus::Session) = Scroll::default();
+                }
+                Action::None
+            }
+            KeyCode::Left | KeyCode::Char('h')
+                if self.focus == Focus::Session && self.tab != Tab::Overview =>
+            {
+                self.tab = self.tab.shift(-1);
+                *self.scroll_mut(Focus::Session) = Scroll::default();
+                Action::None
+            }
             KeyCode::Right | KeyCode::Char('l') => {
                 self.focus_on(Focus::Session);
                 Action::None

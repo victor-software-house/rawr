@@ -1217,7 +1217,18 @@ fn tab_lines(app: &App, facts: &Facts, width: usize) -> (Vec<Line<'static>>, Opt
             if facts.agents > 0 {
                 first.push(format!("{} sub-agents", facts.agents));
             }
-            lines.push(Line::raw(truncate(&first.join(" · "), width)));
+            // The facts wrap between parts rather than lose the last ones.
+            let mut line = String::new();
+            for part in first {
+                if !line.is_empty() && line.chars().count() + 3 + part.chars().count() > width {
+                    lines.push(Line::raw(std::mem::take(&mut line)));
+                }
+                if !line.is_empty() {
+                    line.push_str(" · ");
+                }
+                line.push_str(&truncate(&part, width));
+            }
+            lines.push(Line::raw(line));
             if let (Some(started), Some(last)) = (&facts.started, &facts.last) {
                 lines.push(Line::styled(
                     format!("started {} · active {}", when(started), when(last)),
@@ -1498,7 +1509,7 @@ fn help(frame: &mut Frame<'_>) {
     let keys = [
         ("1 2", "the panes, or the pane and its session"),
         ("tab", "panes, the pane's sessions, the session"),
-        ("← → h l", "the panes or the pane"),
+        ("← → h l", "the session's tabs; past the first, the panes"),
         ("↑ ↓ j k", "move the selection, or scroll the session"),
         ("enter", "go to the pane; open the session; resume it"),
         ("g  r", "go to the pane; resume the session here"),
