@@ -21,5 +21,5 @@ At each Tab, the registered script SHALL ask the installed `rawr` for candidates
 
 #### Scenario: Verbs
 
-- **WHEN** zsh has loaded `rawr completion zsh` and the user types `rawr ` then Tab
+- **WHEN** zsh has loaded `rawr completion zsh` and the user types `rawr`, a space, then Tab
 - **THEN** zsh offers `record`, `pick`, `find`, `setup` and `completion`
