@@ -94,6 +94,7 @@ The closest first-party models are Claude Code's own supervisor, which defers it
 7. **A drain is a request in a file, and nothing types into a terminal.**
    - `rawr drain [--reason TEXT]` makes the daemon write one request to `$XDG_STATE_HOME/rawr/drain.yaml`: an ID, the reason, and the time it opened.
    - Each session's mod reads that file every 2 seconds with `$.fs.read`, and acts once per request ID.
+   - Once it has delivered a request, the mod acknowledges it by running `rawr drain ack <id>`, which records the acknowledgement under the session's block.
    - An idle session gets the hand-off request through `$.prompt.submit`, which Claude Code marks as sent by the rawr mod.
    - A busy session gets it through `$.session.append` before its next step.
    - The request text covers finishing the current step, committing or noting what is unfinished, writing a hand-off, starting no new work, and ending the turn.
@@ -103,8 +104,10 @@ The closest first-party models are Claude Code's own supervisor, which defers it
    It lost: delivery depends on each session's inbound policy, the message arrives framed as another session's, and the message format is not documented ([cross-session messaging][cc-messaging]).
 8. **A restart waits for idle, within a bound.**
    - `rawr restart` opens a drain.
-   - The daemon then holds the restart until every Claude block in Rex is Idle with no child record, re-checking on each status event.
-   - Past `restart.wait` (default 30 minutes, Claude Code's own cap), the restart fails and names the panes still busy.
+   - The daemon then holds the restart until every live Claude block has acknowledged the drain's ID and has since settled, re-checking on each status event.
+   - A block has settled when it reads Idle or Failed with no child record after its acknowledgement.
+   - A block that reads Needs input is named at once, so the user can answer it, and the wait goes on.
+   - Past `restart.wait` (default 30 minutes, Claude Code's own cap), the restart fails and names the panes still busy or unacknowledged.
    - Once every block is idle, the daemon stops the Rex server, starts it again, and closes the drain.
    - `--force` skips the wait, and so does a second `rawr restart` during the wait, after the self-hosted runner's second-signal rule.
 9. **The daemon offers restored panes their sessions.**
@@ -113,7 +116,8 @@ The closest first-party models are Claude Code's own supervisor, which defers it
    The shell snippet becomes optional, for those who want the picker without the daemon.
 10. **The index cleans itself.**
     - An entry goes when its transcript is gone; Claude Code deletes transcripts with no message after `cleanupPeriodDays`, 30 days by default ([settings][cc-settings]).
-    - A pane's file goes when Rex removes the block, on the daemon's block events, and at daemon start against a full listing.
+    - A pane's file goes when Rex removes the block, on the daemon's block events outside a restart the daemon runs.
+    - At daemon start, files go only against a full listing that a running Rex server returned; a failed or empty listing deletes nothing.
     - The per-pane bound is `history.per_pane`.
 11. **`rawr setup` installs everything after the binary, and only what it names.**
     - `rawr setup` adds this repository's marketplace and installs the plugin through Claude Code's plugin commands.
