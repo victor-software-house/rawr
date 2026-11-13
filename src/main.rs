@@ -15,7 +15,9 @@ use std::collections::HashSet;
 use std::io::IsTerminal;
 
 use anyhow::{Context, Result};
+use ctl_core::completion::CompletionCommand;
 use ctl_core::prelude::*;
+use ctl_core::shell::{self, Script};
 use serde::Serialize;
 
 use crate::index::{BlockId, HookInput, PaneIndex};
@@ -59,6 +61,8 @@ enum Command {
         #[command(subcommand)]
         target: Target,
     },
+    #[command(flatten)]
+    Completion(CompletionCommand),
 }
 
 #[derive(Debug, Subcommand)]
@@ -85,6 +89,8 @@ enum Outcome {
     Nothing,
     /// `setup` checked or changed a settings file.
     Setup { change: Change, path: String },
+    /// `completion` printed a shell's registration script.
+    Completion(Script),
 }
 
 impl Present for Outcome {
@@ -96,26 +102,38 @@ impl Present for Outcome {
                 Change::WouldAdd => format!("Would add the `{}` hook to {path}", setup::RECORD),
                 Change::Unchanged => format!("{path} already runs `{}`", setup::RECORD),
             }),
+            Self::Completion(script) => script.present(),
         }
     }
 
     fn exit_code(&self) -> u8 {
         match self {
-            Self::Recorded | Self::Setup { .. } => 0,
+            Self::Recorded | Self::Setup { .. } | Self::Completion(_) => 0,
             Self::Nothing => 1,
         }
     }
 }
 
 fn main() -> ExitCode {
-    App::<Cli>::new("rawr").run(|cli| match cli.command {
-        Command::Record => record().map(|()| Outcome::Recorded),
-        Command::Pick => pick(),
-        Command::Find { words } => find(&words),
-        Command::Setup {
-            target: Target::Claude { dry_run },
-        } => setup_claude(if dry_run { Mode::DryRun } else { Mode::Write }),
-    })
+    App::<Cli>::new("rawr")
+        .completion()
+        // The script is the whole result, so it prints plain whatever the
+        // terminal, as `source <(rawr completion zsh)` needs.
+        .view(|cli| match cli.command {
+            Command::Completion(_) => shell::view(OutputFormat::Pretty),
+            Command::Record | Command::Pick | Command::Find { .. } | Command::Setup { .. } => {
+                View::new(OutputFormat::Pretty, ColorMode::Auto)
+            }
+        })
+        .run(|cli| match cli.command {
+            Command::Record => record().map(|()| Outcome::Recorded),
+            Command::Pick => pick(),
+            Command::Find { words } => find(&words),
+            Command::Setup {
+                target: Target::Claude { dry_run },
+            } => setup_claude(if dry_run { Mode::DryRun } else { Mode::Write }),
+            Command::Completion(command) => Ok(Outcome::Completion(command.script("rawr")?)),
+        })
 }
 
 /// The pane this process runs in, from Rex's `REX_BLOCK`.
@@ -220,5 +238,19 @@ mod tests {
         assert_eq!(shown(&Outcome::Nothing).0, "");
         assert_eq!(Outcome::Nothing.exit_code(), 1);
         assert_eq!(shown(&Outcome::Recorded).0, "");
+    }
+
+    #[test]
+    fn completion_prints_a_registration_script_for_rawr() {
+        use clap::Parser;
+        let cli =
+            Cli::try_parse_from(["rawr", "completion", "zsh"]).expect("completion zsh parses");
+        let super::Command::Completion(command) = cli.command else {
+            panic!("completion zsh is the completion verb");
+        };
+        let outcome = Outcome::Completion(command.script("rawr").expect("the script renders"));
+        let (text, _) = shown(&outcome);
+        assert!(text.contains("rawr"), "{text}");
+        assert_eq!(outcome.exit_code(), 0);
     }
 }
