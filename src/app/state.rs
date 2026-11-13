@@ -27,11 +27,21 @@ pub(crate) enum Focus {
 }
 
 impl Focus {
-    /// The columns, left to right.
-    pub(crate) const COLUMNS: [Self; 3] = [Self::Panes, Self::Sessions, Self::Session];
+    /// The columns on screen, left to right: the panes, and the selected
+    /// pane with its sessions and the one shown.
+    pub(crate) const COLUMNS: [Self; 2] = [Self::Panes, Self::Session];
 
-    /// The column's place, from 0.
+    /// The column on screen that holds this focus, from 0: the pane's
+    /// sessions and the session shown share one.
     pub(crate) const fn column(self) -> usize {
+        match self {
+            Self::Panes | Self::Search => 0,
+            Self::Sessions | Self::Session => 1,
+        }
+    }
+
+    /// Where this focus keeps its filter and its place in the key order.
+    pub(crate) const fn index(self) -> usize {
         match self {
             Self::Panes | Self::Search => 0,
             Self::Sessions => 1,
@@ -154,7 +164,7 @@ pub(crate) struct Drawer {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Move {
     pub(crate) was: Focus,
-    from: [u16; 3],
+    from: [u16; 2],
     at: Instant,
 }
 
@@ -201,22 +211,19 @@ fn eased(elapsed: Duration, span: Duration) -> (f32, f32) {
     (t, 1.0 - (1.0 - t).powi(3))
 }
 
-/// The focused column takes the width it wants, the next one the rest
-/// when that is enough to draw in full, and the others fold to rails.
-pub(crate) fn widths(focus: Focus, total: u16, wants: [u16; 3]) -> [u16; 3] {
-    let at = focus.column();
-    let mut out = [RAIL; 3];
-    let wide = total.saturating_sub(2 * RAIL);
-    out[at] = wide;
-    if at < 2 {
-        let want = wants[at].min(wide);
-        let spare = wide.saturating_sub(want);
-        if spare + RAIL >= FULL {
-            out[at] = want;
-            out[at + 1] = RAIL + spare;
+/// The panes take the width they want when they lead and the pane the
+/// rest, when that is enough to draw in full; otherwise the panes fold to
+/// a rail.
+pub(crate) fn widths(lead: Focus, total: u16, wants: [u16; 3]) -> [u16; 2] {
+    if lead.column() == 0 {
+        let want = wants[0].min(total.saturating_sub(RAIL));
+        let rest = total.saturating_sub(want);
+        if rest >= FULL {
+            return [want, rest];
         }
+        return [total.saturating_sub(RAIL), RAIL];
     }
-    out
+    [RAIL, total.saturating_sub(RAIL)]
 }
 
 /// The narrowest a column may be dragged.
@@ -242,6 +249,10 @@ pub(crate) struct App {
     pub(crate) focus: Focus,
     /// The column the search returns to.
     back: Focus,
+    /// The column the columns are laid out around. Keys move it with focus;
+    /// a click in a column already drawn in full moves focus alone, so the
+    /// columns stay where they are.
+    lead: Focus,
     pub(crate) arrangement: Arrangement,
     pub(crate) tab: Tab,
     /// The column focus last left, and when, for the move on screen.
@@ -322,8 +333,9 @@ impl App {
             session: 0,
             // The panes fold to a rail that draws out under the pointer, so
             // the sessions have the width.
-            focus: Focus::Sessions,
-            back: Focus::Sessions,
+            focus: Focus::Session,
+            back: Focus::Session,
+            lead: Focus::Session,
             arrangement: Arrangement::Rails,
             tab: Tab::Overview,
             moved: None,
@@ -375,13 +387,13 @@ impl App {
 
     /// The filter of `column`.
     pub(crate) fn filter(&self, column: Focus) -> &str {
-        &self.filters[column.column()]
+        &self.filters[column.index()]
     }
 
     /// The width the columns share: the screen less its margins and the
-    /// two edges between columns.
+    /// edge between the columns.
     pub(crate) const fn total(&self) -> u16 {
-        self.cols.saturating_sub(4)
+        self.cols.saturating_sub(3)
     }
 
     /// How long the last move of focus takes: the farthest any edge goes.
@@ -393,7 +405,7 @@ impl App {
         if self.arrangement == Arrangement::Single {
             return span(10);
         }
-        let to = widths(self.at(), self.total(), self.wants);
+        let to = widths(self.lead, self.total(), self.wants);
         let far = moved
             .from
             .iter()
@@ -411,9 +423,9 @@ impl App {
     }
 
     /// Each column's width on screen now, as the last move has brought it.
-    pub(crate) fn layout(&self) -> [u16; 3] {
+    pub(crate) fn layout(&self) -> [u16; 2] {
         let total = self.total();
-        let to = widths(self.at(), total, self.wants);
+        let to = widths(self.lead, total, self.wants);
         let Some(moved) = self.moved else {
             return to;
         };
@@ -425,9 +437,8 @@ impl App {
             let at = at.round().max(0.0) as u16;
             at
         };
-        let first = mix(moved.from[0], to[0]);
-        let second = mix(moved.from[1], to[1]).min(total.saturating_sub(first));
-        [first, second, total.saturating_sub(first + second)]
+        let first = mix(moved.from[0], to[0]).min(total);
+        [first, total - first]
     }
 
     /// Marks a move from the columns as they stand, so a move that cuts
@@ -442,15 +453,12 @@ impl App {
             let wide = (f32::from(RAIL) + (f32::from(full) - f32::from(RAIL)) * out)
                 .round()
                 .max(0.0) as u16;
-            let at = column.column();
-            let gain = wide.saturating_sub(from[at]);
-            if let Some(widest) = (0..3)
-                .filter(|other| *other != at)
-                .max_by_key(|other| from[*other])
-            {
-                from[widest] = from[widest].saturating_sub(gain);
-                from[at] += gain;
-            }
+            let total = self.total();
+            from = if column.column() == 0 {
+                [wide.min(total), total.saturating_sub(wide)]
+            } else {
+                [total.saturating_sub(wide), wide.min(total)]
+            };
         }
         self.moved = Some(Move {
             was,
@@ -461,7 +469,7 @@ impl App {
 
     /// How wide `column` is when drawn out all the way.
     pub(crate) fn drawer_full(&self, column: Focus) -> u16 {
-        self.wants[column.column()].min(self.cols.saturating_sub(2 + RAIL))
+        self.wants[column.index()].min(self.cols.saturating_sub(2 + RAIL))
     }
 
     /// How long the drawer of `column` takes to open or shut.
@@ -478,12 +486,38 @@ impl App {
     /// Moves focus to `column`, marking the move for the screen. The
     /// columns reflow, so a drawer has nothing left to cover.
     fn focus_on(&mut self, column: Focus) {
-        if column != self.focus {
-            self.start_move(self.focus);
-            self.focus = column;
-            self.filtering = false;
+        if column != self.lead {
+            self.start_move(self.lead);
+            self.lead = column;
             self.drawer = None;
         }
+        if column != self.focus {
+            self.focus = column;
+            self.filtering = false;
+        }
+    }
+
+    /// Focuses `column` after a click in it. One drawn in full keeps the
+    /// columns where they are; a folded one is laid out around.
+    fn focus_here(&mut self, column: Focus) {
+        let full = self.arrangement == Arrangement::Rails
+            && self
+                .layout()
+                .get(column.column())
+                .is_some_and(|wide| *wide >= FULL);
+        if full {
+            if column != self.focus {
+                self.focus = column;
+                self.filtering = false;
+            }
+        } else {
+            self.focus_on(column);
+        }
+    }
+
+    /// The column the columns are laid out around.
+    pub(crate) const fn lead(&self) -> Focus {
+        self.lead
     }
 
     /// How far the drawer is out, from 0 to 1, eased; none once it has shut.
@@ -620,6 +654,13 @@ impl App {
             .collect()
     }
 
+    /// Whether the pane view lists the pane's sessions: when it has more
+    /// than one, or a filter is set on them.
+    pub(crate) fn lists_sessions(&self) -> bool {
+        !self.filter(Focus::Sessions).is_empty()
+            || self.selected().is_some_and(|pane| pane.sessions.len() > 1)
+    }
+
     /// The first session the selected pane lists.
     fn first_session(&self) -> usize {
         self.visible_sessions().first().copied().unwrap_or(0)
@@ -703,13 +744,13 @@ impl App {
         match key.code {
             KeyCode::Char('q') => Action::Quit,
             KeyCode::Esc => {
-                let column = self.focus.column();
-                if !self.filters[column].is_empty() {
-                    self.filters[column].clear();
-                } else if column == 0 {
+                let index = self.focus.index();
+                if !self.filters[index].is_empty() {
+                    self.filters[index].clear();
+                } else if self.focus == Focus::Panes {
                     return Action::Quit;
                 } else {
-                    self.focus_on(Focus::COLUMNS[column - 1]);
+                    self.focus_on(Focus::Panes);
                 }
                 Action::None
             }
@@ -725,28 +766,35 @@ impl App {
                 self.focus_on(Focus::Panes);
                 Action::None
             }
-            KeyCode::Char('2') => {
-                self.focus_on(Focus::Sessions);
-                Action::None
-            }
-            KeyCode::Char('3') => {
+            KeyCode::Char('2' | '3') => {
                 self.focus_on(Focus::Session);
                 Action::None
             }
-            KeyCode::Tab => {
-                self.focus_on(Focus::COLUMNS[(self.focus.column() + 1) % 3]);
-                Action::None
-            }
-            KeyCode::BackTab => {
-                self.focus_on(Focus::COLUMNS[(self.focus.column() + 2) % 3]);
+            KeyCode::Tab | KeyCode::BackTab => {
+                // Through the panes, the pane's sessions when it lists them,
+                // and the session.
+                let order: Vec<Focus> = [Focus::Panes, Focus::Sessions, Focus::Session]
+                    .into_iter()
+                    .filter(|focus| *focus != Focus::Sessions || self.lists_sessions())
+                    .collect();
+                let at = order
+                    .iter()
+                    .position(|focus| *focus == self.focus)
+                    .unwrap_or(0);
+                let by = if key.code == KeyCode::Tab {
+                    1
+                } else {
+                    order.len() - 1
+                };
+                self.focus_on(order[(at + by) % order.len()]);
                 Action::None
             }
             KeyCode::Right | KeyCode::Char('l') => {
-                self.focus_on(Focus::COLUMNS[(self.focus.column() + 1).min(2)]);
+                self.focus_on(Focus::Session);
                 Action::None
             }
             KeyCode::Left | KeyCode::Char('h') | KeyCode::Backspace => {
-                self.focus_on(Focus::COLUMNS[self.focus.column().saturating_sub(1)]);
+                self.focus_on(Focus::Panes);
                 Action::None
             }
             KeyCode::Char(']') if self.focus == Focus::Session => {
@@ -782,7 +830,7 @@ impl App {
     }
 
     fn on_filter_key(&mut self, key: KeyEvent) -> Action {
-        let column = self.focus.column();
+        let column = self.focus.index();
         match key.code {
             KeyCode::Esc => {
                 self.filters[column].clear();
@@ -966,7 +1014,7 @@ impl App {
                 }
                 // A pick in the drawer leaves focus where it was.
                 if !self.out(Focus::Panes) {
-                    self.focus_on(Focus::Panes);
+                    self.focus_here(Focus::Panes);
                 }
                 self.pane = index;
                 self.session = self.first_session();
@@ -976,11 +1024,11 @@ impl App {
             Target::Session(index) => {
                 let here = self.focus == Focus::Sessions || self.out(Focus::Sessions);
                 if here && self.session == index {
-                    self.focus_on(Focus::Session);
+                    self.focus_here(Focus::Session);
                     return Action::None;
                 }
                 if !self.out(Focus::Sessions) {
-                    self.focus_on(Focus::Sessions);
+                    self.focus_here(Focus::Sessions);
                 }
                 self.session = index;
                 *self.scroll_mut(Focus::Session) = Scroll::default();
@@ -1005,7 +1053,7 @@ impl App {
                 Action::None
             }
             Target::Tab(tab) => {
-                self.focus_on(Focus::Session);
+                self.focus_here(Focus::Session);
                 self.tab = tab;
                 *self.scroll_mut(Focus::Session) = Scroll::default();
                 Action::None
@@ -1035,7 +1083,7 @@ impl App {
     pub(crate) fn on_paste(&mut self, text: &str) -> Action {
         let text = text.replace(['\n', '\r', '\t'], " ");
         if self.filtering {
-            self.filters[self.focus.column()].push_str(&text);
+            self.filters[self.focus.index()].push_str(&text);
             self.keep_visible();
             return Action::None;
         }
@@ -1116,7 +1164,11 @@ impl App {
     /// Moves the focused list's selection by `by` rows the filters let
     /// through; in the session column, scrolls it.
     fn step(&mut self, by: isize) {
-        let focus = self.focus;
+        // A pane that lists no sessions leaves the keys to the session.
+        let focus = match self.focus {
+            Focus::Sessions if !self.lists_sessions() => Focus::Session,
+            other => other,
+        };
         match focus {
             Focus::Panes => {
                 let rows = self.visible_panes();
@@ -1230,6 +1282,10 @@ impl App {
     pub(crate) fn restore(&mut self, carry: Carry) -> bool {
         self.want = carry.select;
         self.focus = carry.focus;
+        self.lead = match carry.focus {
+            Focus::Search => self.back,
+            other => other,
+        };
         self.arrangement = carry.arrangement;
         self.tab = carry.tab;
         self.session = carry.session;
