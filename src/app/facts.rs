@@ -111,6 +111,8 @@ struct Record {
     is_meta: bool,
     #[serde(rename = "isSidechain", default)]
     sidechain: bool,
+    #[serde(rename = "isCompactSummary", default)]
+    summary: bool,
     #[serde(default)]
     message: Option<Message>,
     #[serde(rename = "prRepository", default)]
@@ -179,7 +181,7 @@ fn read(path: &Path) -> Option<Facts> {
                 facts.replies += 1;
                 facts.agents += uses(&message.content, "Agent");
             }
-            "user" if !record.is_meta => {
+            "user" if !record.is_meta && !record.summary => {
                 if let Some(text) = record
                     .message
                     .as_ref()
