@@ -583,8 +583,9 @@ impl App {
     /// selection on the same pane when it is still there.
     pub(crate) fn set_panes(&mut self, mut panes: Vec<Pane>) {
         panes.sort_by(|a, b| {
-            rank(a.status)
-                .cmp(&rank(b.status))
+            a.closed
+                .cmp(&b.closed)
+                .then_with(|| rank(a.status).cmp(&rank(b.status)))
                 .then_with(|| newest(a).cmp(&newest(b)))
         });
         // The pane asked for, until the feed lists it; then the one selected.
@@ -1224,11 +1225,17 @@ impl App {
         }
     }
 
+    /// Shows the selected pane; a closed one has no pane to show, so its
+    /// session resumes instead.
     fn go_to(&self) -> Action {
-        self.selected().map_or(Action::None, |pane| Action::GoTo {
-            session_id: pane.session_id.clone(),
-            block_id: pane.block_id.clone(),
-        })
+        match self.selected() {
+            Some(pane) if pane.closed => self.resume(),
+            Some(pane) => Action::GoTo {
+                session_id: pane.session_id.clone(),
+                block_id: pane.block_id.clone(),
+            },
+            None => Action::None,
+        }
     }
 
     /// Moves the focused list's selection by `by` rows the filters let

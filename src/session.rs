@@ -183,6 +183,20 @@ struct TitleFile {
 /// `custom-title.json` file, else from the first 64 KiB. Failing that, the
 /// generated title comes from the last 64 KiB, else the first. Each window
 /// skips the partial line at its cut.
+/// The folder a transcript's session ran in, from the first of its first
+/// lines that names one.
+pub(crate) fn transcript_cwd(path: &Path) -> Option<String> {
+    #[derive(serde::Deserialize)]
+    struct Row {
+        cwd: Option<String>,
+    }
+    let file = File::open(path).ok()?;
+    std::io::BufRead::lines(std::io::BufReader::new(file))
+        .take(50)
+        .map_while(Result::ok)
+        .find_map(|line| serde_json::from_str::<Row>(&line).ok()?.cwd)
+}
+
 pub(crate) fn transcript_title(path: &Path) -> Option<String> {
     let mut file = File::open(path).ok()?;
     let len = file.metadata().ok()?.len();

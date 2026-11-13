@@ -39,10 +39,10 @@ pub(crate) struct Found {
 
 /// A session's transcript, as one listing of `projects/*/` finds it.
 #[derive(Debug)]
-struct Transcript {
-    path: PathBuf,
+pub(crate) struct Transcript {
+    pub(crate) path: PathBuf,
     /// When it was last written.
-    modified: Option<SystemTime>,
+    pub(crate) modified: Option<SystemTime>,
 }
 
 /// One line of `history.jsonl`.
@@ -138,7 +138,7 @@ pub(crate) fn load(claude: &Path, live: &HashSet<String>) -> Result<Vec<Found>> 
 }
 
 /// Every `projects/*/<session id>.jsonl`, by session ID.
-fn transcripts(projects: &Path) -> Result<HashMap<String, Transcript>> {
+pub(crate) fn transcripts(projects: &Path) -> Result<HashMap<String, Transcript>> {
     let mut found = HashMap::new();
     let folders = match fs::read_dir(projects) {
         Ok(folders) => folders,

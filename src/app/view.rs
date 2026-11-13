@@ -302,11 +302,13 @@ fn header(frame: &mut Frame<'_>, app: &App, column: Focus, area: Rect, hits: &mu
     if column == Focus::Panes {
         spans.extend(summary(app).spans);
     }
-    let filter = app.filter(if column == Focus::Panes {
-        Focus::Panes
-    } else {
-        app.at()
-    });
+    // The pane's header shows the filter of whichever of its parts has
+    // focus, and none while the panes do.
+    let filter = match (column, app.at()) {
+        (Focus::Panes, _) => app.filter(Focus::Panes),
+        (_, at @ (Focus::Sessions | Focus::Session)) => app.filter(at),
+        _ => "",
+    };
     if !filter.is_empty() {
         spans.push(Span::styled(
             format!("  / {filter}"),
@@ -622,7 +624,7 @@ fn panes_list(frame: &mut Frame<'_>, app: &App, list: Rect, hits: &mut Hits) {
         let Some(pane) = app.panes.get(*index) else {
             continue;
         };
-        let section = theme::section(pane.status);
+        let section = section_of(pane);
         if previous != Some(section) {
             if previous.is_some() {
                 lines.push(Line_::Blank);
@@ -630,7 +632,7 @@ fn panes_list(frame: &mut Frame<'_>, app: &App, list: Rect, hits: &mut Hits) {
             let count = visible
                 .iter()
                 .filter_map(|other| app.panes.get(*other))
-                .filter(|other| theme::section(other.status) == section)
+                .filter(|other| section_of(other) == section)
                 .count();
             lines.push(Line_::Header(section, count));
             previous = Some(section);
@@ -693,6 +695,16 @@ fn panes_list(frame: &mut Frame<'_>, app: &App, list: Rect, hits: &mut Hits) {
             ),
             Line_::Blank => {}
         }
+    }
+}
+
+/// The section a pane goes in: by its status, or Closed when its pane is
+/// gone.
+fn section_of(pane: &Pane) -> &'static str {
+    if pane.closed {
+        "Closed"
+    } else {
+        theme::section(pane.status)
     }
 }
 
@@ -955,7 +967,7 @@ fn pane_view(frame: &mut Frame<'_>, app: &App, area: Rect, shown: Shown<'_>, hit
     y += 1;
     let actions = row_at(inner, y);
     let mut x = actions.x;
-    if pane.is_some() {
+    if pane.is_some_and(|pane| !pane.closed) {
         let width = 16.min(actions.width);
         action(
             frame,
