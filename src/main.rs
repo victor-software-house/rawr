@@ -81,14 +81,19 @@ enum Target {
     },
 }
 
+/// What `pick` and `find` print on stderr after a dismissal.
+const DISMISSED_HINT: &str = "rawr pick reopens this pane's sessions · rawr find searches all";
+
 /// What a command reports.
 #[derive(Debug, Serialize)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
 enum Outcome {
     /// `record` stored the session, or had no pane to store it for.
     Recorded,
-    /// There was nothing to offer, or the user dismissed the picker.
+    /// There was nothing to offer.
     Nothing,
+    /// The user dismissed the picker; the hint says how to reopen it.
+    Dismissed,
     /// `setup` checked or changed a settings file.
     Setup { change: Change, path: String },
     /// `completion` printed a shell's registration script.
@@ -99,6 +104,7 @@ impl Present for Outcome {
     fn present(&self) -> Document {
         match self {
             Self::Recorded | Self::Nothing => Document::new(),
+            Self::Dismissed => Document::new().paragraph(Text::new().muted(DISMISSED_HINT)),
             Self::Setup { change, path } => Document::new().verbatim(match change {
                 Change::Added => format!("Added the `{}` hook to {path}", setup::RECORD),
                 Change::WouldAdd => format!("Would add the `{}` hook to {path}", setup::RECORD),
@@ -108,10 +114,21 @@ impl Present for Outcome {
         }
     }
 
+    /// A dismissal is an error outcome, so its hint goes to stderr and
+    /// `pick` and `find` write nothing to stdout.
+    fn outcome(&self) -> ctl_core::view::Outcome {
+        match self {
+            Self::Dismissed => ctl_core::view::Outcome::Error,
+            Self::Recorded | Self::Nothing | Self::Setup { .. } | Self::Completion(_) => {
+                ctl_core::view::Outcome::Success
+            }
+        }
+    }
+
     fn exit_code(&self) -> u8 {
         match self {
             Self::Recorded | Self::Setup { .. } | Self::Completion(_) => 0,
-            Self::Nothing => 1,
+            Self::Nothing | Self::Dismissed => 1,
         }
     }
 }
@@ -175,19 +192,20 @@ fn pane_agents(live: &HashSet<String>) -> Result<Vec<Agent>> {
     Ok(session::resumable(pane.entries(), live))
 }
 
-/// Opens the picker over `pane` and resumes the chosen session, or returns
-/// [`Outcome::Nothing`] when the user dismisses the picker.
-fn choose(pane: &[Agent], start: Start, live: HashSet<String>) -> Result<Outcome> {
+/// Opens the picker over `pane`, showing `config.picker.rows` sessions at a
+/// time, and resumes the chosen session, or returns [`Outcome::Dismissed`]
+/// when the user dismisses the picker.
+fn choose(pane: &[Agent], start: Start, live: HashSet<String>, config: &Config) -> Result<Outcome> {
     let load = move || catalog::load(&session::claude_dir()?, &live);
-    match picker::choose(pane, start, load)? {
+    match picker::choose(pane, start, config.picker.rows, load)? {
         Some(agent) => match agent.resume()? {},
-        None => Ok(Outcome::Nothing),
+        None => Ok(Outcome::Dismissed),
     }
 }
 
 /// Shows this pane's agents and resumes the chosen one, or returns
-/// [`Outcome::Nothing`] when there is nothing to offer or the user dismisses
-/// the picker.
+/// [`Outcome::Nothing`] when there is nothing to offer, and
+/// [`Outcome::Dismissed`] when the user dismisses the picker.
 fn pick() -> Result<Outcome> {
     if !std::io::stderr().is_terminal() {
         return Ok(Outcome::Nothing);
@@ -197,17 +215,23 @@ fn pick() -> Result<Outcome> {
     if agents.is_empty() {
         return Ok(Outcome::Nothing);
     }
-    choose(&agents, Start::Pane, live)
+    choose(&agents, Start::Pane, live, &Config::load()?)
 }
 
-/// Opens the picker on the search line with `words` typed.
+/// Opens the picker over every local session, with `words` typed in the
+/// search box.
 fn find(words: &[String]) -> Result<Outcome> {
     if !std::io::stderr().is_terminal() {
         return Ok(Outcome::Nothing);
     }
     let live = session::live_sessions()?;
     let agents = pane_agents(&live)?;
-    choose(&agents, Start::Search(words.join(" ")), live)
+    choose(
+        &agents,
+        Start::Search(words.join(" ")),
+        live,
+        &Config::load()?,
+    )
 }
 
 /// Adds the `rawr record` hook to Claude Code's user settings, or reports
@@ -245,6 +269,23 @@ mod tests {
         assert_eq!(shown(&Outcome::Nothing).0, "");
         assert_eq!(Outcome::Nothing.exit_code(), 1);
         assert_eq!(shown(&Outcome::Recorded).0, "");
+    }
+
+    #[test]
+    fn a_dismissal_prints_the_hint_on_stderr_and_fails() {
+        let (text, stream) = shown(&Outcome::Dismissed);
+        assert_eq!(
+            text.trim_end(),
+            "rawr pick reopens this pane's sessions · rawr find searches all"
+        );
+        assert_eq!(stream, Destination::Stderr);
+        assert_eq!(Outcome::Dismissed.exit_code(), 1);
+    }
+
+    #[test]
+    fn nothing_to_offer_prints_no_hint() {
+        let (text, _) = shown(&Outcome::Nothing);
+        assert!(!text.contains("rawr pick reopens"), "{text}");
     }
 
     #[test]
