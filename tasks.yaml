@@ -199,6 +199,28 @@ queue:
       - A session's done and open task counts in rawr equal those in Claude Code's task list.
     notes:
       - 2026-11-13, a session showed 5 of 33 tasks done with many finished ones marked open; task ids are assumed sequential.
+
+  - id: RAWR-019
+    title: List every file a session read or changed
+    scope: app
+    outcome: The files tab shows every file the session touched, not only its edit calls.
+    blocked_by:
+      - RAWR-014
+    acceptance:
+      - Edits through Edit, Write, MultiEdit and NotebookEdit list with their counts, NotebookEdit by its notebook_path.
+      - Files the session read through Read list apart from the files it changed.
+      - Files a Bash command plainly writes, such as a redirect or sd and sed -i, list as changed.
+    notes:
+      - 2026-11-13, the tab listed 3 files for a session that wrote dozens through Bash (operator, 2026-11-13).
+
+  - id: RAWR-020
+    title: Filter the files tab
+    scope: app
+    outcome: The files tab narrows to the files a reader wants.
+    blocked_by:
+      - RAWR-019
+    acceptance:
+      - The files tab filters by changed or read, by folder, and by file type.
 archive:
   - id: RAWR-002
     title: Parse and report through ctl-core
