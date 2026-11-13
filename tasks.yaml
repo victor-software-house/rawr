@@ -186,20 +186,20 @@ queue:
       - Going to a closed session resumes it.
     notes:
       - 2026-11-13, implemented on feat/tui (f8b33a1); not yet in the rawr-app change.
-
+archive:
   - id: RAWR-018
     title: Read a session's task list as Claude Code keeps it
     scope: app
     outcome: >-
       The session view's task list matches the task list Claude Code shows for that
       session.
-    blocked_by:
-      - RAWR-014
-    acceptance:
-      - A session's done and open task counts in rawr equal those in Claude Code's task list.
     notes:
       - 2026-11-13, a session showed 5 of 33 tasks done with many finished ones marked open; task ids are assumed sequential.
-archive:
+    completed: 2026-11-13T22:16:05
+    evidence:
+      - The daemon reads ~/.claude/tasks/session-<id8>, <id> or the .session-list target; the firescale session shows 44 tasks with 30 done, as its store holds.
+    disposition: completed
+
   - id: RAWR-020
     title: Filter the files tab
     scope: app
