@@ -31,6 +31,34 @@ pub(crate) struct Facts {
     pub(crate) last_prompt: Option<String>,
     /// How many sub-agents the session started.
     pub(crate) agents: usize,
+    /// The session's task list as it stands, from its task and to-do calls.
+    pub(crate) tasks: Vec<Task>,
+    /// The files it edited or wrote, the most recent last, with how often.
+    pub(crate) files: Vec<(String, usize)>,
+    /// What the user typed, oldest first, the last [`KEEP`] of it.
+    pub(crate) log: Vec<Said>,
+    /// The tools Claude called, oldest first, the last [`KEEP`] of them.
+    pub(crate) activity: Vec<Said>,
+}
+
+/// How many prompts and tool calls the facts keep.
+pub(crate) const KEEP: usize = 300;
+
+/// One task of a session's list.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, Deserialize)]
+pub(crate) struct Task {
+    pub(crate) id: String,
+    pub(crate) subject: String,
+    /// `pending`, `in_progress` or `completed`.
+    pub(crate) status: String,
+}
+
+/// A line with when it was written: a prompt, or a tool call and what it
+/// acted on.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, Deserialize)]
+pub(crate) struct Said {
+    pub(crate) at: Option<String>,
+    pub(crate) text: String,
 }
 
 /// A pull request a session opened.
@@ -94,6 +122,40 @@ struct Part<'line> {
     text: Option<Cow<'line, str>>,
     #[serde(borrow, default)]
     name: Option<Cow<'line, str>>,
+    #[serde(borrow, default)]
+    input: Option<&'line RawValue>,
+}
+
+/// The fields of a tool call's input that the facts read; every tool
+/// fills a few of them.
+#[derive(Debug, Default, Deserialize)]
+struct Input<'line> {
+    #[serde(borrow, default)]
+    subject: Option<Cow<'line, str>>,
+    #[serde(rename = "taskId", default)]
+    task_id: Option<serde_json::Value>,
+    #[serde(borrow, default)]
+    status: Option<Cow<'line, str>>,
+    #[serde(borrow, default)]
+    file_path: Option<Cow<'line, str>>,
+    #[serde(borrow, default)]
+    command: Option<Cow<'line, str>>,
+    #[serde(borrow, default)]
+    description: Option<Cow<'line, str>>,
+    #[serde(borrow, default)]
+    pattern: Option<Cow<'line, str>>,
+    #[serde(borrow, default)]
+    skill: Option<Cow<'line, str>>,
+    #[serde(borrow, default)]
+    todos: Option<Vec<Todo<'line>>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Todo<'line> {
+    #[serde(borrow, default)]
+    content: Cow<'line, str>,
+    #[serde(borrow, default)]
+    status: Cow<'line, str>,
 }
 
 /// Goes on reading the transcript at `path` from byte `offset`, where an
@@ -126,11 +188,11 @@ fn add(facts: &mut Facts, record: Record<'_>) {
     if record.sidechain {
         return;
     }
-    if let Some(at) = record.timestamp {
+    if let Some(at) = record.timestamp.as_deref() {
         if facts.started.is_none() {
-            facts.started = Some(at.clone().into_owned());
+            facts.started = Some(at.to_owned());
         }
-        facts.last = Some(at.into_owned());
+        facts.last = Some(at.to_owned());
     }
     if let Some(branch) = record.git_branch.filter(|branch| !branch.is_empty()) {
         facts.branch = Some(branch.into_owned());
@@ -155,7 +217,15 @@ fn add(facts: &mut Facts, record: Record<'_>) {
             }
             facts.output_tokens += message.usage.map_or(0, |usage| usage.output_tokens);
             facts.replies += 1;
-            facts.agents += message.content.map_or(0, |content| uses(content, "Agent"));
+            let at = record.timestamp.as_deref();
+            if let Some(parts) = message
+                .content
+                .and_then(|content| serde_json::from_str::<Vec<Part<'_>>>(content.get()).ok())
+            {
+                for part in parts.iter().filter(|part| part.kind == "tool_use") {
+                    call(facts, at, part);
+                }
+            }
         }
         "user" if !record.is_meta && !record.summary => {
             if let Some(text) = record
@@ -164,6 +234,13 @@ fn add(facts: &mut Facts, record: Record<'_>) {
                 .and_then(typed)
             {
                 facts.prompts += 1;
+                keep(
+                    &mut facts.log,
+                    Said {
+                        at: record.timestamp.as_deref().map(str::to_owned),
+                        text: text.clone(),
+                    },
+                );
                 facts.last_prompt = Some(text);
             }
         }
@@ -196,12 +273,103 @@ fn typed(content: &RawValue) -> Option<String> {
     ))
 }
 
-/// How many `tool_use` parts of `content` call `tool`.
-fn uses(content: &RawValue, tool: &str) -> usize {
-    serde_json::from_str::<Vec<Part<'_>>>(content.get()).map_or(0, |parts| {
-        parts
-            .iter()
-            .filter(|part| part.kind == "tool_use" && part.name.as_deref() == Some(tool))
-            .count()
-    })
+/// Adds `item` to the end of `list`, keeping the last [`KEEP`].
+fn keep(list: &mut Vec<Said>, item: Said) {
+    list.push(item);
+    if list.len() > KEEP {
+        list.drain(..list.len() - KEEP);
+    }
+}
+
+/// What one tool call adds: its line in the activity, a task change, a sub-
+/// agent, or a file it changed.
+fn call(facts: &mut Facts, at: Option<&str>, part: &Part<'_>) {
+    let name = part.name.as_deref().unwrap_or("tool");
+    let input = part
+        .input
+        .and_then(|input| serde_json::from_str::<Input<'_>>(input.get()).ok())
+        .unwrap_or_default();
+    match name {
+        "Agent" | "Task" => facts.agents += 1,
+        "TaskCreate" => {
+            let id = (facts
+                .tasks
+                .iter()
+                .filter_map(|task| task.id.parse::<u64>().ok())
+                .max())
+            .map_or(1, |most| most + 1)
+            .to_string();
+            facts.tasks.push(Task {
+                id,
+                subject: input.subject.as_deref().unwrap_or_default().to_owned(),
+                status: "pending".to_owned(),
+            });
+        }
+        "TaskUpdate" => {
+            let id = match &input.task_id {
+                Some(serde_json::Value::String(id)) => id.clone(),
+                Some(serde_json::Value::Number(id)) => id.to_string(),
+                _ => String::new(),
+            };
+            if let Some(status) = input.status.as_deref() {
+                if status == "deleted" {
+                    facts.tasks.retain(|task| task.id != id);
+                } else if let Some(task) = facts.tasks.iter_mut().find(|task| task.id == id) {
+                    status.clone_into(&mut task.status);
+                }
+            }
+            if let (Some(subject), Some(task)) = (
+                input.subject.as_deref(),
+                facts.tasks.iter_mut().find(|task| task.id == id),
+            ) {
+                subject.clone_into(&mut task.subject);
+            }
+        }
+        // The older to-do tool sends the whole list each time.
+        "TodoWrite" => {
+            if let Some(todos) = &input.todos {
+                facts.tasks = todos
+                    .iter()
+                    .enumerate()
+                    .map(|(index, todo)| Task {
+                        id: (index + 1).to_string(),
+                        subject: todo.content.as_ref().to_owned(),
+                        status: todo.status.as_ref().to_owned(),
+                    })
+                    .collect();
+            }
+        }
+        "Edit" | "Write" | "MultiEdit" | "NotebookEdit" => {
+            if let Some(path) = input.file_path.as_deref() {
+                match facts.files.iter().position(|(file, _)| file == path) {
+                    Some(index) => {
+                        let (file, count) = facts.files.remove(index);
+                        facts.files.push((file, count + 1));
+                    }
+                    None => facts.files.push((path.to_owned(), 1)),
+                }
+                if facts.files.len() > KEEP {
+                    facts.files.remove(0);
+                }
+            }
+        }
+        _ => {}
+    }
+    let what = input
+        .description
+        .as_deref()
+        .or(input.command.as_deref())
+        .or(input.file_path.as_deref())
+        .or(input.pattern.as_deref())
+        .or(input.skill.as_deref())
+        .or(input.subject.as_deref())
+        .unwrap_or_default();
+    let what = what.lines().next().unwrap_or_default();
+    keep(
+        &mut facts.activity,
+        Said {
+            at: at.map(str::to_owned),
+            text: sanitize(&format!("{name}  {what}")),
+        },
+    );
 }
