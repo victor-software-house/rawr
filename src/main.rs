@@ -6,6 +6,7 @@
 //! `pick` offers them again in that pane after a restart.
 
 mod catalog;
+mod config;
 mod index;
 mod picker;
 mod session;

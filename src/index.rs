@@ -112,7 +112,14 @@ impl PaneIndex {
 
     /// Puts a session first, dropping its older entry and anything past
     /// `per_pane` sessions.
-    pub(crate) fn add(&mut self, entry: Entry, per_pane: usize) {
+    pub(crate) fn add(&mut self, mut entry: Entry, per_pane: usize) {
+        if let Some(old) = self
+            .entries
+            .iter()
+            .find(|e| e.session_id == entry.session_id)
+        {
+            entry.transcript_seen |= old.transcript_seen && old.transcript == entry.transcript;
+        }
         self.entries.retain(|e| e.session_id != entry.session_id);
         self.entries.insert(0, entry);
         self.entries.truncate(per_pane);
@@ -318,6 +325,23 @@ mod tests {
         }
         pane.add(entry("c"), 5);
         assert_eq!(ids(&pane), ["c", "f", "e", "d", "b"]);
+    }
+
+    #[test]
+    fn re_adding_a_seen_session_keeps_it_seen() {
+        let path = PathBuf::from("/tmp/s1.jsonl");
+        let mut pane = PaneIndex::default();
+        let mut seen = recorded("s1", &path, NOW - 60);
+        seen.transcript_seen = true;
+        pane.add(seen, 5);
+
+        pane.add(recorded("s1", &path, NOW), 5);
+        assert_eq!(ids(&pane), ["s1"]);
+        assert!(pane.entries()[0].transcript_seen);
+        assert_eq!(pane.entries()[0].recorded_at, NOW);
+
+        pane.add(recorded("s1", Path::new("/tmp/moved.jsonl"), NOW), 5);
+        assert!(!pane.entries()[0].transcript_seen);
     }
 
     #[test]

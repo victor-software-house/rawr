@@ -105,9 +105,7 @@ impl Default for Picker {
 
 impl Default for Restart {
     fn default() -> Self {
-        Self {
-            wait: minutes(5),
-        }
+        Self { wait: minutes(5) }
     }
 }
 
@@ -308,13 +306,15 @@ mod tests {
 
     #[test]
     fn a_bad_duration_names_the_file_and_line() {
-        for (name, value) in [("none", "0s"), ("minus", "-5m"), ("unit", "5"), ("word", "soon")] {
-            let error = load(
-                name,
-                &format!("restart:\n  wait: {value}\n"),
-            )
-            .unwrap_err()
-            .to_string();
+        for (name, value) in [
+            ("none", "0s"),
+            ("minus", "-5m"),
+            ("unit", "5"),
+            ("word", "soon"),
+        ] {
+            let error = load(name, &format!("restart:\n  wait: {value}\n"))
+                .unwrap_err()
+                .to_string();
             assert!(error.contains("config.yaml:2:"), "{value}: {error}");
         }
     }
