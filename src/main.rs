@@ -5,6 +5,7 @@
 //! pane's identity. `record` remembers which Claude sessions ran in a pane, and
 //! `pick` offers them again in that pane after a restart.
 
+mod app;
 mod catalog;
 mod config;
 mod index;
@@ -36,7 +37,7 @@ use crate::setup::{Change, Mode};
 #[command(about = "Bring Claude Code agents back into their Rex panes after a restart")]
 struct Cli {
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -155,21 +156,23 @@ fn main() -> ExitCode {
         // The script is the whole result, so it prints plain whatever the
         // terminal, as `source <(rawr completion zsh)` needs.
         .view(|cli| match cli.command {
-            Command::Completion(_) => shell::view(OutputFormat::Pretty),
-            Command::Status(ref output) => output.view(ColorMode::Auto),
-            Command::Record | Command::Pick | Command::Find { .. } | Command::Setup { .. } => {
-                View::new(OutputFormat::Pretty, ColorMode::Auto)
-            }
+            Some(Command::Completion(_)) => shell::view(OutputFormat::Pretty),
+            Some(Command::Status(ref output)) => output.view(ColorMode::Auto),
+            None
+            | Some(
+                Command::Record | Command::Pick | Command::Find { .. } | Command::Setup { .. },
+            ) => View::new(OutputFormat::Pretty, ColorMode::Auto),
         })
         .run(|cli| match cli.command {
-            Command::Record => record().map(|()| Outcome::Recorded),
-            Command::Pick => pick(),
-            Command::Find { words } => find(&words),
-            Command::Status(_) => list_panes(),
-            Command::Setup {
+            None => open_app(),
+            Some(Command::Record) => record().map(|()| Outcome::Recorded),
+            Some(Command::Pick) => pick(),
+            Some(Command::Find { words }) => find(&words),
+            Some(Command::Status(_)) => list_panes(),
+            Some(Command::Setup {
                 target: Target::Claude { dry_run },
-            } => setup_claude(if dry_run { Mode::DryRun } else { Mode::Write }),
-            Command::Completion(command) => Ok(Outcome::Completion(command.script("rawr")?)),
+            }) => setup_claude(if dry_run { Mode::DryRun } else { Mode::Write }),
+            Some(Command::Completion(command)) => Ok(Outcome::Completion(command.script("rawr")?)),
         })
 }
 
@@ -252,6 +255,18 @@ fn find(words: &[String]) -> Result<Outcome> {
     )
 }
 
+/// Opens the app, and resumes the session the user chooses.
+fn open_app() -> Result<Outcome> {
+    if !std::io::stderr().is_terminal() {
+        eprintln!("rawr needs a terminal; rawr status --format json lists the panes");
+        return Ok(Outcome::Nothing);
+    }
+    match app::run(app::Layout::Columns)? {
+        Some(agent) => match agent.resume()? {},
+        None => Ok(Outcome::Recorded),
+    }
+}
+
 /// Lists the Rex panes that have a session, each with what its Claude is
 /// doing.
 fn list_panes() -> Result<Outcome> {
@@ -319,7 +334,7 @@ mod tests {
         use clap::Parser;
         let cli = Cli::try_parse_from(["rawr", "status", "--format", "json"])
             .expect("status --format json parses");
-        let super::Command::Status(format) = cli.command else {
+        let Some(super::Command::Status(format)) = cli.command else {
             panic!("status is the status verb");
         };
         assert_eq!(format.format, OutputFormat::Json);
@@ -357,7 +372,7 @@ mod tests {
         use clap::Parser;
         let cli =
             Cli::try_parse_from(["rawr", "completion", "zsh"]).expect("completion zsh parses");
-        let super::Command::Completion(command) = cli.command else {
+        let Some(super::Command::Completion(command)) = cli.command else {
             panic!("completion zsh is the completion verb");
         };
         let outcome = Outcome::Completion(command.script("rawr").expect("the script renders"));

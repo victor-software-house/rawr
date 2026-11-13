@@ -77,6 +77,12 @@ impl Screen {
     /// Fails when the terminal refuses raw mode or a write to stderr fails;
     /// whatever was already set is undone.
     pub(crate) fn enter() -> Result<Self> {
+        Self::enter_with(true)
+    }
+
+    /// Takes the terminal as [`Self::enter`] does; `waiting` marks the pane
+    /// as waiting for the user while the screen is held.
+    pub(crate) fn enter_with(waiting: bool) -> Result<Self> {
         let previous = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
             leave();
@@ -86,7 +92,7 @@ impl Screen {
         HELD.store(true, Ordering::Release);
         let mut err = io::stderr();
         let taken = err
-            .write_all(STATUS_WAITING)
+            .write_all(if waiting { STATUS_WAITING } else { b"" })
             .map_err(anyhow::Error::from)
             .and_then(|()| {
                 execute!(err, EnterAlternateScreen, EnableMouseCapture, Hide).map_err(Into::into)

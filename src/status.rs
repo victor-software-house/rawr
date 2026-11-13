@@ -29,7 +29,7 @@ pub(crate) enum Status {
 
 impl Status {
     /// The word `rawr status` shows.
-    const fn word(self) -> &'static str {
+    pub(crate) const fn word(self) -> &'static str {
         match self {
             Self::Working => "Working",
             Self::NeedsInput => "Needs input",
@@ -115,7 +115,7 @@ impl Row {
 }
 
 /// `label`, or the first 8 characters of `id` after its `kind:` prefix.
-fn name(label: &str, id: &str) -> String {
+pub(crate) fn name(label: &str, id: &str) -> String {
     if !label.is_empty() {
         return label.to_owned();
     }

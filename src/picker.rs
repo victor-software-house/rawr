@@ -3,7 +3,7 @@
 //! are pure; this loop only moves events between them and the terminal.
 
 mod state;
-mod terminal;
+pub(crate) mod terminal;
 mod view;
 
 use anyhow::{Context, Result};
