@@ -49,13 +49,23 @@ The rawr mod SHALL acknowledge a drain request with the session's ID on `turn.co
 
 ### Requirement: Background a running call at once
 
-When the rawr mod appends a drain request through `$.session.append` while a Bash or Agent call of its session runs in the foreground, it SHALL at once run `rawr drain background`, which SHALL write the bytes `0x18 0x02` (`ctrl+x ctrl+b`) to the session's own block through Rex's `com.superlogical.terminal.write`.
-The mod SHALL NOT send the key while no such call is in flight.
+When the rawr mod appends a drain request through `$.session.append` while a Bash or Agent call of its session runs in the foreground, it SHALL at once run `rawr drain background`.
+That command SHALL write `0x02` (`ctrl+b`) to the session's own block through Rex's `com.superlogical.terminal.write`, or `0x18 0x02` in one write when `CLAUDE_CODE_KB_COHESION_FIXES` is set.
 
 #### Scenario: A long build during a drain
 
 - **WHEN** a session is running a foreground build when `d-7a21` is appended
 - **THEN** the build moves to the background and keeps running, and the session reads the request at its next step
+
+### Requirement: Send the background key only while a call runs
+
+The rawr mod SHALL count a call in flight from its `tool.call` start until `next(e)` resolves, and SHALL NOT ask for the background key while no such call is in flight.
+`rawr drain background` SHALL write only while the block's root program status reads `working`.
+
+#### Scenario: A permission prompt is open
+
+- **WHEN** a Bash call waits on its permission prompt when `d-7a21` is appended
+- **THEN** the block reads `blocked`, and no key is written
 
 #### Scenario: No call in flight
 
