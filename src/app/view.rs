@@ -1022,13 +1022,20 @@ fn pane_view(frame: &mut Frame<'_>, app: &App, area: Rect, shown: Shown<'_>, hit
     hits.lists.push((content, Focus::Session));
     let skip = top_of(app.scroll_of(Focus::Session), total, content.height, None);
     hits.tops.push((Focus::Session, skip));
-    for (at, target) in rows {
+    for (at, span, target) in rows {
         if let Some(row) = u16::try_from(at)
             .ok()
             .and_then(|at| at.checked_sub(skip))
             .filter(|row| *row < text.height)
         {
-            hits.add(row_at(text, text.y + row), target);
+            let mut cell = row_at(text, text.y + row);
+            if let Some((from, to)) = span {
+                let from = u16::try_from(from).unwrap_or(u16::MAX).min(cell.width);
+                let to = u16::try_from(to).unwrap_or(u16::MAX).min(cell.width);
+                cell.x += from;
+                cell.width = to.saturating_sub(from);
+            }
+            hits.add(cell, target);
         }
     }
     scrollbar(frame, content, skip, total);
@@ -1479,13 +1486,14 @@ fn said(lines: &mut Vec<Line<'static>>, rows: &mut Rows, app: &App, items: &[Sai
             lines.push(Line::from(spans));
         }
         if folds {
-            rows.extend((start..lines.len()).map(|at| (at, Target::Entry(key))));
+            rows.extend((start..lines.len()).map(|at| (at, None, Target::Entry(key))));
         }
     }
 }
 
-/// Which line of a tab stands for what a click there reaches.
-type Rows = Vec<(usize, Target)>;
+/// Which line of a tab, and which of its columns when not all of them,
+/// stands for what a click there reaches.
+type Rows = Vec<(usize, Option<(usize, usize)>, Target)>;
 
 /// The key an entry is opened by: the same entry gives the same key on
 /// every frame.
@@ -1596,7 +1604,9 @@ fn marks(kind: &Kind) -> (Vec<Span<'static>>, &'static str, Style) {
 
 /// The files the session changed, then under `Read` the ones it only
 /// read, each list the most used first: each file's name, then its folder
-/// shortened to fit, dim. A click opens the file.
+/// shortened to fit, dim. A row of chips above narrows the lists to the
+/// changed or the read files and to one file type; a click on a file
+/// opens it, and on its folder narrows the tab to that folder.
 fn files(
     lines: &mut Vec<Line<'static>>,
     rows: &mut Rows,
@@ -1608,36 +1618,114 @@ fn files(
     let filter = app.filter(Focus::Session);
     let changed = facts.files.len();
     // A file the session changed shows once, with the changes.
-    let read = facts
+    let read: Vec<_> = facts
         .read
         .iter()
         .enumerate()
         .filter(|(_, (path, _))| !facts.files.iter().any(|(file, _)| file == path))
-        .map(|(index, file)| (changed + index, file));
-    let lists = [
-        (None, facts.files.iter().enumerate().collect::<Vec<_>>()),
-        (Some("Read"), read.collect()),
-    ];
-    let mut scratch = 0;
-    for (title, mut list) in lists {
-        list.retain(|(_, (path, _))| state::passes(filter, path));
-        // Files in temporary folders, such as a session's scratch logs,
-        // stay out unless asked for, as scratch sessions do.
-        if !app.show_scratch_files {
-            let before = list.len();
-            list.retain(|(_, (path, _))| !state::in_temp(path));
-            scratch += before - list.len();
-        } else {
-            scratch += list
+        .map(|(index, file)| (changed + index, file))
+        .collect();
+    // Files in temporary folders, such as a session's scratch logs, stay
+    // out unless asked for, as scratch sessions do.
+    let kept = |list| scratch_split(list, filter, app.show_scratch_files);
+    let (changed_list, changed_scratch) = kept(facts.files.iter().enumerate().collect());
+    let (read_list, read_scratch) = kept(read);
+    let scratch = changed_scratch + read_scratch;
+    // The chips: which list, then the file types the lists hold, the most
+    // common first.
+    let mut types: Vec<(String, usize)> = Vec::new();
+    for (_, (path, _)) in changed_list
+        .iter()
+        .filter(|_| app.files_shown != state::Shown::Read)
+        .chain(
+            read_list
                 .iter()
-                .filter(|(_, (path, _))| state::in_temp(path))
-                .count();
+                .filter(|_| app.files_shown != state::Shown::Changed),
+        )
+    {
+        let kind = file_type(path);
+        match types.iter_mut().find(|(known, _)| *known == kind) {
+            Some((_, count)) => *count += 1,
+            None => types.push((kind, 1)),
+        }
+    }
+    types.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    let chosen = app.file_type;
+    let mut chips: Vec<(String, Target, bool)> = vec![
+        (
+            format!(" All {} ", changed_list.len() + read_list.len()),
+            Target::FileKind(state::Shown::All),
+            app.files_shown == state::Shown::All,
+        ),
+        (
+            format!(" Changed {} ", changed_list.len()),
+            Target::FileKind(state::Shown::Changed),
+            app.files_shown == state::Shown::Changed,
+        ),
+        (
+            format!(" Read {} ", read_list.len()),
+            Target::FileKind(state::Shown::Read),
+            app.files_shown == state::Shown::Read,
+        ),
+    ];
+    for (kind, count) in types.iter().take(8) {
+        let key = type_key(kind);
+        chips.push((
+            format!(" {kind} {count} "),
+            Target::FileType(key),
+            chosen == Some(key),
+        ));
+    }
+    let mut spans = Vec::new();
+    let mut x = 0;
+    for (index, (text, target, on)) in chips.into_iter().enumerate() {
+        let gap = if index == 3 { "   " } else { " " };
+        if index > 0 {
+            spans.push(Span::raw(gap));
+            x += gap.len();
+        }
+        let size = text.chars().count();
+        if x + size > width {
+            break;
+        }
+        let hovered = app.hover == Some(target);
+        let style = if on {
+            theme::raised()
+                .fg(theme::ACCENT)
+                .add_modifier(Modifier::BOLD)
+        } else if hovered {
+            theme::hover()
+        } else {
+            theme::dim()
+        };
+        rows.push((lines.len(), Some((x, x + size)), target));
+        spans.push(Span::styled(text, style));
+        x += size;
+    }
+    lines.push(Line::from(spans));
+    lines.push(Line::default());
+    let lists = [
+        (None, changed_list, app.files_shown != state::Shown::Read),
+        (
+            Some("Read"),
+            read_list,
+            app.files_shown != state::Shown::Changed,
+        ),
+    ];
+    for (title, mut list, shown) in lists {
+        if !shown {
+            continue;
+        }
+        if let Some(key) = chosen {
+            list.retain(|(_, (path, _))| type_key(&file_type(path)) == key);
         }
         if list.is_empty() {
             continue;
         }
-        if let Some(title) = title {
-            if !lines.is_empty() {
+        if let Some(title) = title
+            && app.files_shown == state::Shown::All
+        {
+            if lines.len() > 2 {
                 lines.push(Line::default());
             }
             lines.push(Line::from(vec![
@@ -1650,8 +1738,11 @@ fn files(
             let (folder, name) = path.rsplit_once('/').unwrap_or(("", path));
             let count = format!("{count:>4}× ");
             let room = width.saturating_sub(count.chars().count() + name.chars().count() + 2);
-            let folder = short_folder(folder, cwd, room);
+            let shown_folder = short_folder(folder, cwd, room);
             let hovered = app.hover == Some(Target::File(index));
+            let on_folder = app.hover == Some(Target::Folder(index));
+            let start = count.chars().count() + name.chars().count() + 2;
+            let end = start + shown_folder.chars().count();
             let line = Line::from(vec![
                 Span::styled(count, theme::dim()),
                 Span::styled(
@@ -1665,9 +1756,19 @@ fn files(
                     },
                 ),
                 Span::raw("  "),
-                Span::styled(folder, theme::dim()),
+                Span::styled(
+                    shown_folder,
+                    if on_folder {
+                        Style::new()
+                            .fg(theme::ACCENT)
+                            .add_modifier(Modifier::UNDERLINED)
+                    } else {
+                        theme::dim()
+                    },
+                ),
             ]);
-            rows.push((lines.len(), Target::File(index)));
+            rows.push((lines.len(), Some((start, end)), Target::Folder(index)));
+            rows.push((lines.len(), Some((0, start)), Target::File(index)));
             lines.push(markup::fit(&line, width));
         }
     }
@@ -1678,10 +1779,8 @@ fn files(
         } else {
             format!("  + {scratch} files in temporary folders")
         };
-        if !lines.is_empty() {
-            lines.push(Line::default());
-        }
-        rows.push((lines.len(), Target::ScratchFiles));
+        lines.push(Line::default());
+        rows.push((lines.len(), None, Target::ScratchFiles));
         lines.push(Line::styled(
             text,
             if hovered {
@@ -1691,6 +1790,47 @@ fn files(
             },
         ));
     }
+}
+
+/// The files of `list` that pass `filter`, without the ones in temporary
+/// folders unless `scratch` asks for them, and how many are in those.
+fn scratch_split<'files>(
+    list: Vec<(usize, &'files (String, usize))>,
+    filter: &str,
+    scratch: bool,
+) -> (Vec<(usize, &'files (String, usize))>, usize) {
+    let list: Vec<_> = list
+        .into_iter()
+        .filter(|(_, (path, _))| state::passes(filter, path))
+        .collect();
+    let temporary = list
+        .iter()
+        .filter(|(_, (path, _))| state::in_temp(path))
+        .count();
+    let list = list
+        .into_iter()
+        .filter(|(_, (path, _))| scratch || !state::in_temp(path))
+        .collect();
+    (list, temporary)
+}
+
+/// A file's type as the chips name it: its extension with the dot, or its
+/// whole name when it has none, such as `Makefile`.
+fn file_type(path: &str) -> String {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    match name.rsplit_once('.') {
+        Some((stem, extension)) if !stem.is_empty() && !extension.is_empty() => {
+            format!(".{}", extension.to_lowercase())
+        }
+        _ => name.to_owned(),
+    }
+}
+
+/// The key a file type's chip is chosen by.
+pub(crate) fn type_key(kind: &str) -> u64 {
+    let mut hasher = std::hash::DefaultHasher::new();
+    kind.hash(&mut hasher);
+    hasher.finish()
 }
 
 /// `folder` in at most `room` columns: inside the session's folder from
