@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="244" viewBox="0 0 800 244" role="img" aria-labelledby="title desc">
+  <title id="title">The rawr picker</title>
+  <desc id="desc">A full-screen picker headed "Resume a Claude Code session, 2 sessions". The selected session, "Fix the login redirect loop after the OAuth callback" in ~/code/shop, 2 h ago, is marked with a blue pointer. Below it is "Add CSV export to the reports page" in ~/code/shop, 1 day ago. The key line reads: arrows select, enter resume, slash search, 1-9 resume nth, click select and again resume, esc shell.</desc>
+  <style>
+    /* Mirrors src/picker/view.rs: default foreground for body text, DIM for
+       secondary text, and ANSI bright blue (colour 12) for the selection. */
+    .bg { fill: #ffffff; stroke: #d0d7de; }
+    text { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace; font-size: 14px; fill: #1f2328; white-space: pre; }
+    .accent { fill: #0969da; }
+    .bold { font-weight: 700; }
+    .dim { fill-opacity: 0.55; }
+    @media (prefers-color-scheme: dark) {
+      .bg { fill: #0d1117; stroke: #30363d; }
+      text { fill: #e6edf3; }
+      .accent { fill: #79c0ff; }
+    }
+  </style>
+  <rect class="bg" x="0.5" y="0.5" width="799" height="243" rx="8"/>
+  <!-- One character cell is 8.4 px wide; column c sits at x = 24 + 8.4c. Rows are 22 px apart. -->
+  <text y="44"><tspan class="accent" x="32.4">↻</tspan><tspan class="bold" x="49.2">Resume a Claude Code session</tspan><tspan class="dim" x="301.2">2 sessions</tspan></text>
+  <text y="88"><tspan class="accent" x="32.4">❯</tspan><tspan class="accent bold" x="49.2">Fix the login redirect loop after the OAuth callback</tspan></text>
+  <text y="110"><tspan x="49.2">~/code/shop · 2 h ago</tspan></text>
+  <text y="154"><tspan x="49.2">Add CSV export to the reports page</tspan></text>
+  <text y="176"><tspan class="dim" x="49.2">~/code/shop · 1 day ago</tspan></text>
+  <text y="220"><tspan x="32.4">↑↓</tspan><tspan class="dim" x="57.6">select</tspan><tspan x="124.8">⏎</tspan><tspan class="dim" x="141.6">resume</tspan><tspan x="208.8">/</tspan><tspan class="dim" x="225.6">search</tspan><tspan x="292.8">1-9</tspan><tspan class="dim" x="326.4">resume nth</tspan><tspan x="427.2">click</tspan><tspan class="dim" x="477.6">select, again resume</tspan><tspan x="662.4">esc</tspan><tspan class="dim" x="696.0">shell</tspan></text>
+</svg>
