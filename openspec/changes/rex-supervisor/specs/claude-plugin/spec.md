@@ -49,9 +49,16 @@ The rawr mod SHALL acknowledge a drain request with the session's ID on `turn.co
 
 ### Requirement: Interrupt a turn that runs too long
 
-When a session has held a drain request for `drain.interrupt` without its carrying turn ending, the rawr mod SHALL cancel the running turn with `$.turn.abort` and submit the hand-off request with `$.prompt.submit`.
+When a session that received a drain request through `$.session.append` has held it for `drain.interrupt` without its carrying turn ending, the rawr mod SHALL, once per request ID, cancel the running turn with `$.turn.abort` and submit the hand-off request with `$.prompt.submit`.
+The submitted hand-off turn SHALL become the carrying turn and SHALL NOT be interrupted again.
+The `aborted` completion of the cancelled turn SHALL NOT acknowledge the request.
 
 #### Scenario: A long build during a drain
 
 - **WHEN** `drain.interrupt` is `2m` and a session is still running a foreground build 2 minutes after `d-7a21` was appended
 - **THEN** the mod cancels the turn, the build stops, and the session starts its hand-off turn
+
+#### Scenario: The hand-off turn itself runs long
+
+- **WHEN** the mod cancelled a turn for `d-7a21` and the submitted hand-off turn runs past `drain.interrupt`
+- **THEN** the mod does not cancel it, and acknowledges `d-7a21` only when that turn ends
