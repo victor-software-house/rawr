@@ -35,6 +35,9 @@ pub(crate) struct Facts {
     pub(crate) tasks: Vec<Task>,
     /// The files it edited or wrote, the most recent last, with how often.
     pub(crate) files: Vec<(String, usize)>,
+    /// The files it read, the most recent last, with how often.
+    #[serde(default)]
+    pub(crate) read: Vec<(String, usize)>,
     /// What the user typed, oldest first, the last [`KEEP`] of it.
     pub(crate) log: Vec<Said>,
     /// The tools Claude called, oldest first, the last [`KEEP`] of them.
@@ -382,20 +385,28 @@ impl Stretch {
         facts.last_prompt = newer.last_prompt.or(facts.last_prompt.take());
         facts.agents += newer.agents;
         for (path, count) in newer.files {
-            let before = facts
-                .files
-                .iter()
-                .position(|(file, _)| *file == path)
-                .map_or(0, |index| facts.files.remove(index).1);
-            facts.files.push((path, before + count));
+            touch(&mut facts.files, &path, count);
         }
-        trim(&mut facts.files);
+        for (path, count) in newer.read {
+            touch(&mut facts.read, &path, count);
+        }
         facts.log.extend(newer.log);
         trim(&mut facts.log);
         facts.activity.extend(newer.activity);
         trim(&mut facts.activity);
         self.ops.extend(later.ops);
     }
+}
+
+/// Counts `count` more uses of `path` in `list`, which moves it to the
+/// end, as the most recent, keeping the last [`KEEP`].
+fn touch(list: &mut Vec<(String, usize)>, path: &str, count: usize) {
+    let before = list
+        .iter()
+        .position(|(file, _)| file == path)
+        .map_or(0, |index| list.remove(index).1);
+    list.push((path.to_owned(), before + count));
+    trim(list);
 }
 
 /// Keeps the last [`KEEP`] of `list`.
@@ -916,17 +927,17 @@ fn call(stretch: &mut Stretch, at: Option<&str>, cwd: Option<&str>, part: &Part<
             }
         }
         "Edit" | "Write" | "MultiEdit" | "NotebookEdit" => {
+            if let Some(path) = input
+                .file_path
+                .as_deref()
+                .or(input.notebook_path.as_deref())
+            {
+                touch(&mut facts.files, path, 1);
+            }
+        }
+        "Read" => {
             if let Some(path) = input.file_path.as_deref() {
-                match facts.files.iter().position(|(file, _)| file == path) {
-                    Some(index) => {
-                        let (file, count) = facts.files.remove(index);
-                        facts.files.push((file, count + 1));
-                    }
-                    None => facts.files.push((path.to_owned(), 1)),
-                }
-                if facts.files.len() > KEEP {
-                    facts.files.remove(0);
-                }
+                touch(&mut facts.read, path, 1);
             }
         }
         _ => {}

@@ -144,8 +144,8 @@ pub(crate) enum Target {
     /// An entry of the prompts or the activity, which a click opens or
     /// folds, by the key the view gives it.
     Entry(u64),
-    /// A file of the files tab, by its place in the session's files; a
-    /// click opens it in its default app.
+    /// A file of the files tab, by its place in the session's changed
+    /// files and then its read ones; a click opens it in its default app.
     File(usize),
 }
 

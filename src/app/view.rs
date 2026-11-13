@@ -1191,7 +1191,14 @@ fn tabs(frame: &mut Frame<'_>, app: &App, area: Rect, facts: Option<&Facts>, hit
             Tab::Overview => None,
             Tab::Prompts => Some(facts.log.len()),
             Tab::Activity => Some(facts.activity.len()),
-            Tab::Files => Some(facts.files.len()),
+            Tab::Files => Some(
+                facts.files.len()
+                    + facts
+                        .read
+                        .iter()
+                        .filter(|(path, _)| !facts.files.iter().any(|(file, _)| file == path))
+                        .count(),
+            ),
         });
         let text = match count.flatten() {
             Some(count) => format!(" {} {count} ", tab.name()),
@@ -1587,8 +1594,9 @@ fn marks(kind: &Kind) -> (Vec<Span<'static>>, &'static str, Style) {
     }
 }
 
-/// The files the session changed, the most changed first: each file's
-/// name, then its folder shortened to fit, dim. A click opens the file.
+/// The files the session changed, then under `Read` the ones it only
+/// read, each list the most used first: each file's name, then its folder
+/// shortened to fit, dim. A click opens the file.
 fn files(
     lines: &mut Vec<Line<'static>>,
     rows: &mut Rows,
@@ -1598,36 +1606,57 @@ fn files(
     width: usize,
 ) {
     let filter = app.filter(Focus::Session);
-    let mut files: Vec<(usize, &(String, usize))> = facts
-        .files
+    let changed = facts.files.len();
+    // A file the session changed shows once, with the changes.
+    let read = facts
+        .read
         .iter()
         .enumerate()
-        .filter(|(_, (path, _))| state::passes(filter, path))
-        .collect();
-    files.sort_by(|(_, a), (_, b)| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-    for (index, (path, count)) in files {
-        let (folder, name) = path.rsplit_once('/').unwrap_or(("", path));
-        let count = format!("{count:>4}× ");
-        let room = width.saturating_sub(count.chars().count() + name.chars().count() + 2);
-        let folder = short_folder(folder, cwd, room);
-        let hovered = app.hover == Some(Target::File(index));
-        let line = Line::from(vec![
-            Span::styled(count, theme::dim()),
-            Span::styled(
-                name.to_owned(),
-                if hovered {
-                    Style::new()
-                        .fg(theme::ACCENT)
-                        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
-                } else {
-                    Style::new().add_modifier(Modifier::BOLD)
-                },
-            ),
-            Span::raw("  "),
-            Span::styled(folder, theme::dim()),
-        ]);
-        rows.push((lines.len(), Target::File(index)));
-        lines.push(markup::fit(&line, width));
+        .filter(|(_, (path, _))| !facts.files.iter().any(|(file, _)| file == path))
+        .map(|(index, file)| (changed + index, file));
+    let lists = [
+        (None, facts.files.iter().enumerate().collect::<Vec<_>>()),
+        (Some("Read"), read.collect()),
+    ];
+    for (title, mut list) in lists {
+        list.retain(|(_, (path, _))| state::passes(filter, path));
+        if list.is_empty() {
+            continue;
+        }
+        if let Some(title) = title {
+            if !lines.is_empty() {
+                lines.push(Line::default());
+            }
+            lines.push(Line::from(vec![
+                Span::styled(title, theme::header()),
+                Span::styled(format!("  {}", list.len()), theme::dim()),
+            ]));
+        }
+        list.sort_by(|(_, a), (_, b)| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        for (index, (path, count)) in list {
+            let (folder, name) = path.rsplit_once('/').unwrap_or(("", path));
+            let count = format!("{count:>4}× ");
+            let room = width.saturating_sub(count.chars().count() + name.chars().count() + 2);
+            let folder = short_folder(folder, cwd, room);
+            let hovered = app.hover == Some(Target::File(index));
+            let line = Line::from(vec![
+                Span::styled(count, theme::dim()),
+                Span::styled(
+                    name.to_owned(),
+                    if hovered {
+                        Style::new()
+                            .fg(theme::ACCENT)
+                            .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+                    } else {
+                        Style::new().add_modifier(Modifier::BOLD)
+                    },
+                ),
+                Span::raw("  "),
+                Span::styled(folder, theme::dim()),
+            ]);
+            rows.push((lines.len(), Target::File(index)));
+            lines.push(markup::fit(&line, width));
+        }
     }
 }
 
