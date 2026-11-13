@@ -1,3 +1,4 @@
 {"expect":{"type":"request","id":"2","method":"session.attach_all","payload":{"event_scope":"all"}}}
 {"send":{"type":"response","id":"2","seq":0,"payload":{"sessions":[]}}}
 {"send":{"type":"event","seq":1,"payload":{"type":"session_event","payload":{"session_id":"session:0190a000-0000-7000-8000-00000000000a","event":{"type":"block_created","payload":{}}}}}}
+{"send":{"type":"event","seq":2,"payload":{"type":"session_event","payload":{"session_id":"session:0190a000-0000-7000-8000-00000000000a","event":{"type":"block_created","payload":{"block_id":"block:0190f3a2-7c41-7e10-8b2d-5d9e6a4c1f08"}}}}}}
