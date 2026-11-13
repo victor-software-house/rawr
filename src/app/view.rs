@@ -21,7 +21,6 @@ use crate::app::facts::{Facts, Pr, Said};
 use crate::app::feed::Pane;
 use crate::app::state::{
     self, App, Arrangement, Button, FULL, Focus, Grip, Link, RAIL, Scroll, Tab, Target, Under,
-    widths,
 };
 use crate::app::theme;
 use crate::session::Agent;
@@ -408,7 +407,7 @@ fn rail_view(
             })
             .collect(),
         Focus::Session => {
-            let mut rows: Vec<(Target, bool, Span<'static>)> = Tab::ALL
+            let rows: Vec<(Target, bool, Span<'static>)> = Tab::ALL
                 .iter()
                 .map(|tab| {
                     let style = if *tab == app.tab {
@@ -1204,6 +1203,19 @@ fn tabs(frame: &mut Frame<'_>, app: &App, area: Rect, facts: Option<&Facts>, hit
         put(frame, cell, Line::styled(text, style));
         hits.add(cell, Target::Tab(tab));
         x += width + 1;
+    }
+    // The newest lines show first; the counts grow as the older ones come.
+    if facts.is_some_and(|facts| !facts.whole) {
+        let text = "reading older lines…";
+        let width = u16::try_from(text.chars().count()).unwrap_or(0);
+        if x + width <= area.right() {
+            let cell = Rect {
+                x: area.right() - width,
+                width,
+                ..area
+            };
+            put(frame, cell, Line::styled(text, theme::dim()));
+        }
     }
 }
 

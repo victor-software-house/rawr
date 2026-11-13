@@ -2,12 +2,14 @@
 //! the branch, the pull requests it opened, how long it ran, how many turns
 //! and tokens it took, and the last thing the user asked.
 //!
-//! The daemon reads them and keeps them by path, with the size and time the
-//! file had, so moving the selection back costs nothing.
+//! The daemon reads a transcript from its newest line back, a part at a
+//! time, so the newest facts show at once and the older lines fill in the
+//! counts behind them. It keeps each reading by path, so moving the
+//! selection back goes on where the reading stopped.
 
 use std::borrow::Cow;
 use std::fs;
-use std::io::{BufRead, BufReader, Seek, SeekFrom};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 
 use serde::Deserialize;
@@ -39,6 +41,11 @@ pub(crate) struct Facts {
     pub(crate) log: Vec<Said>,
     /// The tools Claude called, oldest first, the last [`KEEP`] of them.
     pub(crate) activity: Vec<Said>,
+    /// Whether every line of the transcript is read. The daemon reads from
+    /// the newest line back, so until then the counts, the start and the
+    /// task list cover only the newest part.
+    #[serde(default)]
+    pub(crate) whole: bool,
 }
 
 /// How many prompts and tool calls the facts keep.
@@ -158,36 +165,267 @@ struct Todo<'line> {
     status: Cow<'line, str>,
 }
 
-/// Goes on reading the transcript at `path` from byte `offset`, where an
-/// earlier read that found `facts` stopped, and returns the facts with the
-/// offset after the last whole line. A transcript only grows at its end,
-/// so a session that is still running costs only its new lines.
-pub(crate) fn read_on(path: &Path, mut facts: Facts, offset: u64) -> Option<(Facts, u64)> {
-    let mut file = fs::File::open(path).ok()?;
+/// How much of a transcript one step back reads: a few milliseconds of
+/// parsing, so a newer request waits no longer than that.
+const PART: u64 = 1 << 18;
+
+/// A transcript being read from its newest line back to its first, and
+/// forward as it grows. Every step leaves facts to show: the newest lines
+/// come first, and the older ones fill in the counts behind them.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Reading {
+    /// The file's length when it was last looked at.
+    len: u64,
+    /// Where the unread older part ends: every whole line from here on is
+    /// read.
+    back: u64,
+    /// The offset after the last whole line read.
+    end: u64,
+    /// Whether the reading has found its first end.
+    started: bool,
+    stretch: Stretch,
+}
+
+impl Reading {
+    /// Catches up with lines written since the last look. Returns `None`
+    /// when the file cannot be read, and whether anything changed.
+    pub(crate) fn catch_up(&mut self, path: &Path) -> Option<bool> {
+        let len = fs::metadata(path).ok()?.len();
+        // A transcript only grows at its end; one that shrank was written
+        // again, and is read again.
+        if len < self.len {
+            *self = Self::default();
+        }
+        if self.started && len == self.len {
+            return Some(false);
+        }
+        let mut file = fs::File::open(path).ok()?;
+        if self.started {
+            let (newer, end) = read_forward(&mut file, self.end)?;
+            self.stretch.then(newer);
+            self.end = end;
+        } else {
+            self.end = last_line_end(&mut file, len)?;
+            self.back = self.end;
+            self.started = true;
+        }
+        self.len = len;
+        Some(true)
+    }
+
+    /// Reads the part of the transcript just before what is read. Returns
+    /// `None` when the file cannot be read.
+    pub(crate) fn step_back(&mut self, path: &Path) -> Option<()> {
+        let mut file = fs::File::open(path).ok()?;
+        let mut size = PART;
+        loop {
+            let from = self.back.saturating_sub(size);
+            let bytes = read_at(&mut file, from, self.back)?;
+            // The part's first bytes end a line that starts before it; a
+            // line longer than the part takes a larger one.
+            let start = if from == 0 {
+                0
+            } else if let Some(at) = bytes
+                .get(..bytes.len().saturating_sub(1))
+                .and_then(|head| head.iter().position(|byte| *byte == b'\n'))
+            {
+                at + 1
+            } else {
+                size = size.saturating_mul(2);
+                continue;
+            };
+            let mut older = read_lines(bytes.get(start..).unwrap_or_default());
+            older.then(std::mem::take(&mut self.stretch));
+            self.stretch = older;
+            self.back = from + u64::try_from(start).ok()?;
+            return Some(());
+        }
+    }
+
+    /// Whether any line is read.
+    pub(crate) fn begun(&self) -> bool {
+        self.back < self.end
+    }
+
+    /// Whether every line is read.
+    pub(crate) fn whole(&self) -> bool {
+        self.started && self.back == 0
+    }
+
+    /// The facts the lines read so far give.
+    pub(crate) fn facts(&self) -> Facts {
+        let mut facts = self.stretch.facts.clone();
+        facts.tasks = tasks(&self.stretch.ops);
+        facts.whole = self.whole();
+        facts
+    }
+}
+
+/// What a run of consecutive lines gives. The task calls stay as they
+/// came: an update may name a task an older run created.
+#[derive(Debug, Clone, Default)]
+struct Stretch {
+    facts: Facts,
+    ops: Vec<TaskOp>,
+}
+
+#[derive(Debug, Clone)]
+enum TaskOp {
+    Create(String),
+    Update {
+        id: String,
+        status: Option<String>,
+        subject: Option<String>,
+    },
+    /// The older to-do tool sends the whole list each time.
+    List(Vec<Task>),
+}
+
+impl Stretch {
+    /// Adds the run of lines that follows this one.
+    fn then(&mut self, later: Self) {
+        let (facts, newer) = (&mut self.facts, later.facts);
+        facts.model = newer.model.or(facts.model.take());
+        facts.branch = newer.branch.or(facts.branch.take());
+        for pr in newer.prs {
+            if !facts.prs.contains(&pr) {
+                facts.prs.push(pr);
+            }
+        }
+        facts.started = facts.started.take().or(newer.started);
+        facts.last = newer.last.or(facts.last.take());
+        facts.prompts += newer.prompts;
+        facts.replies += newer.replies;
+        facts.output_tokens += newer.output_tokens;
+        facts.last_prompt = newer.last_prompt.or(facts.last_prompt.take());
+        facts.agents += newer.agents;
+        for (path, count) in newer.files {
+            let before = facts
+                .files
+                .iter()
+                .position(|(file, _)| *file == path)
+                .map_or(0, |index| facts.files.remove(index).1);
+            facts.files.push((path, before + count));
+        }
+        trim(&mut facts.files);
+        facts.log.extend(newer.log);
+        trim(&mut facts.log);
+        facts.activity.extend(newer.activity);
+        trim(&mut facts.activity);
+        self.ops.extend(later.ops);
+    }
+}
+
+/// Keeps the last [`KEEP`] of `list`.
+fn trim<T>(list: &mut Vec<T>) {
+    if list.len() > KEEP {
+        list.drain(..list.len() - KEEP);
+    }
+}
+
+/// The task list the task calls leave, oldest call first.
+fn tasks(ops: &[TaskOp]) -> Vec<Task> {
+    let mut tasks: Vec<Task> = Vec::new();
+    for op in ops {
+        match op {
+            TaskOp::Create(subject) => {
+                let id = tasks
+                    .iter()
+                    .filter_map(|task| task.id.parse::<u64>().ok())
+                    .max()
+                    .map_or(1, |most| most + 1)
+                    .to_string();
+                tasks.push(Task {
+                    id,
+                    subject: subject.clone(),
+                    status: "pending".to_owned(),
+                });
+            }
+            TaskOp::Update {
+                id,
+                status,
+                subject,
+            } => {
+                if status.as_deref() == Some("deleted") {
+                    tasks.retain(|task| task.id != *id);
+                } else if let Some(task) = tasks.iter_mut().find(|task| task.id == *id) {
+                    if let Some(status) = status {
+                        status.clone_into(&mut task.status);
+                    }
+                    if let Some(subject) = subject {
+                        subject.clone_into(&mut task.subject);
+                    }
+                }
+            }
+            TaskOp::List(list) => list.clone_into(&mut tasks),
+        }
+    }
+    tasks
+}
+
+/// The bytes of `file` from `from` to `to`.
+fn read_at(file: &mut fs::File, from: u64, to: u64) -> Option<Vec<u8>> {
+    file.seek(SeekFrom::Start(from)).ok()?;
+    let mut bytes = vec![0; usize::try_from(to - from).ok()?];
+    file.read_exact(&mut bytes).ok()?;
+    Some(bytes)
+}
+
+/// The offset after the last whole line of `file`, which is `len` long; a
+/// line still being written waits for the next look.
+fn last_line_end(file: &mut fs::File, len: u64) -> Option<u64> {
+    let mut size = PART;
+    loop {
+        let from = len.saturating_sub(size);
+        let bytes = read_at(file, from, len)?;
+        if let Some(at) = bytes.iter().rposition(|byte| *byte == b'\n') {
+            return Some(from + u64::try_from(at).ok()? + 1);
+        }
+        if from == 0 {
+            return Some(0);
+        }
+        size = size.saturating_mul(2);
+    }
+}
+
+/// What the whole lines of `file` from `offset` on give, with the offset
+/// after the last of them.
+fn read_forward(file: &mut fs::File, offset: u64) -> Option<(Stretch, u64)> {
     file.seek(SeekFrom::Start(offset)).ok()?;
     let mut lines = BufReader::with_capacity(1 << 18, file);
     let mut line = Vec::new();
+    let mut stretch = Stretch::default();
     let mut at = offset;
     loop {
         line.clear();
         let read = lines.read_until(b'\n', &mut line).ok()?;
-        // A line still being written waits for the next read.
         if read == 0 || line.last() != Some(&b'\n') {
             break;
         }
         at += u64::try_from(read).ok()?;
-        let Ok(record) = serde_json::from_slice::<Record<'_>>(&line) else {
-            continue;
-        };
-        add(&mut facts, record);
+        if let Ok(record) = serde_json::from_slice::<Record<'_>>(&line) {
+            add(&mut stretch, record);
+        }
     }
-    Some((facts, at))
+    Some((stretch, at))
 }
 
-fn add(facts: &mut Facts, record: Record<'_>) {
+/// What a run of whole lines gives.
+fn read_lines(bytes: &[u8]) -> Stretch {
+    let mut stretch = Stretch::default();
+    for line in bytes.split(|byte| *byte == b'\n') {
+        if let Ok(record) = serde_json::from_slice::<Record<'_>>(line) {
+            add(&mut stretch, record);
+        }
+    }
+    stretch
+}
+
+fn add(stretch: &mut Stretch, record: Record<'_>) {
     if record.sidechain {
         return;
     }
+    let facts = &mut stretch.facts;
     if let Some(at) = record.timestamp.as_deref() {
         if facts.started.is_none() {
             facts.started = Some(at.to_owned());
@@ -223,7 +461,7 @@ fn add(facts: &mut Facts, record: Record<'_>) {
                 .and_then(|content| serde_json::from_str::<Vec<Part<'_>>>(content.get()).ok())
             {
                 for part in parts.iter().filter(|part| part.kind == "tool_use") {
-                    call(facts, at, part);
+                    call(stretch, at, part);
                 }
             }
         }
@@ -283,60 +521,40 @@ fn keep(list: &mut Vec<Said>, item: Said) {
 
 /// What one tool call adds: its line in the activity, a task change, a sub-
 /// agent, or a file it changed.
-fn call(facts: &mut Facts, at: Option<&str>, part: &Part<'_>) {
+fn call(stretch: &mut Stretch, at: Option<&str>, part: &Part<'_>) {
     let name = part.name.as_deref().unwrap_or("tool");
     let input = part
         .input
         .and_then(|input| serde_json::from_str::<Input<'_>>(input.get()).ok())
         .unwrap_or_default();
+    let facts = &mut stretch.facts;
     match name {
         "Agent" | "Task" => facts.agents += 1,
-        "TaskCreate" => {
-            let id = (facts
-                .tasks
-                .iter()
-                .filter_map(|task| task.id.parse::<u64>().ok())
-                .max())
-            .map_or(1, |most| most + 1)
-            .to_string();
-            facts.tasks.push(Task {
-                id,
-                subject: input.subject.as_deref().unwrap_or_default().to_owned(),
-                status: "pending".to_owned(),
-            });
-        }
-        "TaskUpdate" => {
-            let id = match &input.task_id {
+        "TaskCreate" => stretch.ops.push(TaskOp::Create(
+            input.subject.as_deref().unwrap_or_default().to_owned(),
+        )),
+        "TaskUpdate" => stretch.ops.push(TaskOp::Update {
+            id: match &input.task_id {
                 Some(serde_json::Value::String(id)) => id.clone(),
                 Some(serde_json::Value::Number(id)) => id.to_string(),
                 _ => String::new(),
-            };
-            if let Some(status) = input.status.as_deref() {
-                if status == "deleted" {
-                    facts.tasks.retain(|task| task.id != id);
-                } else if let Some(task) = facts.tasks.iter_mut().find(|task| task.id == id) {
-                    status.clone_into(&mut task.status);
-                }
-            }
-            if let (Some(subject), Some(task)) = (
-                input.subject.as_deref(),
-                facts.tasks.iter_mut().find(|task| task.id == id),
-            ) {
-                subject.clone_into(&mut task.subject);
-            }
-        }
-        // The older to-do tool sends the whole list each time.
+            },
+            status: input.status.as_deref().map(str::to_owned),
+            subject: input.subject.as_deref().map(str::to_owned),
+        }),
         "TodoWrite" => {
             if let Some(todos) = &input.todos {
-                facts.tasks = todos
-                    .iter()
-                    .enumerate()
-                    .map(|(index, todo)| Task {
-                        id: (index + 1).to_string(),
-                        subject: todo.content.as_ref().to_owned(),
-                        status: todo.status.as_ref().to_owned(),
-                    })
-                    .collect();
+                stretch.ops.push(TaskOp::List(
+                    todos
+                        .iter()
+                        .enumerate()
+                        .map(|(index, todo)| Task {
+                            id: (index + 1).to_string(),
+                            subject: todo.content.as_ref().to_owned(),
+                            status: todo.status.as_ref().to_owned(),
+                        })
+                        .collect(),
+                ));
             }
         }
         "Edit" | "Write" | "MultiEdit" | "NotebookEdit" => {
@@ -372,4 +590,108 @@ fn call(facts: &mut Facts, at: Option<&str>, part: &Part<'_>) {
             text: sanitize(&format!("{name}  {what}")),
         },
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write as _;
+    use std::path::PathBuf;
+
+    use super::{Facts, Reading, read_forward, tasks};
+
+    /// A transcript of `turns` turns: a prompt, then a reply that creates
+    /// a task, edits a file and, every fifth turn, carries a long text, so
+    /// some lines are longer than one part.
+    fn transcript(turns: usize) -> String {
+        let mut text = String::new();
+        for turn in 0..turns {
+            let at = format!("2026-01-01T00:{:02}:{:02}Z", turn / 60 % 60, turn % 60);
+            text.push_str(&format!(
+                r#"{{"type":"user","timestamp":"{at}","gitBranch":"b{}","message":{{"content":"prompt {turn}"}}}}"#,
+                turn / 100
+            ));
+            text.push('\n');
+            let long = if turn % 5 == 0 {
+                "x".repeat(300_000)
+            } else {
+                String::new()
+            };
+            text.push_str(&format!(
+                r#"{{"type":"assistant","timestamp":"{at}","message":{{"model":"m{}","usage":{{"output_tokens":{turn}}},"content":[{{"type":"text","text":"{long}"}},{{"type":"tool_use","name":"TaskCreate","input":{{"subject":"task {turn}"}}}},{{"type":"tool_use","name":"TaskUpdate","input":{{"taskId":"{}","status":"completed"}}}},{{"type":"tool_use","name":"Edit","input":{{"file_path":"f{}"}}}}]}}}}"#,
+                turn / 50,
+                turn / 2 + 1,
+                turn % 7
+            ));
+            text.push('\n');
+        }
+        text
+    }
+
+    fn file(name: &str, text: &str) -> PathBuf {
+        let path =
+            std::env::temp_dir().join(format!("rawr-facts-{name}-{}.jsonl", std::process::id()));
+        std::fs::write(&path, text).expect("write the transcript");
+        path
+    }
+
+    /// The facts of the whole file, read from its first line on.
+    fn forward(path: &PathBuf) -> Facts {
+        let mut opened = std::fs::File::open(path).expect("open the transcript");
+        let (stretch, _) = read_forward(&mut opened, 0).expect("read the transcript");
+        let mut facts = stretch.facts;
+        facts.tasks = tasks(&stretch.ops);
+        facts.whole = true;
+        facts
+    }
+
+    #[test]
+    fn reading_back_gives_what_reading_forward_does() {
+        let path = file("back", &transcript(400));
+        let mut reading = Reading::default();
+        assert_eq!(reading.catch_up(&path), Some(true));
+        let mut steps = 0;
+        while !reading.whole() {
+            reading.step_back(&path).expect("step back");
+            steps += 1;
+        }
+        assert!(steps > 1, "the transcript took {steps} parts");
+        assert_eq!(reading.facts(), forward(&path));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn the_newest_lines_come_first() {
+        let path = file("first", &transcript(400));
+        let mut reading = Reading::default();
+        reading.catch_up(&path).expect("catch up");
+        reading.step_back(&path).expect("step back");
+        let facts = reading.facts();
+        assert!(!facts.whole);
+        assert_eq!(facts.last_prompt.as_deref(), Some("prompt 399"));
+        assert_eq!(facts.model.as_deref(), Some("m7"));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn lines_written_later_add_to_a_partial_read() {
+        let all = transcript(400);
+        let cut = all.len() / 2 + 3;
+        // The cut falls inside a line, which waits until it is whole.
+        let path = file("grow", &all[..cut]);
+        let mut reading = Reading::default();
+        reading.catch_up(&path).expect("catch up");
+        reading.step_back(&path).expect("step back");
+        let mut more = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .expect("open to append");
+        more.write_all(&all.as_bytes()[cut..]).expect("append");
+        assert_eq!(reading.catch_up(&path), Some(true));
+        while !reading.whole() {
+            reading.step_back(&path).expect("step back");
+        }
+        assert_eq!(reading.facts(), forward(&path));
+        assert_eq!(reading.catch_up(&path), Some(false));
+        let _ = std::fs::remove_file(path);
+    }
 }

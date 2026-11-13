@@ -11,12 +11,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 
 use super::{Build, FromDaemon, Here, Reach, ToDaemon, actions, folder, socket};
-use crate::app::facts::{self, Facts};
+use crate::app::facts::Reading;
 use crate::app::feed::{self, Pane, Update};
 use crate::app::state::Carry;
 use crate::catalog::{self, Found};
@@ -28,20 +28,15 @@ const QUEUE: usize = 64;
 /// How long the daemon waits before following Rex again after the feed ends.
 const RETRY: Duration = Duration::from_secs(2);
 
-/// A transcript read so far: its length then, the offset after its last
-/// whole line, and its facts up to there.
-#[derive(Clone)]
-struct Read {
-    len: u64,
-    offset: u64,
-    facts: Facts,
-}
+/// How often a transcript being read sends what it has found so far.
+const SEND_EVERY: Duration = Duration::from_millis(50);
 
 /// What every client shares.
 struct Hub {
     build: Build,
     state: Mutex<State>,
-    facts: Mutex<HashMap<PathBuf, Read>>,
+    /// Each transcript a window showed, as far as it is read.
+    facts: Mutex<HashMap<PathBuf, Reading>>,
     catalog: Mutex<Option<Arc<Vec<Found>>>>,
 }
 
@@ -234,7 +229,14 @@ fn serve(hub: &Arc<Hub>, stream: UnixStream, socket: &Path) {
         state.clients.insert(id, send.clone());
         (id, view)
     };
-    let facts = worker(hub, send.clone(), read_facts);
+    // The transcript this window asked for last; a read of another stops.
+    let asked = Arc::new(AtomicU64::new(0));
+    let facts = {
+        let asked = Arc::clone(&asked);
+        worker(hub, send.clone(), move |hub, send, job| {
+            read_facts(hub, send, &asked, job);
+        })
+    };
     let generation = Arc::new(AtomicU64::new(0));
     let searches = {
         let generation = Arc::clone(&generation);
@@ -250,7 +252,8 @@ fn serve(hub: &Arc<Hub>, stream: UnixStream, socket: &Path) {
         match request {
             ToDaemon::Hello { .. } => {}
             ToDaemon::Facts { path } => {
-                let _ = facts.send(path);
+                let id = asked.fetch_add(1, Ordering::AcqRel) + 1;
+                let _ = facts.send((id, path));
             }
             ToDaemon::Search { id, query, pane } => {
                 generation.store(id, Ordering::Release);
@@ -389,35 +392,39 @@ fn worker<J: Send + 'static>(
     jobs
 }
 
-fn read_facts(hub: &Hub, send: &SyncSender<FromDaemon>, path: PathBuf) {
-    let Ok(meta) = fs::metadata(&path) else {
+/// Reads the transcript at `path` from its newest line back, sending the
+/// facts after the first part and then every [`SEND_EVERY`], and stops as
+/// soon as the window asks for another transcript. What it read stays, so
+/// coming back to the session goes on where it stopped.
+fn read_facts(
+    hub: &Hub,
+    send: &SyncSender<FromDaemon>,
+    asked: &AtomicU64,
+    (id, path): (u64, PathBuf),
+) {
+    let stale = || asked.load(Ordering::Acquire) != id;
+    let mut reading = hold(&hub.facts).remove(&path).unwrap_or_default();
+    if reading.catch_up(&path).is_none() {
         return;
-    };
-    let known = hold(&hub.facts).get(&path).cloned();
-    let facts = match known {
-        // Unchanged since the last read.
-        Some(read) if read.len == meta.len() => read.facts,
-        // Grown: only the new lines. A transcript that shrank was rewritten,
-        // and is read from the start.
-        known => {
-            let (facts, offset) = known
-                .filter(|read| read.offset <= meta.len())
-                .map_or((Facts::default(), 0), |read| (read.facts, read.offset));
-            let Some((facts, offset)) = facts::read_on(&path, facts, offset) else {
-                return;
-            };
-            hold(&hub.facts).insert(
-                path.clone(),
-                Read {
-                    len: meta.len(),
-                    offset,
-                    facts: facts.clone(),
-                },
-            );
-            facts
+    }
+    let mut sent: Option<Instant> = None;
+    loop {
+        let whole = reading.whole();
+        let facts = || FromDaemon::Facts {
+            path: path.clone(),
+            facts: reading.facts(),
+        };
+        if whole {
+            let _ = send.send(facts());
+        } else if reading.begun() && sent.is_none_or(|at| at.elapsed() >= SEND_EVERY) {
+            let _ = send.try_send(facts());
+            sent = Some(Instant::now());
         }
-    };
-    let _ = send.try_send(FromDaemon::Facts { path, facts });
+        if whole || stale() || reading.step_back(&path).is_none() {
+            break;
+        }
+    }
+    hold(&hub.facts).insert(path, reading);
 }
 
 fn search(
