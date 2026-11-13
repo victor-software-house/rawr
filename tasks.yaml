@@ -199,17 +199,18 @@ queue:
       - A session's done and open task counts in rawr equal those in Claude Code's task list.
     notes:
       - 2026-11-13, a session showed 5 of 33 tasks done with many finished ones marked open; task ids are assumed sequential.
-
+archive:
   - id: RAWR-020
     title: Filter the files tab
     scope: app
     outcome: The files tab narrows to the files a reader wants.
-    blocked_by: []
-    acceptance:
-      - The files tab filters by changed or read, by folder, and by file type.
     notes:
       - '2026-11-13, step 1 done: files in temporary folders hide behind a "+ N files in temporary folders" line, as scratch sessions do.'
-archive:
+    completed: 2026-11-13T22:14:00
+    evidence:
+      - '70483e3 and the chip row: temporary folders hidden until asked for, All, Changed and Read chips, file type chips, and a click on a folder narrows the tab to it.'
+    disposition: completed
+
   - id: RAWR-019
     title: List every file a session read or changed
     scope: app
