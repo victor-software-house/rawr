@@ -10,6 +10,8 @@ pub(crate) const ACCENT: Color = Color::LightBlue;
 pub(crate) const WARNING: Color = Color::Yellow;
 pub(crate) const ERROR: Color = Color::Red;
 pub(crate) const WORKING: Color = Color::Green;
+/// The mark before a shell command the user ran.
+pub(crate) const SHELL: Color = Color::Magenta;
 /// The row under the pointer: one step above the background.
 const HOVER: Color = Color::Indexed(234);
 /// The selected row: two steps above the background.

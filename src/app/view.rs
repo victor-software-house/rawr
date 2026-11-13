@@ -17,7 +17,7 @@ use ratatui::widgets::{
     Block, BorderType, Clear, Padding, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
 };
 
-use crate::app::facts::{Facts, Pr, Said};
+use crate::app::facts::{Facts, Kind, Pr, Said};
 use crate::app::feed::Pane;
 use crate::app::state::{
     self, App, Arrangement, Button, FULL, Focus, Grip, Link, RAIL, Scroll, Tab, Target, Under,
@@ -1339,19 +1339,83 @@ fn said(lines: &mut Vec<Line<'static>>, items: &[Said], filter: &str, width: usi
     for item in items
         .iter()
         .rev()
-        .filter(|item| state::passes(filter, &item.text))
+        .filter(|item| state::passes(filter, &item.searched()))
     {
         let age = item.at.as_deref().map(when).unwrap_or_default();
         let age = format!("{:>8}  ", age.trim_end_matches(" ago"));
-        let room = width.saturating_sub(age.chars().count());
-        for (index, part) in wrap(&item.text, room, most).into_iter().enumerate() {
-            let lead = if index == 0 {
-                Span::styled(age.clone(), theme::dim())
+        let (lead, close, style) = marks(&item.kind);
+        let indent = age.chars().count() + lead.iter().map(|span| span.width()).sum::<usize>();
+        let room = width.saturating_sub(indent + close.chars().count());
+        let parts = wrap(&item.text, room, most);
+        let last = parts.len().saturating_sub(1);
+        for (index, part) in parts.into_iter().enumerate() {
+            let mut spans = if index == 0 {
+                let mut spans = vec![Span::styled(age.clone(), theme::dim())];
+                spans.extend(lead.iter().cloned());
+                spans
             } else {
-                Span::raw(" ".repeat(age.chars().count()))
+                vec![Span::raw(" ".repeat(indent))]
             };
-            lines.push(Line::from(vec![lead, Span::raw(part)]));
+            spans.push(Span::styled(part, style));
+            if index == last && !close.is_empty() {
+                spans.push(Span::styled(close, theme::dim()));
+            }
+            lines.push(Line::from(spans));
         }
+    }
+}
+
+/// What Claude Code draws before and after an entry's text, and the
+/// text's style.
+fn marks(kind: &Kind) -> (Vec<Span<'static>>, &'static str, Style) {
+    match kind {
+        Kind::Prompt | Kind::Command => (vec![Span::styled("❯ ", theme::dim())], "", Style::new()),
+        Kind::Shell => (
+            vec![Span::styled("! ", Style::new().fg(theme::SHELL))],
+            "",
+            Style::new(),
+        ),
+        Kind::Memory => (
+            vec![Span::styled("# ", Style::new().fg(theme::ACCENT))],
+            "",
+            Style::new(),
+        ),
+        Kind::Ended { status } => {
+            let tone = match status.as_str() {
+                "completed" => Style::new().fg(theme::WORKING),
+                "failed" => Style::new().fg(theme::ERROR),
+                "killed" => Style::new().fg(theme::WARNING),
+                _ => Style::new(),
+            };
+            (vec![Span::styled("⏺ ", tone)], "", Style::new())
+        }
+        Kind::Message { from } => (
+            vec![
+                Span::styled("› ", theme::dim()),
+                Span::raw("Message from "),
+                Span::styled(format!("@{from}"), Style::new().fg(Color::Cyan)),
+                Span::styled(": ", theme::dim()),
+            ],
+            "",
+            Style::new().add_modifier(Modifier::ITALIC),
+        ),
+        Kind::Relayed { from } => (
+            vec![
+                Span::styled("← ", Style::new().fg(theme::ACCENT)),
+                Span::styled(format!("{from}: "), theme::dim()),
+            ],
+            "",
+            Style::new(),
+        ),
+        Kind::Interrupted => (Vec::new(), "", theme::dim()),
+        Kind::Tool { name } => (
+            vec![
+                Span::styled(name.clone(), Style::new().add_modifier(Modifier::BOLD)),
+                Span::styled("(", theme::dim()),
+            ],
+            ")",
+            Style::new(),
+        ),
     }
 }
 

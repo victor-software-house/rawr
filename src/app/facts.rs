@@ -60,12 +60,67 @@ pub(crate) struct Task {
     pub(crate) status: String,
 }
 
-/// A line with when it was written: a prompt, or a tool call and what it
-/// acted on.
+/// An entry of the conversation with when it was written: something the
+/// user typed or the session was sent, or a tool call. `text` is what
+/// Claude Code shows after the entry's mark, on one line.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, Deserialize)]
 pub(crate) struct Said {
     pub(crate) at: Option<String>,
     pub(crate) text: String,
+    #[serde(default)]
+    pub(crate) kind: Kind,
+}
+
+/// What an entry is, which sets the mark Claude Code draws before it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum Kind {
+    /// A prompt: `❯ text`.
+    #[default]
+    Prompt,
+    /// A slash command as typed: `❯ /name args`, or `❯ Skill(name)`.
+    Command,
+    /// A shell command the user ran with `!`.
+    Shell,
+    /// A note for memory, typed after `#`.
+    Memory,
+    /// A background task's end: `⏺ summary`, coloured by its status.
+    Ended { status: String },
+    /// A message from a teammate or another session: `Message from @name`.
+    Message { from: String },
+    /// A message relayed from a channel: `← source: text`.
+    Relayed { from: String },
+    /// The user stopped Claude mid-turn.
+    Interrupted,
+    /// A tool call: `Name(text)`, the name as Claude Code shows it.
+    Tool { name: String },
+}
+
+impl Kind {
+    /// Whether the user typed the entry, so it counts as a prompt.
+    pub(crate) fn typed(&self) -> bool {
+        matches!(
+            self,
+            Self::Prompt | Self::Command | Self::Shell | Self::Memory
+        )
+    }
+}
+
+impl Said {
+    /// What a filter matches the entry on.
+    pub(crate) fn searched(&self) -> Cow<'_, str> {
+        match &self.kind {
+            Kind::Tool { name } | Kind::Message { from: name } | Kind::Relayed { from: name } => {
+                Cow::Owned(format!("{name} {}", self.text))
+            }
+            Kind::Prompt
+            | Kind::Command
+            | Kind::Shell
+            | Kind::Memory
+            | Kind::Ended { .. }
+            | Kind::Interrupted => Cow::Borrowed(&self.text),
+        }
+    }
 }
 
 /// A pull request a session opened.
@@ -88,6 +143,8 @@ struct Record<'line> {
     timestamp: Option<Cow<'line, str>>,
     #[serde(rename = "gitBranch", borrow, default)]
     git_branch: Option<Cow<'line, str>>,
+    #[serde(borrow, default)]
+    cwd: Option<Cow<'line, str>>,
     #[serde(rename = "isMeta", default)]
     is_meta: bool,
     #[serde(rename = "isSidechain", default)]
@@ -155,6 +212,24 @@ struct Input<'line> {
     skill: Option<Cow<'line, str>>,
     #[serde(borrow, default)]
     todos: Option<Vec<Todo<'line>>>,
+    #[serde(borrow, default)]
+    old_string: Option<Cow<'line, str>>,
+    #[serde(borrow, default)]
+    notebook_path: Option<Cow<'line, str>>,
+    #[serde(borrow, default)]
+    path: Option<Cow<'line, str>>,
+    #[serde(borrow, default)]
+    pages: Option<Cow<'line, str>>,
+    #[serde(borrow, default)]
+    url: Option<Cow<'line, str>>,
+    #[serde(borrow, default)]
+    query: Option<Cow<'line, str>>,
+    #[serde(borrow, default)]
+    subagent_type: Option<Cow<'line, str>>,
+    #[serde(borrow, default)]
+    to: Option<Cow<'line, str>>,
+    #[serde(default)]
+    message: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -460,35 +535,40 @@ fn add(stretch: &mut Stretch, record: Record<'_>) {
                 .content
                 .and_then(|content| serde_json::from_str::<Vec<Part<'_>>>(content.get()).ok())
             {
+                let cwd = record.cwd.as_deref();
                 for part in parts.iter().filter(|part| part.kind == "tool_use") {
-                    call(stretch, at, part);
+                    call(stretch, at, cwd, part);
                 }
             }
         }
         "user" if !record.is_meta && !record.summary => {
-            if let Some(text) = record
+            if let Some((kind, text)) = record
                 .message
                 .and_then(|message| message.content)
-                .and_then(typed)
+                .and_then(entry)
             {
-                facts.prompts += 1;
+                if kind.typed() {
+                    facts.prompts += 1;
+                    facts.last_prompt = Some(text.clone());
+                }
                 keep(
                     &mut facts.log,
                     Said {
                         at: record.timestamp.as_deref().map(str::to_owned),
-                        text: text.clone(),
+                        text,
+                        kind,
                     },
                 );
-                facts.last_prompt = Some(text);
             }
         }
         _ => {}
     }
 }
 
-/// The text the user typed, when `content` is a prompt rather than a tool
-/// result or an injected block.
-fn typed(content: &RawValue) -> Option<String> {
+/// What a user line shows, as Claude Code draws it: a prompt, a command,
+/// a message the session was sent. Tool results, injected context and
+/// the entries Claude Code draws nothing for give `None`.
+fn entry(content: &RawValue) -> Option<(Kind, String)> {
     let text = if let Ok(text) = serde_json::from_str::<Cow<'_, str>>(content.get()) {
         text.into_owned()
     } else {
@@ -500,15 +580,133 @@ fn typed(content: &RawValue) -> Option<String> {
             .iter()
             .filter_map(|part| part.text.as_deref())
             .collect::<Vec<_>>()
-            .join(" ")
+            .join("\n")
     };
     let text = text.trim();
-    if text.is_empty() || text.starts_with('<') {
+    let (kind, shown) = said_as(text)?;
+    let shown = sanitize(&shown.split_whitespace().collect::<Vec<_>>().join(" "));
+    (!shown.is_empty()).then_some((kind, shown))
+}
+
+/// The lead Claude Code writes before a message from another session.
+const PEER_LEAD: &str = "Another Claude session sent a message";
+
+/// The lead before a message relayed from a channel.
+const RELAY_LEAD: &str = "A message arrived from ";
+
+/// How Claude Code draws a user line's text, in its order of checks.
+fn said_as(text: &str) -> Option<(Kind, String)> {
+    if text.is_empty() || text == "(no content)" {
         return None;
     }
-    Some(sanitize(
-        &text.split_whitespace().collect::<Vec<_>>().join(" "),
-    ))
+    if text == "[Request interrupted by user]"
+        || text == "[Request interrupted by user for tool use]"
+    {
+        return Some((Kind::Interrupted, "Interrupted".to_owned()));
+    }
+    // A message's own lead line comes before its tag.
+    let body = if text.starts_with(PEER_LEAD) || text.starts_with(RELAY_LEAD) {
+        text.split_once('\n')
+            .map_or("", |(_, rest)| rest.trim_start())
+    } else {
+        text
+    };
+    if body.starts_with("<teammate-message ") {
+        let from = attribute(body, "teammate_id").unwrap_or("teammate");
+        let what = attribute(body, "summary")
+            .map(str::to_owned)
+            .or_else(|| element(body, "teammate-message").map(str::to_owned))
+            .unwrap_or_default();
+        return Some((
+            Kind::Message {
+                from: from.to_owned(),
+            },
+            what,
+        ));
+    }
+    if body.starts_with("<cross-session-message") {
+        let from = attribute(body, "from-name")
+            .or_else(|| {
+                attribute(body, "from").map(|from| {
+                    let name = from.rsplit('/').next().unwrap_or(from);
+                    name.strip_suffix(".sock").unwrap_or(name)
+                })
+            })
+            .unwrap_or("peer");
+        let what = element(body, "cross-session-message").unwrap_or_default();
+        return Some((
+            Kind::Message {
+                from: from.to_owned(),
+            },
+            what.to_owned(),
+        ));
+    }
+    if body.starts_with("<channel source=\"") {
+        let source = attribute(body, "source").unwrap_or_default();
+        let server = source.rsplit(':').next().unwrap_or(source);
+        let from = match attribute(body, "user") {
+            Some(user) => format!("{server} · {user}"),
+            None => server.to_owned(),
+        };
+        let what = element(body, "channel").unwrap_or_default();
+        return Some((Kind::Relayed { from }, what.to_owned()));
+    }
+    if text.starts_with("<command-name>") || text.starts_with("<command-message>") {
+        let name = element(text, "command-name")
+            .or_else(|| element(text, "command-message"))?
+            .trim_start_matches('/');
+        if element(text, "skill-format").is_some() {
+            return Some((Kind::Command, format!("Skill({name})")));
+        }
+        let args = element(text, "command-args").unwrap_or_default();
+        return Some((Kind::Command, format!("/{name} {args}")));
+    }
+    if text.starts_with("<bash-input>") {
+        return Some((Kind::Shell, element(text, "bash-input")?.to_owned()));
+    }
+    if text.contains("<user-memory-input>") {
+        return Some((Kind::Memory, element(text, "user-memory-input")?.to_owned()));
+    }
+    if text.contains("<task-notification") {
+        // A tool call's late result shows with the call, not here.
+        if element(text, "task-type") == Some("tool_call") {
+            return None;
+        }
+        let summary = element(text, "summary")?;
+        let status = element(text, "status").unwrap_or_default().to_owned();
+        return Some((Kind::Ended { status }, summary.to_owned()));
+    }
+    // Shell output, command output, ticks, caveats, wakes and the rest of
+    // what Claude Code sends as a user line draw nothing here.
+    if text.starts_with('<') {
+        return None;
+    }
+    Some((Kind::Prompt, text.to_owned()))
+}
+
+/// The text inside the first `<name …>…</name>` of `text`.
+fn element<'text>(text: &'text str, name: &str) -> Option<&'text str> {
+    let open = format!("<{name}");
+    let mut from = 0;
+    let start = loop {
+        let at = from + text.get(from..)?.find(&open)?;
+        let after = at + open.len();
+        match text.get(after..)?.chars().next() {
+            Some('>' | ' ' | '\n' | '\t') => break after,
+            _ => from = after,
+        }
+    };
+    let inner = start + text.get(start..)?.find('>')? + 1;
+    let end = inner + text.get(inner..)?.find(&format!("</{name}>"))?;
+    Some(text.get(inner..end)?.trim())
+}
+
+/// The value of the first `name="…"` attribute in `text`.
+fn attribute<'text>(text: &'text str, name: &str) -> Option<&'text str> {
+    let key = format!(" {name}=\"");
+    let start = text.find(&key)? + key.len();
+    let end = start + text.get(start..)?.find('"')?;
+    text.get(start..end)
 }
 
 /// Adds `item` to the end of `list`, keeping the last [`KEEP`].
@@ -521,7 +719,7 @@ fn keep(list: &mut Vec<Said>, item: Said) {
 
 /// What one tool call adds: its line in the activity, a task change, a sub-
 /// agent, or a file it changed.
-fn call(stretch: &mut Stretch, at: Option<&str>, part: &Part<'_>) {
+fn call(stretch: &mut Stretch, at: Option<&str>, cwd: Option<&str>, part: &Part<'_>) {
     let name = part.name.as_deref().unwrap_or("tool");
     let input = part
         .input
@@ -573,23 +771,156 @@ fn call(stretch: &mut Stretch, at: Option<&str>, part: &Part<'_>) {
         }
         _ => {}
     }
-    let what = input
-        .description
-        .as_deref()
-        .or(input.command.as_deref())
-        .or(input.file_path.as_deref())
-        .or(input.pattern.as_deref())
-        .or(input.skill.as_deref())
-        .or(input.subject.as_deref())
-        .unwrap_or_default();
-    let what = what.lines().next().unwrap_or_default();
-    keep(
-        &mut facts.activity,
-        Said {
-            at: at.map(str::to_owned),
-            text: sanitize(&format!("{name}  {what}")),
+    if let Some((shown, what)) = tool_line(name, &input, part.input, cwd) {
+        keep(
+            &mut facts.activity,
+            Said {
+                at: at.map(str::to_owned),
+                text: sanitize(&what.split_whitespace().collect::<Vec<_>>().join(" ")),
+                kind: Kind::Tool { name: shown },
+            },
+        );
+    }
+}
+
+/// How many characters of a shell command a collapsed row shows.
+const COMMAND_CHARS: usize = 160;
+
+/// How many characters of a message a row shows.
+const MESSAGE_CHARS: usize = 200;
+
+/// The name Claude Code shows for a tool call and what it writes in the
+/// brackets after it; `None` for the calls it draws no row for, such as
+/// the task list's.
+fn tool_line(
+    name: &str,
+    input: &Input<'_>,
+    raw: Option<&RawValue>,
+    cwd: Option<&str>,
+) -> Option<(String, String)> {
+    let path =
+        |path: Option<&Cow<'_, str>>| path.map(|path| shown_path(path, cwd)).unwrap_or_default();
+    let (shown, what) = match name {
+        "TodoWrite" | "TaskCreate" | "TaskUpdate" | "TaskList" | "TaskGet" => return None,
+        "Bash" | "PowerShell" => {
+            let command = input.command.as_deref().unwrap_or_default();
+            let lines: Vec<_> = command.lines().take(2).collect();
+            let mut what = lines.join(" ");
+            if what.chars().count() > COMMAND_CHARS || command.lines().count() > 2 {
+                what = what.chars().take(COMMAND_CHARS).collect::<String>() + "…";
+            }
+            (name.to_owned(), what)
+        }
+        "Read" => {
+            let mut what = path(input.file_path.as_ref());
+            if let Some(pages) = input.pages.as_deref() {
+                what.push_str(&format!(" · pages {pages}"));
+            }
+            ("Read".to_owned(), what)
+        }
+        "Edit" | "MultiEdit" => {
+            let created = input.old_string.as_deref() == Some("");
+            let shown = if created { "Create" } else { "Update" };
+            (shown.to_owned(), path(input.file_path.as_ref()))
+        }
+        "Write" => ("Write".to_owned(), path(input.file_path.as_ref())),
+        "NotebookEdit" => (
+            "Edit Notebook".to_owned(),
+            path(input.notebook_path.as_ref()),
+        ),
+        "Grep" | "Glob" => {
+            let mut what = format!(
+                "pattern: \"{}\"",
+                input.pattern.as_deref().unwrap_or_default()
+            );
+            if let Some(dir) = input.path.as_ref() {
+                what.push_str(&format!(", path: \"{}\"", shown_path(dir, cwd)));
+            }
+            ("Search".to_owned(), what)
+        }
+        "Agent" | "Task" => {
+            let shown = match input.subagent_type.as_deref() {
+                None | Some("" | "general-purpose") => "Agent",
+                Some(kind) => kind,
+            };
+            (
+                shown.to_owned(),
+                input.description.as_deref().unwrap_or_default().to_owned(),
+            )
+        }
+        "WebFetch" => (
+            "Fetch".to_owned(),
+            input.url.as_deref().unwrap_or_default().to_owned(),
+        ),
+        "WebSearch" => (
+            "Web Search".to_owned(),
+            format!("\"{}\"", input.query.as_deref().unwrap_or_default()),
+        ),
+        "Skill" => (
+            "Skill".to_owned(),
+            input
+                .skill
+                .as_deref()
+                .unwrap_or_default()
+                .trim_start_matches('/')
+                .to_owned(),
+        ),
+        "SendMessage" => {
+            let message = match &input.message {
+                Some(serde_json::Value::String(text)) => text.clone(),
+                Some(other) => other.to_string(),
+                None => String::new(),
+            };
+            let mut message: String = message.chars().take(MESSAGE_CHARS).collect();
+            if message.chars().count() == MESSAGE_CHARS {
+                message.push('…');
+            }
+            let to = input.to.as_deref().unwrap_or_default();
+            ("SendMessage".to_owned(), format!("{to} ← \"{message}\""))
+        }
+        _ => match name
+            .strip_prefix("mcp__")
+            .and_then(|rest| rest.split_once("__"))
+        {
+            Some((server, tool)) => (format!("{server} - {tool} (MCP)"), fields(raw)),
+            None => (name.to_owned(), fields(raw)),
         },
-    );
+    };
+    Some((shown, what))
+}
+
+/// A tool's input as Claude Code writes it for a tool with no row of its
+/// own: `key: value` pairs, the values as JSON.
+fn fields(raw: Option<&RawValue>) -> String {
+    raw.and_then(|raw| {
+        serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(raw.get()).ok()
+    })
+    .map(|map| {
+        map.iter()
+            .map(|(key, value)| format!("{key}: {value}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    })
+    .unwrap_or_default()
+}
+
+/// `path` as Claude Code shows it: inside the session's folder relative to
+/// it, under the home folder from `~`, otherwise whole.
+fn shown_path(path: &str, cwd: Option<&str>) -> String {
+    if let Some(inside) = cwd
+        .and_then(|cwd| path.strip_prefix(cwd))
+        .and_then(|rest| rest.strip_prefix('/'))
+        .filter(|rest| !rest.is_empty())
+    {
+        return inside.to_owned();
+    }
+    if let Some(home) = std::env::var_os("HOME").and_then(|home| home.into_string().ok())
+        && let Some(rest) = path.strip_prefix(&home)
+        && (rest.is_empty() || rest.starts_with('/'))
+    {
+        return format!("~{rest}");
+    }
+    path.to_owned()
 }
 
 #[cfg(test)]
@@ -693,5 +1024,83 @@ mod tests {
         assert_eq!(reading.facts(), forward(&path));
         assert_eq!(reading.catch_up(&path), Some(false));
         let _ = std::fs::remove_file(path);
+    }
+}
+
+#[cfg(test)]
+mod entries {
+    use super::{Kind, said_as};
+
+    fn shown(text: &str) -> Option<(Kind, String)> {
+        said_as(text)
+    }
+
+    #[test]
+    fn user_lines_show_as_claude_code_draws_them() {
+        assert_eq!(
+            shown("fix the build"),
+            Some((Kind::Prompt, "fix the build".to_owned()))
+        );
+        assert_eq!(
+            shown(
+                "<command-message>review</command-message>\n<command-name>/review</command-name>\n<command-args>42</command-args>"
+            ),
+            Some((Kind::Command, "/review 42".to_owned()))
+        );
+        assert_eq!(
+            shown("<bash-input>ls -la</bash-input>"),
+            Some((Kind::Shell, "ls -la".to_owned()))
+        );
+        assert_eq!(
+            shown(
+                "<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>\n<summary>Build finished</summary>\n</task-notification>"
+            ),
+            Some((
+                Kind::Ended {
+                    status: "completed".to_owned()
+                },
+                "Build finished".to_owned()
+            ))
+        );
+        assert_eq!(
+            shown(
+                "Another Claude session sent a message:\n<cross-session-message from-name=\"notes\">Done with the draft</cross-session-message>"
+            ),
+            Some((
+                Kind::Message {
+                    from: "notes".to_owned()
+                },
+                "Done with the draft".to_owned()
+            ))
+        );
+        assert_eq!(
+            shown(
+                "<teammate-message teammate_id=\"writer\" summary=\"Draft ready\">\nThe draft is in place.\n</teammate-message>"
+            ),
+            Some((
+                Kind::Message {
+                    from: "writer".to_owned()
+                },
+                "Draft ready".to_owned()
+            ))
+        );
+        assert_eq!(
+            shown("[Request interrupted by user]"),
+            Some((Kind::Interrupted, "Interrupted".to_owned()))
+        );
+        assert_eq!(
+            shown("<bash-stdout>out</bash-stdout><bash-stderr></bash-stderr>"),
+            None
+        );
+        assert_eq!(
+            shown("<local-command-caveat>Caveat</local-command-caveat>"),
+            None
+        );
+        assert_eq!(
+            shown(
+                "<task-notification>\n<tool-use-id>t1</tool-use-id>\n<task-type>tool_call</task-type>\n<summary>x</summary></task-notification>"
+            ),
+            None
+        );
     }
 }
