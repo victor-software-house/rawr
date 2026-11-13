@@ -52,6 +52,9 @@ struct State {
     next: u64,
     /// Hand-offs waiting for their new window to draw, by view.
     handoffs: HashMap<u64, Handoff>,
+    /// The clients with a go-to under way, which take no other until it
+    /// ends, so clicks in a row start one copy, not one each.
+    going: HashSet<u64>,
 }
 
 /// A floating window going to a pane in another tab: the copy the daemon
@@ -60,6 +63,8 @@ struct Handoff {
     carry: Carry,
     old: Here,
     target: String,
+    /// The client of the window it replaces.
+    from: u64,
 }
 
 fn notice(send: &SyncSender<FromDaemon>, error: &anyhow::Error) {
@@ -103,6 +108,7 @@ pub(crate) fn run() -> Result<()> {
             clients: HashMap::new(),
             next: 0,
             handoffs: HashMap::new(),
+            going: HashSet::new(),
         }),
         facts: Mutex::new(HashMap::new()),
         catalog: Mutex::new(None),
@@ -253,12 +259,13 @@ fn serve(hub: &Arc<Hub>, stream: UnixStream, socket: &Path) {
             ToDaemon::Drawn => {
                 let handoff = hold(&hub.state).handoffs.remove(&view);
                 if let (Some(handoff), Some(new)) = (handoff, here.clone()) {
-                    let send = send.clone();
+                    let (hub, send) = (Arc::clone(hub), send.clone());
                     thread::spawn(move || {
                         if let Err(error) = actions::take_over(&new, &handoff.target, &handoff.old)
                         {
                             notice(&send, &error);
                         }
+                        hold(&hub.state).going.remove(&handoff.from);
                     });
                 }
             }
@@ -267,21 +274,37 @@ fn serve(hub: &Arc<Hub>, stream: UnixStream, socket: &Path) {
                 block,
                 carry,
             } => {
+                {
+                    let mut state = hold(&hub.state);
+                    if !state.going.insert(id) {
+                        continue;
+                    }
+                    // The copy may connect before the go-to returns, so the
+                    // hand-off it opens with is known before it starts.
+                    if let Some(old) = here.clone() {
+                        state.handoffs.insert(
+                            view,
+                            Handoff {
+                                carry: actions::handed(carry, &block),
+                                old,
+                                target: block.clone(),
+                                from: id,
+                            },
+                        );
+                    }
+                }
                 let (hub, send, here) = (Arc::clone(hub), send.clone(), here.clone());
                 thread::spawn(move || {
-                    match actions::go_to(here.as_ref(), &session, &block, view) {
-                        Ok(actions::Went::Shown) => {}
-                        Ok(actions::Went::Handed { old, target }) => {
-                            hold(&hub.state).handoffs.insert(
-                                view,
-                                Handoff {
-                                    carry: actions::handed(carry, &target),
-                                    old,
-                                    target,
-                                },
-                            );
-                        }
-                        Err(error) => notice(&send, &error),
+                    let went = actions::go_to(here.as_ref(), &session, &block, view);
+                    // A copy that started keeps the hand-off and the go-to
+                    // until it takes over; anything else ends both here.
+                    if !matches!(went, Ok(actions::Went::Handed { .. })) {
+                        let mut state = hold(&hub.state);
+                        state.handoffs.remove(&view);
+                        state.going.remove(&id);
+                    }
+                    if let Err(error) = went {
+                        notice(&send, &error);
                     }
                 });
             }
@@ -310,6 +333,7 @@ fn serve(hub: &Arc<Hub>, stream: UnixStream, socket: &Path) {
     }
     let mut state = hold(&hub.state);
     state.clients.remove(&id);
+    state.going.remove(&id);
     if state.clients.is_empty() {
         // The caches serve open windows only.
         hold(&hub.facts).clear();
