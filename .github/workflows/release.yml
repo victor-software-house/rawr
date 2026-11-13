@@ -22,7 +22,7 @@ jobs:
       id-token: write # the called workflow's publish job requests it
     uses: victor-software-house/verctl/.github/workflows/release.yml@ff96452d1efb4cb2657a1d70af68984bd2fab601 # v0.7.2
     with:
-      mise-version: 2026.11.2
+      mise-version: 2026.11.6
       mise-env: ci,release
       # No crate goes to crates.io, so docs.rs has nothing to build.
       docs: false
