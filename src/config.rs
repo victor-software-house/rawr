@@ -56,7 +56,7 @@ pub(crate) struct Config {
 #[serde(default, deny_unknown_fields)]
 pub(crate) struct History {
     /// The most sessions one pane's index holds.
-    #[garde(range(min = 1))]
+    #[garde(custom(at_least_one))]
     pub(crate) per_pane: usize,
 }
 
@@ -65,7 +65,7 @@ pub(crate) struct History {
 #[serde(default, deny_unknown_fields)]
 pub(crate) struct Picker {
     /// The most sessions the picker shows before `ctrl+o` expands the list.
-    #[garde(range(min = 1))]
+    #[garde(custom(at_least_one))]
     pub(crate) rows: usize,
 }
 
@@ -118,6 +118,18 @@ impl Default for Drain {
             grace: minutes(1),
         }
     }
+}
+
+/// A rule for a count that must leave room for one.
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "garde passes the value and the validation context by reference"
+)]
+fn at_least_one(count: &usize, _: &()) -> garde::Result {
+    if *count == 0 {
+        return Err(garde::Error::new("must be at least 1"));
+    }
+    Ok(())
 }
 
 const fn minutes(count: u64) -> Duration {
