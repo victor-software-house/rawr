@@ -1,5 +1,6 @@
-//! What the app holds and how keys change it. Nothing here draws or reads
-//! the terminal, so every key is a plain function of the state.
+//! What the app holds and how keys and the mouse change it. Nothing here
+//! draws or reads the terminal, so every event is a plain function of the
+//! state.
 
 use ratatui::crossterm::event::{
     KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
@@ -9,39 +10,12 @@ use crate::app::feed::Pane;
 use crate::session::Agent;
 use crate::status::Status;
 
-/// How the screen is laid out. The preview build cycles them with `ctrl+l`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Layout {
-    /// Panes on the left, the selected pane on the right.
-    Columns,
-    /// Panes on top, the selected pane's sessions below.
-    Stacked,
-    /// One full-width view at a time.
-    Tabs,
-}
-
-impl Layout {
-    pub(crate) const fn name(self) -> &'static str {
-        match self {
-            Self::Columns => "two columns",
-            Self::Stacked => "stacked",
-            Self::Tabs => "tabs",
-        }
-    }
-
-    const fn next(self) -> Self {
-        match self {
-            Self::Columns => Self::Stacked,
-            Self::Stacked => Self::Tabs,
-            Self::Tabs => Self::Columns,
-        }
-    }
-}
-
-/// Which list the cursor is in.
+/// Which list the keys move in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Focus {
+    /// The sidebar of panes.
     Panes,
+    /// The selected pane's sessions.
     Sessions,
     /// The search results; the box at the bottom takes the keys.
     Search,
@@ -58,7 +32,7 @@ pub(crate) enum Link {
     Stale(String),
 }
 
-/// What a key asks the loop to do.
+/// What an event asks the loop to do.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Action {
     None,
@@ -74,16 +48,16 @@ pub(crate) enum Action {
     Search,
 }
 
-/// A footer button; each does what its key does.
+/// A button; each does what its key does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Button {
     GoTo,
     Resume,
-    Switch,
     Search,
     Help,
     Quit,
-    Back,
+    /// Folds the sidebar to a rail of glyphs, or opens it again.
+    Sidebar,
 }
 
 /// Something on screen that takes a click.
@@ -92,32 +66,22 @@ pub(crate) enum Target {
     Pane(usize),
     Session(usize),
     Result(usize),
-    Tab(Focus),
     Search,
-    Layout,
     Button(Button),
-    /// The border between the two parts of the screen; dragging it resizes
-    /// them.
-    Divider,
+    /// The edge of the sidebar; dragging it resizes the sidebar.
+    Edge,
 }
 
-/// The smallest share either part of a split keeps, in percent.
-const MIN_SPLIT: u16 = 15;
+/// The narrowest open sidebar, and the narrowest main area beside it.
+pub(crate) const MIN_SIDEBAR: u16 = 22;
+const MIN_MAIN: u16 = 30;
 
 #[derive(Debug)]
 pub(crate) struct App {
-    /// What the pointer is over.
-    pub(crate) hover: Option<Target>,
-    /// The panes column's share of the width in the two-column layout, and
-    /// the panes list's share of the height in the stacked one, in percent.
-    pub(crate) split: u16,
-    /// Whether the divider is being dragged.
-    pub(crate) dragging: bool,
     pub(crate) panes: Vec<Pane>,
     pub(crate) pane: usize,
     pub(crate) session: usize,
     pub(crate) focus: Focus,
-    pub(crate) layout: Layout,
     pub(crate) link: Link,
     pub(crate) query: String,
     pub(crate) results: Vec<Agent>,
@@ -127,30 +91,39 @@ pub(crate) struct App {
     pub(crate) notice: Option<String>,
     /// The block this app runs in, so its own pane is marked.
     pub(crate) here: Option<String>,
+    /// What the pointer is over.
+    pub(crate) hover: Option<Target>,
+    /// The open sidebar's width, in columns.
+    pub(crate) sidebar: u16,
+    /// Whether the sidebar is folded to its rail.
+    pub(crate) folded: bool,
+    /// Whether the sidebar's edge is being dragged.
+    pub(crate) dragging: bool,
+    /// The spinner's frame, moved on by the loop's tick while a pane works.
+    pub(crate) frame: usize,
 }
 
 /// Where panes go in the list: the ones that need the user first.
 pub(crate) const fn rank(status: Status) -> u8 {
     match status {
-        Status::NeedsInput => 0,
+        Status::NeedsPermission | Status::NeedsAnswer | Status::NeedsLogin | Status::NeedsInput => {
+            0
+        }
         Status::Failed => 1,
-        Status::Working => 2,
-        Status::Idle => 3,
-        Status::Stopped => 4,
+        Status::Done => 2,
+        Status::Working => 3,
+        Status::Idle => 4,
+        Status::Stopped => 5,
     }
 }
 
 impl App {
-    pub(crate) fn new(layout: Layout, here: Option<String>) -> Self {
+    pub(crate) fn new(here: Option<String>) -> Self {
         Self {
-            hover: None,
-            split: 44,
-            dragging: false,
             panes: Vec::new(),
             pane: 0,
             session: 0,
             focus: Focus::Panes,
-            layout,
             link: Link::Connecting,
             query: String::new(),
             results: Vec::new(),
@@ -158,11 +131,21 @@ impl App {
             help: false,
             notice: None,
             here,
+            hover: None,
+            sidebar: 38,
+            folded: false,
+            dragging: false,
+            frame: 0,
         }
     }
 
     pub(crate) fn selected(&self) -> Option<&Pane> {
         self.panes.get(self.pane)
+    }
+
+    /// Whether any pane works, so the spinner needs the tick.
+    pub(crate) fn animating(&self) -> bool {
+        self.panes.iter().any(|pane| pane.status == Status::Working)
     }
 
     /// Takes a new list of panes, sorted by attention, and keeps the
@@ -215,8 +198,8 @@ impl App {
         if ctrl && key.code == KeyCode::Char('c') {
             return Action::Quit;
         }
-        if ctrl && key.code == KeyCode::Char('l') {
-            self.layout = self.layout.next();
+        if ctrl && key.code == KeyCode::Char('b') {
+            self.folded = !self.folded;
             return Action::None;
         }
         if self.help {
@@ -261,11 +244,11 @@ impl App {
             }
             KeyCode::Char('r') => self.resume(),
             KeyCode::Char('<' | '[') => {
-                self.resize(-5);
+                self.widen(-4, u16::MAX);
                 Action::None
             }
             KeyCode::Char('>' | ']') => {
-                self.resize(5);
+                self.widen(4, u16::MAX);
                 Action::None
             }
             KeyCode::Enter => match self.focus {
@@ -306,14 +289,14 @@ impl App {
     }
 
     /// Handles a mouse report. `hit` is what the last frame drew under the
-    /// pointer, `list` the list under it, and `area` the screen body, for
-    /// dragging the divider.
+    /// pointer, `list` the list under it, and `width` the screen's width,
+    /// which bounds the sidebar.
     pub(crate) fn on_mouse(
         &mut self,
         mouse: MouseEvent,
         hit: Option<Target>,
         list: Option<Focus>,
-        area: ratatui::layout::Rect,
+        width: u16,
     ) -> Action {
         if self.help {
             if matches!(mouse.kind, MouseEventKind::Down(_)) {
@@ -340,7 +323,7 @@ impl App {
             MouseEventKind::Down(MouseButton::Left) => {
                 self.notice = None;
                 match hit {
-                    Some(Target::Divider) => {
+                    Some(Target::Edge) => {
                         self.dragging = true;
                         Action::None
                     }
@@ -349,7 +332,11 @@ impl App {
                 }
             }
             MouseEventKind::Drag(MouseButton::Left) if self.dragging => {
-                self.drag_to(mouse.column, mouse.row, area);
+                if self.folded {
+                    self.folded = false;
+                }
+                self.sidebar = mouse.column.saturating_add(1);
+                self.widen(0, width);
                 Action::None
             }
             MouseEventKind::Up(_) => {
@@ -361,28 +348,14 @@ impl App {
         }
     }
 
-    /// Moves the divider to the pointer.
-    fn drag_to(&mut self, column: u16, row: u16, area: ratatui::layout::Rect) {
-        let (at, start, size) = match self.layout {
-            Layout::Columns => (column, area.x, area.width),
-            Layout::Stacked => (row, area.y, area.height),
-            Layout::Tabs => return,
-        };
-        if size == 0 {
-            return;
-        }
-        let share = u32::from(at.saturating_sub(start)) * 100 / u32::from(size);
-        self.split = u16::try_from(share)
-            .unwrap_or(100)
-            .clamp(MIN_SPLIT, 100 - MIN_SPLIT);
-    }
-
-    /// Grows or shrinks the panes part by `by` percent.
-    fn resize(&mut self, by: i16) {
-        self.split = self
-            .split
+    /// Grows the sidebar by `by` columns, keeping both parts usable on a
+    /// screen `width` wide.
+    fn widen(&mut self, by: i16, width: u16) {
+        let most = width.saturating_sub(MIN_MAIN).max(MIN_SIDEBAR);
+        self.sidebar = self
+            .sidebar
             .saturating_add_signed(by)
-            .clamp(MIN_SPLIT, 100 - MIN_SPLIT);
+            .clamp(MIN_SIDEBAR, most);
     }
 
     fn click(&mut self, target: Target) -> Action {
@@ -411,40 +384,33 @@ impl App {
                 self.result = index;
                 Action::None
             }
-            Target::Tab(focus) => {
-                self.focus = focus;
-                if focus == Focus::Search {
-                    Action::Search
-                } else {
-                    Action::None
-                }
-            }
             Target::Search => {
                 self.focus = Focus::Search;
                 Action::Search
             }
-            Target::Layout => {
-                self.layout = self.layout.next();
-                Action::None
-            }
             Target::Button(button) => self.press(button),
-            Target::Divider => Action::None,
+            Target::Edge => Action::None,
         }
     }
 
     fn press(&mut self, button: Button) -> Action {
-        let code = match button {
-            Button::GoTo => KeyCode::Enter,
-            Button::Resume => {
-                return self.resume();
+        match button {
+            Button::GoTo => self.go_to(),
+            Button::Resume => self.resume(),
+            Button::Search => {
+                self.focus = Focus::Search;
+                Action::Search
             }
-            Button::Switch => KeyCode::Tab,
-            Button::Search => KeyCode::Char('/'),
-            Button::Help => KeyCode::Char('?'),
-            Button::Quit => KeyCode::Char('q'),
-            Button::Back => KeyCode::Esc,
-        };
-        self.on_key(KeyEvent::new(code, KeyModifiers::NONE))
+            Button::Help => {
+                self.help = true;
+                Action::None
+            }
+            Button::Quit => Action::Quit,
+            Button::Sidebar => {
+                self.folded = !self.folded;
+                Action::None
+            }
+        }
     }
 
     /// Moves the selection of `list`, the list under the pointer.
@@ -456,14 +422,12 @@ impl App {
     }
 
     pub(crate) fn on_paste(&mut self, text: &str) -> Action {
-        if self.focus != Focus::Search {
-            self.focus = Focus::Search;
-        }
+        self.focus = Focus::Search;
         self.query.push_str(&text.replace(['\n', '\r', '\t'], " "));
         Action::Search
     }
 
-    /// The pointer left the terminal: nothing is hovered.
+    /// The window lost focus: nothing is hovered or dragged.
     pub(crate) fn on_blur(&mut self) {
         self.hover = None;
         self.dragging = false;

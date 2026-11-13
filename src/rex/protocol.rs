@@ -246,6 +246,41 @@ pub(crate) struct StatusRecord {
     pub(crate) app: Option<String>,
     /// The program the record belongs to: `app`, else the nearest parent's.
     pub(crate) effective_app: Option<String>,
+    /// What a `blocked` record waits for; absent on other states.
+    #[serde(default)]
+    pub(crate) kind: Option<Kind>,
+    /// How far a `working` or `blocked` record is, 0 to 100; absent when the
+    /// program gives no percentage.
+    #[serde(default)]
+    pub(crate) progress: Option<u8>,
+    /// The one line the program gave: what it is doing or waiting for.
+    #[serde(default)]
+    pub(crate) msg: Option<String>,
+}
+
+/// What a `blocked` program waits for. The protocol says an unknown kind is
+/// treated as absent, so it reads as [`Kind::Unspecified`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(from = "String")]
+pub(crate) enum Kind {
+    /// Approval to do something.
+    Permission,
+    /// An answer the user must type.
+    Question,
+    /// A login, token or credential.
+    Auth,
+    Unspecified,
+}
+
+impl From<String> for Kind {
+    fn from(kind: String) -> Self {
+        match kind.as_str() {
+            "permission" => Self::Permission,
+            "question" => Self::Question,
+            "auth" => Self::Auth,
+            _ => Self::Unspecified,
+        }
+    }
 }
 
 /// The result of `com.superlogical.terminal.program_status`.

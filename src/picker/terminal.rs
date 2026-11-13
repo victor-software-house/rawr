@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use ratatui::crossterm::cursor::{Hide, Show};
+use ratatui::crossterm::cursor::{Hide, SetCursorStyle, Show};
 use ratatui::crossterm::event::{
     self, DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
     EnableFocusChange, EnableMouseCapture,
@@ -168,6 +168,7 @@ fn leave() {
         DisableBracketedPaste,
         DisableFocusChange,
         DisableMouseCapture,
+        SetCursorStyle::DefaultUserShape,
         Show,
         LeaveAlternateScreen
     );

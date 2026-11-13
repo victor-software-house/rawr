@@ -8,20 +8,33 @@ use ctl_core::prelude::*;
 use serde::Serialize;
 
 use crate::index::{BlockId, Entry, PaneIndex};
-use crate::rex::{Block, Client, Session, State, StatusRecord, session_is_gone};
+use crate::rex::{Block, Client, Kind, Session, State, StatusRecord, session_is_gone};
 use crate::session;
 
 /// The program name Claude Code reports its status under.
 const CLAUDE: &str = "claude-code";
 
-/// What a pane's Claude is doing, as Claude Code's agents view words it.
+/// What a pane's Claude is doing, one word for every state and kind the
+/// Program Status Protocol has.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Status {
-    Working,
+    /// `blocked` with `kind=permission`: approval to do something.
+    NeedsPermission,
+    /// `blocked` with `kind=question`: an answer the user must type.
+    NeedsAnswer,
+    /// `blocked` with `kind=auth`: a login, token or credential.
+    NeedsLogin,
+    /// `blocked` with no kind, or one the protocol does not name.
     NeedsInput,
-    Idle,
+    /// `error`: failed and stopped.
     Failed,
+    /// `done`: finished a piece of work the user has not looked at yet.
+    Done,
+    /// `working`, at the root or in any child record.
+    Working,
+    /// `idle`: at rest, waiting for the next instruction.
+    Idle,
     /// No Claude reports a status in the pane, though its index lists a
     /// session.
     Stopped,
@@ -31,11 +44,32 @@ impl Status {
     /// The word `rawr status` shows.
     pub(crate) const fn word(self) -> &'static str {
         match self {
-            Self::Working => "Working",
+            Self::NeedsPermission => "Needs permission",
+            Self::NeedsAnswer => "Needs an answer",
+            Self::NeedsLogin => "Needs login",
             Self::NeedsInput => "Needs input",
-            Self::Idle => "Idle",
             Self::Failed => "Failed",
+            Self::Done => "Done",
+            Self::Working => "Working",
+            Self::Idle => "Idle",
             Self::Stopped => "Stopped",
+        }
+    }
+
+    /// Whether the user has to act before the pane's Claude can go on.
+    pub(crate) const fn needs_user(self) -> bool {
+        match self {
+            Self::NeedsPermission | Self::NeedsAnswer | Self::NeedsLogin | Self::NeedsInput => true,
+            Self::Failed | Self::Done | Self::Working | Self::Idle | Self::Stopped => false,
+        }
+    }
+
+    const fn blocked(kind: Option<Kind>) -> Self {
+        match kind {
+            Some(Kind::Permission) => Self::NeedsPermission,
+            Some(Kind::Question) => Self::NeedsAnswer,
+            Some(Kind::Auth) => Self::NeedsLogin,
+            Some(Kind::Unspecified) | None => Self::NeedsInput,
         }
     }
 
@@ -43,44 +77,74 @@ impl Status {
     ///
     /// Only records of Claude Code count: a program that took the pane over
     /// after Claude exited reports its own status, and the pane's Claude has
-    /// stopped. A root record that waits for the user reads Needs input even
-    /// while a child runs, because the user has to act. Otherwise a root that
-    /// is working, or any working child record (a background task), reads
-    /// Working; a child that has finished counts for nothing.
+    /// stopped. A record that waits for the user, root or child, wins, because
+    /// the user has to act. Otherwise a root that is working, or any working
+    /// child record (a background task), reads Working; a child that has
+    /// finished counts for nothing, and the root's own state decides.
     pub(crate) fn from_records(records: &[StatusRecord]) -> Self {
-        let claude: Vec<&StatusRecord> = records
-            .iter()
-            .filter(|record| {
-                record.effective_app.as_deref().or(record.app.as_deref()) == Some(CLAUDE)
-            })
-            .collect();
+        let claude = claude_records(records);
         if claude.is_empty() {
             return Self::Stopped;
         }
-        let root = claude
+        if let Some(waiting) = deciding(&claude).filter(|record| record.state == State::Blocked) {
+            return Self::blocked(waiting.kind);
+        }
+        if claude.iter().any(|record| record.state == State::Working) {
+            return Self::Working;
+        }
+        // No record waits or works here, so the root rests, finished or failed.
+        match claude
             .iter()
             .find(|record| record.id.is_empty())
-            .map(|record| record.state);
-        let working_child = claude
-            .iter()
-            .any(|record| !record.id.is_empty() && record.state == State::Working);
-        match (root, working_child) {
-            (Some(State::Blocked), _) => Self::NeedsInput,
-            (Some(State::Working), _) | (_, true) => Self::Working,
-            (Some(State::Error), false) => Self::Failed,
-            (Some(State::Idle | State::Done) | None, false) => Self::Idle,
+            .map(|record| record.state)
+        {
+            Some(State::Error) => Self::Failed,
+            Some(State::Done) => Self::Done,
+            Some(State::Idle | State::Working | State::Blocked) | None => Self::Idle,
         }
+    }
+
+    /// The progress and the line of the record that decides the word: the
+    /// one waiting for the user, else a working one, else the root.
+    pub(crate) fn detail(records: &[StatusRecord]) -> (Option<u8>, Option<String>) {
+        let claude = claude_records(records);
+        deciding(&claude).map_or((None, None), |record| (record.progress, record.msg.clone()))
     }
 
     /// The word, in the colour that says whether the pane needs someone.
     fn cell(self) -> Text {
         match self {
-            Self::Working => Text::plain(self.word()),
-            Self::NeedsInput => Text::new().warning(self.word()),
+            Self::NeedsPermission | Self::NeedsAnswer | Self::NeedsLogin | Self::NeedsInput => {
+                Text::new().warning(self.word())
+            }
             Self::Failed => Text::new().error(self.word()),
+            Self::Done | Self::Working => Text::plain(self.word()),
             Self::Idle | Self::Stopped => Text::new().muted(self.word()),
         }
     }
+}
+
+/// The records Claude Code reported.
+fn claude_records(records: &[StatusRecord]) -> Vec<&StatusRecord> {
+    records
+        .iter()
+        .filter(|record| record.effective_app.as_deref().or(record.app.as_deref()) == Some(CLAUDE))
+        .collect()
+}
+
+/// The record that decides a pane's word: one waiting for the user, root
+/// first; else a working one, root first; else the root.
+fn deciding<'a>(claude: &[&'a StatusRecord]) -> Option<&'a StatusRecord> {
+    let first = |state: State| {
+        claude
+            .iter()
+            .filter(|record| record.state == state)
+            .min_by_key(|record| !record.id.is_empty())
+            .copied()
+    };
+    first(State::Blocked)
+        .or_else(|| first(State::Working))
+        .or_else(|| claude.iter().find(|record| record.id.is_empty()).copied())
 }
 
 /// One pane, as `rawr status` lists it.
@@ -193,6 +257,9 @@ mod tests {
             state,
             app: Some(app.to_owned()),
             effective_app: Some(app.to_owned()),
+            kind: None,
+            progress: None,
+            msg: None,
         }
     }
 
@@ -221,7 +288,7 @@ mod tests {
     fn the_other_root_states_have_their_words() {
         let root = |state| Status::from_records(&[record("", state, "claude-code")]);
         assert_eq!(root(State::Working), Status::Working);
-        assert_eq!(root(State::Done), Status::Idle);
+        assert_eq!(root(State::Done), Status::Done);
         assert_eq!(root(State::Idle), Status::Idle);
         assert_eq!(root(State::Error), Status::Failed);
     }
@@ -251,7 +318,7 @@ mod tests {
             let root = |state| record("", state, "claude-code");
             let word = |state| Status::from_records(&[root(state), finished.clone()]);
             assert_eq!(word(State::Blocked), Status::NeedsInput);
-            assert_eq!(word(State::Done), Status::Idle);
+            assert_eq!(word(State::Done), Status::Done);
             assert_eq!(word(State::Error), Status::Failed);
         }
     }
@@ -310,7 +377,7 @@ mod tests {
         assert_eq!(
             found,
             [
-                row("work/shell", "Fix checkout", Status::NeedsInput),
+                row("work/shell", "Fix checkout", Status::NeedsPermission),
                 row("work/0190f3a2", "Untitled session", Status::Stopped),
             ]
         );

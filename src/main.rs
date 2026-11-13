@@ -261,7 +261,7 @@ fn open_app() -> Result<Outcome> {
         eprintln!("rawr needs a terminal; rawr status --format json lists the panes");
         return Ok(Outcome::Nothing);
     }
-    match app::run(app::Layout::Columns)? {
+    match app::run()? {
         Some(agent) => match agent.resume()? {},
         None => Ok(Outcome::Recorded),
     }

@@ -8,7 +8,7 @@ use anyhow::Result;
 
 use super::events::Event;
 use super::fake::{FakeServer, after_hang_up};
-use super::{Block, Client, Endpoint, Session, State, StatusRecord};
+use super::{Block, Client, Endpoint, Kind, Session, State, StatusRecord};
 
 const HANDSHAKE: &str = include_str!("../../testdata/rex/handshake.jsonl");
 const LISTING: &str = include_str!("../../testdata/rex/listing.jsonl");
@@ -45,6 +45,9 @@ fn claude(id: &str, state: State, app: Option<&str>) -> StatusRecord {
         state,
         app: app.map(str::to_owned),
         effective_app: Some("claude-code".to_owned()),
+        kind: None,
+        progress: None,
+        msg: None,
     }
 }
 
@@ -142,11 +145,17 @@ fn program_status_reads_the_records_and_a_closed_block_or_session_has_none() {
         state: State::Idle,
         app: None,
         effective_app: None,
+        kind: None,
+        progress: None,
+        msg: None,
     };
     assert_eq!(
         records,
         Some(vec![
-            claude("", State::Blocked, Some("claude-code")),
+            StatusRecord {
+                kind: Some(Kind::Permission),
+                ..claude("", State::Blocked, Some("claude-code"))
+            },
             claude("agent-1", State::Working, None),
             unknown,
         ])

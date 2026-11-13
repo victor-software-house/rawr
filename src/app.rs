@@ -12,16 +12,22 @@ mod view;
 
 use std::sync::mpsc;
 use std::thread;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
+use ratatui::crossterm::cursor::SetCursorStyle;
 use ratatui::crossterm::event::{self, Event};
+use ratatui::crossterm::execute;
 use report::{Report, Reporter};
-pub(crate) use state::Layout;
 use state::{Action, App, Link};
 
 use crate::catalog::{self, Found};
 use crate::picker::terminal::{Pointer, Screen};
 use crate::session::{self, Agent};
+
+/// How often the spinner turns while a pane works; the loop waits on
+/// input with no timer otherwise.
+const SPIN: Duration = Duration::from_millis(100);
 
 enum Msg {
     Input(Event),
@@ -38,7 +44,7 @@ enum Msg {
     clippy::wildcard_enum_match_arm,
     reason = "focus and paste events change nothing"
 )]
-pub(crate) fn run(layout: Layout) -> Result<Option<Agent>> {
+pub(crate) fn run() -> Result<Option<Agent>> {
     let (send, receive) = mpsc::channel();
     let input = send.clone();
     thread::spawn(move || {
@@ -58,9 +64,10 @@ pub(crate) fn run(layout: Layout) -> Result<Option<Agent>> {
         }
     });
 
-    let mut app = App::new(layout, std::env::var("REX_BLOCK").ok());
+    let mut app = App::new(std::env::var("REX_BLOCK").ok());
     let mut found: Option<Vec<Found>> = None;
     let mut screen = Screen::enter_with(false)?;
+    execute!(std::io::stderr(), SetCursorStyle::BlinkingBar).context("set the cursor shape")?;
     let mut reporter = Reporter::default();
     loop {
         reporter.send(own_status(&app))?;
@@ -74,15 +81,28 @@ pub(crate) fn run(layout: Layout) -> Result<Option<Agent>> {
         } else {
             Pointer::Default
         })?;
-        let first = receive.recv().context("the app's inputs closed")?;
-        for msg in std::iter::once(first).chain(receive.try_iter()) {
+        let first = if app.animating() {
+            match receive.recv_timeout(SPIN) {
+                Ok(msg) => Some(msg),
+                Err(mpsc::RecvTimeoutError::Timeout) => None,
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    anyhow::bail!("the app's inputs closed")
+                }
+            }
+        } else {
+            Some(receive.recv().context("the app's inputs closed")?)
+        };
+        if first.is_none() {
+            app.frame = app.frame.wrapping_add(1);
+        }
+        for msg in first.into_iter().chain(receive.try_iter()) {
             let action = match msg {
                 Msg::Input(Event::Key(key)) => app.on_key(key),
                 Msg::Input(Event::Mouse(mouse)) => app.on_mouse(
                     mouse,
                     hits.target(mouse.column, mouse.row),
                     hits.list(mouse.column, mouse.row),
-                    hits.body,
+                    hits.width,
                 ),
                 Msg::Input(Event::Paste(text)) => app.on_paste(&text),
                 Msg::Input(Event::FocusLost) => {
@@ -157,7 +177,11 @@ fn own_status(app: &App) -> Report {
                     .filter(|pane| pane.status == status)
                     .count()
             };
-            let waiting = count(crate::status::Status::NeedsInput);
+            let waiting = app
+                .panes
+                .iter()
+                .filter(|pane| pane.status.needs_user())
+                .count();
             let working = count(crate::status::Status::Working);
             let mut parts = vec![format!("{} panes", app.panes.len())];
             if waiting > 0 {

@@ -26,16 +26,16 @@ pub(crate) struct Pane {
     /// The session's label and the block's label, as `rawr status` names them.
     pub(crate) name: String,
     pub(crate) status: Status,
+    /// How far the deciding record is, 0 to 100, when its program says.
+    pub(crate) progress: Option<u8>,
+    /// The deciding record's line: what Claude is doing or waits for.
+    pub(crate) msg: Option<String>,
     /// The pane's sessions, newest first, each marked when a live Claude
     /// holds it.
     pub(crate) sessions: Vec<(Agent, bool)>,
 }
 
 impl Pane {
-    pub(crate) const fn status_word(&self) -> &'static str {
-        self.status.word()
-    }
-
     /// The newest session's title.
     pub(crate) fn title(&self) -> &str {
         self.sessions
@@ -206,11 +206,14 @@ fn pane(tracked: &Tracked, dir: &Path, live: &HashSet<String>) -> Option<Pane> {
     if sessions.is_empty() {
         return None;
     }
+    let (progress, msg) = Status::detail(&tracked.records);
     Some(Pane {
         session_id: tracked.session.id.clone(),
         block_id: tracked.block.id.clone(),
         name: pane_name(&tracked.session, &tracked.block),
         status: Status::from_records(&tracked.records),
+        progress,
+        msg,
         sessions,
     })
 }
