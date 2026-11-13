@@ -169,6 +169,8 @@ queue:
       - The first facts of a session appear before its whole transcript is read, newest first.
       - Selecting another session stops reading the first and reads the new one next.
       - Search, facts and the closed list each stream in parts and yield to the newest request.
+    notes:
+      - 2026-11-13, facts stream from the newest line back in 256 KiB parts; search and the closed list still read forward.
 
   - id: RAWR-017
     title: List sessions whose pane was closed
