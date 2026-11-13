@@ -12,6 +12,11 @@ pub(crate) const ERROR: Color = Color::Red;
 pub(crate) const WORKING: Color = Color::Green;
 /// The mark before a shell command the user ran.
 pub(crate) const SHELL: Color = Color::Magenta;
+/// The text of a tab's entries: a warm grey, as usage-hud's footer draws
+/// text, so long transcripts do not glare in the terminal's white.
+pub(crate) const TEXT: Color = Color::Rgb(0xb8, 0xb3, 0xaa);
+/// What an entry says around its text, such as a task's end.
+pub(crate) const QUIET: Color = Color::Rgb(0x78, 0x75, 0x70);
 /// The row under the pointer: one step above the background.
 const HOVER: Color = Color::Indexed(234);
 /// The selected row: two steps above the background.
