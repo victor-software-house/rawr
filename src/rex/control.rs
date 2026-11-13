@@ -150,42 +150,6 @@ impl Client {
         Ok(())
     }
 
-    /// Moves `block_id` into a split beside `anchor`, in the same session.
-    ///
-    /// # Errors
-    ///
-    /// Fails when the server refuses the call.
-    pub(crate) fn move_beside(
-        &mut self,
-        session_id: &str,
-        block_id: &str,
-        anchor: &str,
-    ) -> Result<()> {
-        self.call::<_, IgnoredAny>(
-            "session.move_block",
-            &json!({ "session_id": session_id, "block_id": block_id, "anchor_block_id": anchor }),
-        )?;
-        Ok(())
-    }
-
-    /// Lifts a tiled `block_id` into a floating layer at `bounds`.
-    ///
-    /// # Errors
-    ///
-    /// Fails when the server refuses the call.
-    pub(crate) fn float(
-        &mut self,
-        session_id: &str,
-        block_id: &str,
-        bounds: [f64; 4],
-    ) -> Result<()> {
-        self.call::<_, IgnoredAny>(
-            "session.float_block",
-            &json!({ "session_id": session_id, "block_id": block_id, "bounds": bounds }),
-        )?;
-        Ok(())
-    }
-
     /// Opens a floating layer at `bounds` in `window_id` that runs `command`,
     /// and focuses it.
     ///

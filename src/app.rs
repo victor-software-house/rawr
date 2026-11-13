@@ -52,7 +52,10 @@ enum Msg {
     clippy::wildcard_enum_match_arm,
     reason = "focus and paste events change nothing"
 )]
-pub(crate) fn run(select: Option<String>) -> Result<Option<Agent>> {
+pub(crate) fn run(
+    select: Option<String>,
+    mut replace: Option<(String, String)>,
+) -> Result<Option<Agent>> {
     let (send, receive) = mpsc::channel();
     let input = send.clone();
     thread::spawn(move || {
@@ -139,6 +142,18 @@ pub(crate) fn run(select: Option<String>) -> Result<Option<Agent>> {
             .draw(|frame| hits = view::draw(frame, &app, shown))
             .context("draw the app")?;
         app.settle(&hits.tops);
+        // The copy this one replaces stays until this one shows the panes.
+        if matches!(app.link, Link::Live)
+            && let Some((session, block)) = replace.take()
+        {
+            thread::spawn(move || {
+                if let Ok(mut client) =
+                    Endpoint::from_environment().and_then(|at| Client::connect(&at))
+                {
+                    let _ = client.close_block(&session, &block);
+                }
+            });
+        }
         screen.set_pointer(if app.dragging || app.hover.is_some() {
             Pointer::Hand
         } else {
@@ -202,11 +217,11 @@ pub(crate) fn run(select: Option<String>) -> Result<Option<Agent>> {
                 Action::GoTo {
                     session_id,
                     block_id,
-                } => match go_to(&session_id, &block_id) {
-                    Ok(Went::Stayed) => {}
-                    Ok(Went::Handed) => return Ok(None),
-                    Err(error) => app.notice = Some(format!("{error:#}")),
-                },
+                } => {
+                    if let Err(error) = go_to(&session_id, &block_id) {
+                        app.notice = Some(format!("{error:#}"));
+                    }
+                }
                 Action::Search => {
                     if found.is_none() {
                         // Running sessions too: search finds them, and enter
@@ -277,20 +292,11 @@ fn own_status(app: &App) -> Report {
     }
 }
 
-/// What going to a pane did with the app itself.
-enum Went {
-    /// The app is still on screen: tiled where it was, or floating over the
-    /// pane it went to.
-    Stayed,
-    /// A new app floats over the pane in its session; this one ends.
-    Handed,
-}
-
-/// Shows `block_id` in the Rex app, and moves this app over it only once
-/// the pane is in view. When this app floats, it floats over the pane it
-/// went to: moved there within its own session, or started there afresh in
-/// another session, since a block stays in its session.
-fn go_to(session_id: &str, block_id: &str) -> Result<Went> {
+/// Shows `block_id` in the Rex app. When this app floats in another window,
+/// a new copy floats over the pane it went to, with the pane selected, and
+/// closes this one once its own first frame is drawn: the old copy stays on
+/// screen until the new one shows.
+fn go_to(session_id: &str, block_id: &str) -> Result<()> {
     let mut client = Client::connect(&Endpoint::from_environment()?)?;
     let window_id = reveal(&mut client, session_id, block_id)?;
     let here = std::env::var("REX_SESSION").ok();
@@ -310,14 +316,8 @@ fn go_to(session_id: &str, block_id: &str) -> Result<Went> {
     )?;
     shown(&mut client, session_id, block_id, &window_id)?;
     let (Some(bounds), Some(here), Some(me)) = (floating, here, me) else {
-        return Ok(Went::Stayed);
+        return Ok(());
     };
-    if here == session_id {
-        client.move_beside(&here, &me, block_id)?;
-        client.float(&here, &me, bounds)?;
-        client.focus_block(&here, &me)?;
-        return Ok(Went::Stayed);
-    }
     let exe = std::env::current_exe().context("find the rawr binary")?;
     client.float_command(
         session_id,
@@ -327,12 +327,13 @@ fn go_to(session_id: &str, block_id: &str) -> Result<Went> {
             exe.display().to_string(),
             "--select".to_owned(),
             block_id.to_owned(),
+            "--replace-session".to_owned(),
+            here,
+            "--replace-block".to_owned(),
+            me,
         ],
     )?;
-    // The copy floating here goes, by its own block ID: never by a label,
-    // which a session or program may share, and never with its layer.
-    client.close_block(&here, &me)?;
-    Ok(Went::Handed)
+    Ok(())
 }
 
 /// Brings `block_id` into view in its session: its window active, no other
