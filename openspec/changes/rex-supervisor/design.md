@@ -97,7 +97,8 @@ The closest first-party models are Claude Code's own supervisor, which defers it
      A session that starts while a drain is open reads it on its first read, like any other.
    - An idle session gets the hand-off request through `$.prompt.submit`, which Claude Code marks as sent by the rawr mod.
    - A busy session gets it through `$.session.append` before its next step.
-   - The mod acknowledges a request with `rawr drain ack <id>` when the turn that carried it ends, whether it completes (`turn.complete`) or ends in error (`turn.abort`).
+   - The mod acknowledges a request with `rawr drain ack <id>` when the turn that carried it ends, however it ends: on `turn.complete`, whose reason marks an error, and on `turn.abort`.
+     A user who presses Esc during the hand-off turn also ends it; the pane then settles without a hand-off, since the user stepped in.
      The acknowledgement sits under the session's block, keyed by the drain's ID and the session's ID, and counts only for the block's current session, so neither an earlier drain's acknowledgement nor an earlier session's in the same pane counts.
    - The request text covers finishing the current step, committing or noting what is unfinished, writing a hand-off, starting no new work, and ending the turn.
 
@@ -118,6 +119,8 @@ The closest first-party models are Claude Code's own supervisor, which defers it
    - It then stops the Rex server, starts it again, and closes the drain.
    - On a timeout or any other failure, the daemon closes the drain, so no session goes on winding down for a restart that will not come.
    - The mod tells a session that acknowledged a cancelled drain that work can go on.
+   - Interrupting `rawr restart` with `ctrl+c` cancels the restart and closes its drain.
+   - At start, the daemon closes any drain it finds open, unless its restart record says a restart is pending, in which case it resumes the wait.
    - `drain.yaml` records the daemon's process ID and start time; a drain whose owner is gone is stale, delivers nothing, and goes at the next daemon start.
    - `--force` skips the wait, and so does a second `rawr restart` during the wait, after the self-hosted runner's second-signal rule.
 9. **The daemon offers restored panes their sessions.**
@@ -163,6 +166,7 @@ The closest first-party models are Claude Code's own supervisor, which defers it
 2. How a stopped Rex server starts again on macOS when the app started it, and whether `rex server install` is the right owner there.
 3. Whether `$.prompt.submit` keeps a half-typed prompt in the session's prompt box.
 4. Which Rex call or event marks a server whose sessions are restored, as decision 10 needs.
+5. Which mods event and reason mark a turn that ended in an API error, as decision 7 needs; the mods events page was not read.
 
 [pps]: https://www.superlogical.com/rex/docs/build/program-status
 [rex-events]: https://www.superlogical.com/rex/docs/reference/events#terminal-events

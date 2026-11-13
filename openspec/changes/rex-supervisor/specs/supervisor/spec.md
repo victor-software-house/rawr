@@ -87,3 +87,13 @@ The daemon SHALL delete no pane file on block events during a restart it runs, a
 
 - **WHEN** session `6f1c2a90-3b7e-4d21-9c55-0a8e4f7b1d33` acknowledged `d-7a21` and exited, and a new session starts in the same block
 - **THEN** the block stays unsettled until the new session acknowledges `d-7a21`
+
+#### Scenario: The daemon starts with an open drain
+
+- **WHEN** the daemon starts, `drain.yaml` holds an open drain, and no restart is pending
+- **THEN** the daemon closes the drain
+
+#### Scenario: The user interrupts the wait
+
+- **WHEN** the user presses `ctrl+c` while `rawr restart` waits
+- **THEN** the Rex server keeps running and the drain is closed
