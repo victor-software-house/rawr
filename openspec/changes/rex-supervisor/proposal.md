@@ -34,7 +34,7 @@ The user gains:
    It replaces the `SessionStart` hook in `settings.json`.
 4. `rawr status`, `rawr drain` and `rawr restart`.
 5. The picker redesign: Claude Code's row layout and status words, the search box at the bottom, `ctrl+o` to show every remembered session, and a one-line hint after Esc.
-6. A user config file, `$XDG_CONFIG_HOME/rawr/config.yaml`, holding the history kept per pane, how many rows show before `ctrl+o`, and the drain wait.
+6. A user config file, `$XDG_CONFIG_HOME/rawr/config.yaml`, holding the history kept per pane, how many rows show before `ctrl+o`, and the drain and restart waits.
 7. `rawr setup`, `rawr setup status` and `rawr setup remove`, after `rex skill setup`: each reports what it installed and touches nothing it did not install.
 
 ## Capabilities
@@ -51,7 +51,7 @@ The user gains:
 - `pane-index`: entries whose transcript is gone are dropped.
   The history per pane comes from config, and the daemon prunes when Rex removes a pane.
 - `session-picker`: the layout, status words, progressive disclosure and Esc hint.
-- `install` and `shell-integration` (install-and-shells): Homebrew becomes the main install, `rawr setup` replaces `rawr setup claude`, and the shell snippet becomes optional.
+- `install` and `shell-integration` (install-and-shells): Homebrew becomes the main install, `rawr setup` replaces `rawr setup claude`, and the shell line printed by `rawr setup` offers restored panes their sessions in every supported shell.
 
 ## Impact
 

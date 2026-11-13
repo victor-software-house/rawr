@@ -68,13 +68,18 @@ On a timeout, an interrupt or any other non-zero exit, `rawr restart` SHALL clos
 
 #### Scenario: One pane stays busy past the wait
 
-- **WHEN** `restart.wait` is `30m` and block `block:0190f3a2-7c41-7e10-8b2d-5d9e6a4c1f08` still reads `Working` 30 minutes after `rawr restart`
+- **WHEN** `restart.wait` is `5m` and block `block:0190f3a2-7c41-7e10-8b2d-5d9e6a4c1f08` still reads `Working` 5 minutes after `rawr restart`
 - **THEN** the Rex server keeps running, the drain is closed, and `rawr restart` exits non-zero naming that block
 
 #### Scenario: The user interrupts the wait
 
 - **WHEN** the user presses `ctrl+c` while `rawr restart` waits
 - **THEN** the Rex server keeps running and the drain is closed
+
+#### Scenario: The user restarts despite pending panes
+
+- **WHEN** two blocks still read `Working` and the user presses `f` in the `rawr restart` view
+- **THEN** the daemon stops and starts the Rex server at once and closes the drain
 
 ### Requirement: A drain left open is closed
 

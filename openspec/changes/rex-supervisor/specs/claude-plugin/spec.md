@@ -40,9 +40,18 @@ When a drain the mod delivered to the session closes without a restart, whether 
 
 ### Requirement: Acknowledge when the carrying turn ends
 
-The rawr mod SHALL acknowledge a drain request with the session's ID when the turn that carried it ends, on `turn.complete` and on `turn.abort`.
+The rawr mod SHALL acknowledge a drain request with the session's ID on `turn.complete` of the turn that carried it, whatever its `reason`: `answer`, `aborted`, `refusal` or `error`.
 
 #### Scenario: The hand-off turn ends in an error
 
 - **WHEN** the turn that carried `d-7a21` ends with an API error
 - **THEN** the mod acknowledges `d-7a21`, and a block that reads `Failed` counts as settled
+
+### Requirement: Interrupt a turn that runs too long
+
+When a session has held a drain request for `drain.interrupt` without its carrying turn ending, the rawr mod SHALL cancel the running turn with `$.turn.abort` and submit the hand-off request with `$.prompt.submit`.
+
+#### Scenario: A long build during a drain
+
+- **WHEN** `drain.interrupt` is `2m` and a session is still running a foreground build 2 minutes after `d-7a21` was appended
+- **THEN** the mod cancels the turn, the build stops, and the session starts its hand-off turn
