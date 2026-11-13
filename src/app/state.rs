@@ -602,6 +602,13 @@ impl App {
             self.want = None;
         }
         self.pane = found.unwrap_or(0).min(self.panes.len().saturating_sub(1));
+        // A selection the list no longer shows moves to the first it does.
+        let visible = self.visible_panes();
+        if !visible.contains(&self.pane)
+            && let Some(first) = visible.first()
+        {
+            self.pane = *first;
+        }
         // A pane that moved in the list stays in view.
         if self.pane != before {
             self.scroll_mut(Focus::Panes).follow = true;
@@ -619,6 +626,9 @@ impl App {
         self.panes
             .iter()
             .enumerate()
+            // A stopped pane whose session was resumed elsewhere is listed
+            // once, where it runs now.
+            .filter(|(_, pane)| self.moved_to(pane).is_none())
             .filter(|(_, pane)| {
                 passes(
                     filter,
@@ -633,6 +643,18 @@ impl App {
             })
             .map(|(index, _)| index)
             .collect()
+    }
+
+    /// The pane that runs a stopped pane's last session now, when it was
+    /// resumed in another one: the stopped pane is what it left behind.
+    pub(crate) fn moved_to(&self, pane: &Pane) -> Option<&Pane> {
+        if pane.status != Status::Stopped {
+            return None;
+        }
+        let (agent, _) = pane.sessions.first()?;
+        self.running(&agent.session_id)
+            .and_then(|index| self.panes.get(index))
+            .filter(|other| other.block_id != pane.block_id)
     }
 
     /// The selected pane's sessions the sessions filter lets through, titled

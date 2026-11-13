@@ -710,7 +710,12 @@ fn summary(app: &App) -> Line<'static> {
         .iter()
         .filter(|pane| pane.status.needs_user())
         .count();
-    let mut spans = vec![Span::styled(format!("  {}", app.panes.len()), theme::dim())];
+    let listed = app
+        .panes
+        .iter()
+        .filter(|pane| app.moved_to(pane).is_none())
+        .count();
+    let mut spans = vec![Span::styled(format!("  {listed}"), theme::dim())];
     if waiting > 0 {
         spans.push(Span::styled(" · ", theme::dim()));
         spans.push(Span::styled(
@@ -738,16 +743,10 @@ fn empty_text(app: &App) -> &'static str {
     }
 }
 
-/// The pane that runs a stopped pane's last session now, when it was
-/// resumed in another one: the stopped pane is what it left behind.
+/// The pane that runs a stopped pane's last session now; see
+/// [`App::moved_to`].
 fn moved_to<'a>(app: &'a App, pane: &Pane) -> Option<&'a Pane> {
-    if pane.status != Status::Stopped {
-        return None;
-    }
-    let (agent, _) = pane.sessions.first()?;
-    app.running(&agent.session_id)
-        .and_then(|index| app.panes.get(index))
-        .filter(|other| other.block_id != pane.block_id)
+    app.moved_to(pane)
 }
 
 /// How many lines a pane's row takes: one for a quiet pane, which needs
