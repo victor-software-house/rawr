@@ -639,7 +639,10 @@ fn panes_list(frame: &mut Frame<'_>, app: &App, list: Rect, hits: &mut Hits) {
     }
     let tall = |line: &Line_| -> u16 {
         match line {
-            Line_::Pane(index) => app.panes.get(*index).map_or(1, pane_height),
+            Line_::Pane(index) => app
+                .panes
+                .get(*index)
+                .map_or(1, |pane| pane_height(app, pane)),
             Line_::Header(..) | Line_::Blank => 1,
         }
     };
@@ -735,12 +738,25 @@ fn empty_text(app: &App) -> &'static str {
     }
 }
 
+/// The pane that runs a stopped pane's last session now, when it was
+/// resumed in another one: the stopped pane is what it left behind.
+fn moved_to<'a>(app: &'a App, pane: &Pane) -> Option<&'a Pane> {
+    if pane.status != Status::Stopped {
+        return None;
+    }
+    let (agent, _) = pane.sessions.first()?;
+    app.running(&agent.session_id)
+        .and_then(|index| app.panes.get(index))
+        .filter(|other| other.block_id != pane.block_id)
+}
+
 /// How many lines a pane's row takes: one for a quiet pane, which needs
 /// nothing and says nothing; two for the rest, whose second line says
 /// where the pane is and what its Claude says.
-fn pane_height(pane: &Pane) -> u16 {
+fn pane_height(app: &App, pane: &Pane) -> u16 {
     let quiet = matches!(pane.status, Status::Idle | Status::Stopped)
-        && pane.msg.as_deref().is_none_or(str::is_empty);
+        && pane.msg.as_deref().is_none_or(str::is_empty)
+        && moved_to(app, pane).is_none();
     if quiet { 1 } else { 2 }
 }
 
@@ -775,9 +791,10 @@ fn pane_row(frame: &mut Frame<'_>, app: &App, index: usize, cell: Rect) {
     if mine {
         place.push_str(" · here");
     }
-    let under = match &pane.msg {
-        Some(msg) if !msg.is_empty() => format!("{place} · {msg}"),
-        _ => place,
+    let under = match (moved_to(app, pane), &pane.msg) {
+        (Some(other), _) => format!("{place} · resumed in {}", unique_name(other)),
+        (None, Some(msg)) if !msg.is_empty() => format!("{place} · {msg}"),
+        (None, _) => place,
     };
     let mut lines = vec![Line::from(vec![
         bar.clone(),
@@ -854,7 +871,12 @@ fn pane_view(frame: &mut Frame<'_>, app: &App, area: Rect, shown: Shown<'_>, hit
                 theme::status(pane.status),
             ),
         ];
-        if let Some(msg) = pane.msg.as_deref().filter(|msg| !msg.is_empty()) {
+        if let Some(other) = moved_to(app, pane) {
+            status.push(Span::styled(
+                format!("   its session was resumed in {}", unique_name(other)),
+                theme::dim(),
+            ));
+        } else if let Some(msg) = pane.msg.as_deref().filter(|msg| !msg.is_empty()) {
             status.push(Span::styled(
                 format!("   {}", truncate(msg, width.saturating_sub(24))),
                 theme::dim(),
