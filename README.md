@@ -7,17 +7,7 @@ Rex restores sessions, tabs and panes after a restart, but each pane comes back 
 `rawr` remembers which Claude Code sessions ran in each pane, and in a restored pane offers them again in a full-screen picker.
 Choosing one resumes it in that pane; dismissing the picker leaves a plain shell.
 
-```text
- ↻ Resume a Claude Code session  2 sessions
-
- ❯ Fix the login redirect loop after the OAuth callback
-   ~/code/shop · 2 h ago
-
-   Add CSV export to the reports page
-   ~/code/shop · 1 day ago
-
- ↑↓ select  ⏎ resume  / search  1-9 resume nth  click select, again resume  esc shell
-```
+![The rawr picker: the selected session in blue above a second session, with the key line below](docs/picker.svg)
 
 The picker opens on the alternate screen, so the pane's restored output is back unchanged when it closes.
 
