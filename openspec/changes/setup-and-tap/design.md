@@ -27,7 +27,7 @@ Prior art for the shell line: `direnv hook`, `zoxide init` and `starship init` t
    - The hook unhooks itself after its first run, since every shell's prompt hook fires on each prompt: `add-zsh-hook precmd` in zsh, `PROMPT_COMMAND` in bash, a `fish_prompt` event in fish.
    - bash, zsh and fish come first, the shells ctl-core's `Shell` holds; nushell and PowerShell, which mise and direnv also cover, follow when ctl-core adds them.
    - Alternative: the daemon types `rawr pick` into each restored shell, as the "Resume Claude here" Rex action does.
-     It lost: typed input can collide with what the user types first, and nothing else in rawr types into a terminal.
+     It lost: typed input can collide with what the user types first, and nothing else in rawr types text into a terminal.
 3. **`rawr setup` installs everything after the binary, and only what it names.**
    - `rawr setup` adds this repository's marketplace and installs the plugin through Claude Code's plugin commands.
    - It stores the binary's stable path in the plugin's data folder and starts the service when Homebrew installed rawr.
