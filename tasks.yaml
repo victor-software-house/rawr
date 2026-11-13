@@ -207,6 +207,8 @@ queue:
     blocked_by: []
     acceptance:
       - The files tab filters by changed or read, by folder, and by file type.
+    notes:
+      - '2026-11-13, step 1 done: files in temporary folders hide behind a "+ N files in temporary folders" line, as scratch sessions do.'
 archive:
   - id: RAWR-019
     title: List every file a session read or changed
