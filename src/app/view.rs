@@ -1,13 +1,15 @@
-//! How the app looks: a sidebar of panes grouped by what they need, as
-//! herdr's agents sidebar groups them, and the selected pane beside it.
-//! Drawing reads the state and writes cells, and records where each thing
-//! that takes a click landed, so a click never disagrees with the screen.
+//! How the app looks: three columns, every pane, the selected pane's
+//! sessions, and one session. The focused column takes the width it needs
+//! and the others fold to rails, or, in the single arrangement, one column
+//! fills the screen under a path back. Drawing reads the state and writes
+//! cells, and records where each thing that takes a click landed, so a
+//! click never disagrees with the screen.
 
 use std::num::NonZeroU16;
 use std::time::Duration;
 
 use ratatui::Frame;
-use ratatui::buffer::{Buffer, CellDiffOption};
+use ratatui::buffer::{Buffer, Cell, CellDiffOption};
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -15,15 +17,25 @@ use ratatui::widgets::{
     Block, BorderType, Clear, Padding, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
 };
 
-use crate::app::facts::{Facts, Pr};
+use crate::app::facts::{Facts, Pr, Said};
 use crate::app::feed::Pane;
-use crate::app::state::{App, Button, Focus, Link, Scroll, Target};
+use crate::app::state::{self, App, Arrangement, Button, Focus, Link, Scroll, Tab, Target};
 use crate::app::theme;
 use crate::session::Agent;
 use crate::status::Status;
 
-/// The folded sidebar's width: a bar, a glyph and a margin.
-const RAIL: u16 = 4;
+/// A folded column's width.
+const RAIL: u16 = 5;
+
+/// The narrowest a column draws in full; narrower, it draws as a rail.
+const FULL: u16 = 28;
+
+/// How wide the panes and the sessions grow when focused, so the column to
+/// their right gets the rest of a wide screen.
+const CAPS: [u16; 3] = [64, 76, u16::MAX];
+
+/// How many columns a view slides in from in the single arrangement.
+const SLIDE: f32 = 10.0;
 
 /// Where the last frame put each thing that takes a click, and which list
 /// each area scrolls.
@@ -31,7 +43,7 @@ const RAIL: u16 = 4;
 pub(crate) struct Hits {
     targets: Vec<(Rect, Target)>,
     lists: Vec<(Rect, Focus)>,
-    /// The screen's width, which bounds the sidebar, and its height.
+    /// The screen's size.
     pub(crate) width: u16,
     pub(crate) height: u16,
     /// Where the terminal's cursor goes: after the text in the search box.
@@ -60,60 +72,33 @@ impl Hits {
     fn add(&mut self, area: Rect, target: Target) {
         self.targets.push((area, target));
     }
+
+    /// Forgets what lies under `area`, which something now covers.
+    fn cover(&mut self, area: Rect) {
+        self.targets.retain(|(under, _)| !under.intersects(area));
+        self.lists.retain(|(under, _)| !under.intersects(area));
+    }
 }
 
-pub(crate) fn draw(
-    frame: &mut Frame<'_>,
-    app: &App,
-    facts: Option<(&Agent, Option<&Facts>)>,
-) -> Hits {
+/// The session the session column shows, with its facts once read.
+pub(crate) type Shown<'a> = Option<(&'a Agent, Option<&'a Facts>)>;
+
+pub(crate) fn draw(frame: &mut Frame<'_>, app: &App, shown: Shown<'_>) -> Hits {
     let mut hits = Hits {
         width: frame.area().width,
         height: frame.area().height,
         ..Hits::default()
     };
-    let body = frame.area();
-    let side = if app.folded { RAIL } else { app.sidebar };
-    let [sidebar, edge, main] = Layout::horizontal([
-        Constraint::Length(side),
-        Constraint::Length(1),
-        Constraint::Fill(1),
-    ])
-    .areas(body);
-    // The sidebar starts a row down, as the main area does, so its fold
-    // button is off the outermost row.
-    let sidebar = pad(sidebar, 0, 1);
-    if app.folded {
-        rail(frame, app, sidebar, &mut hits);
-    } else {
-        side_panel(frame, app, sidebar, &mut hits);
-    }
-    edge_line(frame, app, edge, &mut hits);
-    let [content, search] =
-        Layout::vertical([Constraint::Fill(1), Constraint::Length(3)]).areas(main);
-    let content = pad(content, 1, 1);
-    let (content, panel) = match facts {
-        Some(_) => {
-            let [top, bottom] =
-                Layout::vertical([Constraint::Fill(1), Constraint::Length(6)]).areas(content);
-            (top, Some(bottom))
-        }
-        None => (content, None),
-    };
-    if let (Some(panel), Some((agent, facts))) = (panel, facts) {
-        frame.render_widget(
-            Paragraph::new(Line::styled(
-                "─".repeat(usize::from(panel.width)),
-                theme::line(),
-            )),
-            row_at(panel, panel.y),
-        );
-        facts_panel(frame, pad(panel, 0, 1), agent, facts);
+    let [body, search] =
+        Layout::vertical([Constraint::Fill(1), Constraint::Length(3)]).areas(frame.area());
+    // One column and one row in from the outermost ring, which never hovers.
+    let body = pad(body, 1, 1);
+    match app.arrangement {
+        Arrangement::Rails => rails(frame, app, body, shown, &mut hits),
+        Arrangement::Single => single(frame, app, body, shown, &mut hits),
     }
     if app.focus == Focus::Search {
-        results(frame, app, content, &mut hits);
-    } else {
-        detail(frame, app, content, &mut hits);
+        search_overlay(frame, app, body, &mut hits);
     }
     search_box(frame, app, search, &mut hits);
     if app.help {
@@ -150,60 +135,440 @@ fn row_at(area: Rect, y: u16) -> Rect {
     }
 }
 
-/// The sidebar: the brand and the fold button, a summary, then one section
-/// per status with its panes, two lines each, as Rex's own sidebar draws
-/// its tabs: the title, then where the pane is and what its Claude says.
-fn side_panel(frame: &mut Frame<'_>, app: &App, area: Rect, hits: &mut Hits) {
-    if area.height < 3 {
-        return;
+/// `area` from `rows` rows down.
+fn below(area: Rect, rows: u16) -> Rect {
+    Rect {
+        y: area.y + rows.min(area.height),
+        height: area.height.saturating_sub(rows),
+        ..area
     }
-    let brand = row_at(area, area.y);
+}
+
+/// A rule across the one-row `area`.
+fn rule(frame: &mut Frame<'_>, area: Rect, style: Style) {
     put(
         frame,
-        brand,
-        Line::styled(" rawr", Style::new().add_modifier(Modifier::BOLD)),
+        area,
+        Line::styled("─".repeat(usize::from(area.width)), style),
     );
-    let fold = Rect {
-        x: brand.right().saturating_sub(4),
-        width: 3,
-        ..brand
-    };
-    button(frame, app, fold, Button::Sidebar, "«", hits);
-    put(frame, row_at(area, area.y + 1), summary(app));
+}
 
-    let list = Rect {
-        y: area.y + 3,
-        height: area.height.saturating_sub(3),
+// The rails arrangement.
+
+/// Each column's width when `focus` has settled, of `total` columns.
+fn widths(focus: Focus, total: u16) -> [u16; 3] {
+    let at = focus.column();
+    let mut out = [RAIL; 3];
+    let wide = total.saturating_sub(2 * RAIL);
+    out[at] = wide;
+    if at < 2 {
+        let spare = wide.saturating_sub(CAPS[at]);
+        if spare + RAIL >= FULL {
+            out[at] = CAPS[at];
+            out[at + 1] = RAIL + spare;
+        }
+    }
+    out
+}
+
+/// The widths `progress` of the way from `from` to `to`, summing to `total`.
+fn blend(from: [u16; 3], to: [u16; 3], progress: f32, total: u16) -> [u16; 3] {
+    let mix = |a: u16, b: u16| -> u16 {
+        let at = f32::from(a) + (f32::from(b) - f32::from(a)) * progress;
+        // The result lies between two u16 values, so it fits.
+        #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let at = at.round().max(0.0) as u16;
+        at
+    };
+    let first = mix(from[0], to[0]);
+    let second = mix(from[1], to[1]).min(total.saturating_sub(first));
+    [first, second, total.saturating_sub(first + second)]
+}
+
+fn rails(frame: &mut Frame<'_>, app: &App, area: Rect, shown: Shown<'_>, hits: &mut Hits) {
+    let total = area.width.saturating_sub(2);
+    let to = widths(app.at(), total);
+    let from = app.moved.map_or(to, |(was, _)| widths(was, total));
+    let [a, b, c] = blend(from, to, app.progress(), total);
+    let [first, edge_a, second, edge_b, third] = Layout::horizontal([
+        Constraint::Length(a),
+        Constraint::Length(1),
+        Constraint::Length(b),
+        Constraint::Length(1),
+        Constraint::Length(c),
+    ])
+    .areas(area);
+    for edge in [edge_a, edge_b] {
+        let lines: Vec<Line<'static>> = (0..edge.height)
+            .map(|_| Line::styled("│", theme::line()))
+            .collect();
+        frame.render_widget(Paragraph::new(lines), edge);
+    }
+    for (column, rect) in Focus::COLUMNS.into_iter().zip([first, second, third]) {
+        if rect.width == 0 || rect.height < 3 {
+            continue;
+        }
+        if rect.width < FULL {
+            rail(frame, app, column, rect, shown, hits);
+        } else {
+            header(frame, app, column, rect, hits);
+            view(frame, app, column, below(rect, 2), shown, hits);
+        }
+    }
+}
+
+/// A column's name, its key, and what it holds, over a rule that lights
+/// when the column has focus.
+fn header(frame: &mut Frame<'_>, app: &App, column: Focus, area: Rect, hits: &mut Hits) {
+    let focused = app.at() == column;
+    let hovered = app.hover == Some(Target::Column(column));
+    let (key, name) = names(column);
+    let key_style = if focused {
+        Style::new().fg(theme::ACCENT).add_modifier(Modifier::BOLD)
+    } else {
+        theme::dim()
+    };
+    let name_style = if focused {
+        Style::new().add_modifier(Modifier::BOLD)
+    } else if hovered {
+        Style::new()
+    } else {
+        theme::dim()
+    };
+    let mut spans = vec![
+        Span::styled(format!(" {key} "), key_style),
+        Span::styled(name, name_style),
+    ];
+    match column {
+        Focus::Panes => spans.extend(summary(app).spans),
+        Focus::Sessions => {
+            let count = app.visible_sessions().len();
+            spans.push(Span::styled(format!("  {count}"), theme::dim()));
+        }
+        Focus::Session | Focus::Search => {}
+    }
+    let filter = app.filter(column);
+    if !filter.is_empty() {
+        spans.push(Span::styled(
+            format!("  / {filter}"),
+            Style::new().fg(theme::ACCENT),
+        ));
+    }
+    let top = row_at(area, area.y);
+    put(frame, top, Line::from(spans));
+    rule(
+        frame,
+        row_at(area, area.y + 1),
+        if focused {
+            Style::new().fg(theme::ACCENT)
+        } else {
+            theme::line()
+        },
+    );
+    hits.add(top, Target::Column(column));
+}
+
+const fn names(column: Focus) -> (&'static str, &'static str) {
+    match column {
+        Focus::Panes | Focus::Search => ("1", "Panes"),
+        Focus::Sessions => ("2", "Sessions"),
+        Focus::Session => ("3", "Session"),
+    }
+}
+
+/// A folded column: its key, then a glyph per row, or the session's tabs.
+/// A click on a row selects it; anywhere else focuses the column.
+fn rail(
+    frame: &mut Frame<'_>,
+    app: &App,
+    column: Focus,
+    area: Rect,
+    shown: Shown<'_>,
+    hits: &mut Hits,
+) {
+    let hovered = app.hover == Some(Target::Column(column));
+    let (key, _) = names(column);
+    put(
+        frame,
+        row_at(area, area.y),
+        Line::styled(
+            format!(" {key}"),
+            if hovered {
+                Style::new().fg(theme::ACCENT).add_modifier(Modifier::BOLD)
+            } else {
+                theme::dim()
+            },
+        ),
+    );
+    rule(frame, row_at(area, area.y + 1), theme::line());
+    let list = below(area, 2);
+    let height = usize::from(list.height);
+    let mut counter = None;
+    let glyphs: Vec<(Target, bool, Span<'static>)> = match column {
+        Focus::Panes | Focus::Search => app
+            .visible_panes()
+            .into_iter()
+            .filter_map(|index| {
+                let pane = app.panes.get(index)?;
+                Some((
+                    Target::Pane(index),
+                    index == app.pane,
+                    Span::styled(
+                        theme::glyph(pane.status, app.frame),
+                        theme::status(pane.status),
+                    ),
+                ))
+            })
+            .collect(),
+        Focus::Sessions => app
+            .visible_sessions()
+            .into_iter()
+            .filter_map(|index| {
+                let (agent, held) = app.selected()?.sessions.get(index)?;
+                let (glyph, style) = session_glyph(app, agent, *held);
+                Some((
+                    Target::Session(index),
+                    index == app.session,
+                    Span::styled(glyph, style),
+                ))
+            })
+            .collect(),
+        Focus::Session => {
+            let mut rows: Vec<(Target, bool, Span<'static>)> = Tab::ALL
+                .iter()
+                .map(|tab| {
+                    let style = if *tab == app.tab {
+                        Style::new().fg(theme::ACCENT).add_modifier(Modifier::BOLD)
+                    } else {
+                        theme::dim()
+                    };
+                    (
+                        Target::Tab(*tab),
+                        *tab == app.tab,
+                        Span::styled(tab.name().get(..1).unwrap_or_default().to_owned(), style),
+                    )
+                })
+                .collect();
+            if let Some((_, Some(facts))) = shown
+                && !facts.tasks.is_empty()
+            {
+                let done = facts
+                    .tasks
+                    .iter()
+                    .filter(|task| task.status == "completed")
+                    .count();
+                counter = Some(format!("{done}/{}", facts.tasks.len()));
+            }
+            rows
+        }
+    };
+    let selected = glyphs.iter().position(|(_, on, _)| *on).unwrap_or(0);
+    let skip = selected.saturating_sub(height.saturating_sub(1));
+    for (offset, (target, on, glyph)) in glyphs.into_iter().skip(skip).take(height).enumerate() {
+        let cell = row_at(list, list.y + u16::try_from(offset).unwrap_or(0));
+        let hovered = app.hover == Some(target);
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(if on { "▌" } else { " " }, Style::new().fg(theme::ACCENT)),
+                Span::raw(" "),
+                glyph,
+            ]))
+            .style(theme::row(false, hovered)),
+            cell,
+        );
+        hits.add(cell, target);
+    }
+    // The tasks done, under the tabs, across the rail's whole width.
+    if let Some(counter) = counter {
+        let y = list.y + u16::try_from(Tab::ALL.len() + 1).unwrap_or(0);
+        if y < list.bottom() {
+            let text = if counter.chars().count() < usize::from(area.width) {
+                counter
+            } else {
+                counter.split('/').next().unwrap_or_default().to_owned()
+            };
+            put(
+                frame,
+                row_at(list, y),
+                Line::styled(format!(" {text}"), theme::dim()),
+            );
+        }
+    }
+    hits.add(area, Target::Column(column));
+}
+
+/// One column's content.
+fn view(
+    frame: &mut Frame<'_>,
+    app: &App,
+    column: Focus,
+    area: Rect,
+    shown: Shown<'_>,
+    hits: &mut Hits,
+) {
+    match column {
+        Focus::Panes | Focus::Search => panes_list(frame, app, area, hits),
+        Focus::Sessions => sessions(frame, app, area, hits),
+        Focus::Session => session(frame, app, area, shown, hits),
+    }
+}
+
+// The single arrangement.
+
+fn single(frame: &mut Frame<'_>, app: &App, area: Rect, shown: Shown<'_>, hits: &mut Hits) {
+    if area.height < 4 {
+        return;
+    }
+    crumbs(frame, app, row_at(area, area.y), hits);
+    rule(frame, row_at(area, area.y + 1), theme::line());
+    let body = below(area, 2);
+    let at = app.at();
+    view(frame, app, at, body, shown, hits);
+    // The view slides in from the side it came from: deeper from the right,
+    // back from the left.
+    if let Some((was, _)) = app.moved
+        && was.column() != at.column()
+    {
+        let sign: f32 = if at.column() > was.column() {
+            1.0
+        } else {
+            -1.0
+        };
+        #[expect(clippy::cast_possible_truncation)]
+        let by = ((1.0 - app.progress()) * SLIDE * sign).round() as i32;
+        shift(frame.buffer_mut(), body, by);
+    }
+}
+
+/// The path to the view: each column's key and what it shows, the current
+/// one raised. A click goes back to any of them.
+fn crumbs(frame: &mut Frame<'_>, app: &App, area: Rect, hits: &mut Hits) {
+    let pane = app
+        .selected()
+        .map(|pane| format!("{} · {}", pane.name, pane.tab));
+    let session = app.current().map(|agent| agent.title.clone());
+    let parts = [
+        (Focus::Panes, "1", "Panes".to_owned()),
+        (
+            Focus::Sessions,
+            "2",
+            pane.unwrap_or_else(|| "Sessions".to_owned()),
+        ),
+        (
+            Focus::Session,
+            "3",
+            session.unwrap_or_else(|| "Session".to_owned()),
+        ),
+    ];
+    let mut x = area.x;
+    for (index, (column, key, name)) in parts.into_iter().enumerate() {
+        if index > 0 {
+            let gap = Rect {
+                x,
+                width: 3.min(area.right().saturating_sub(x)),
+                ..area
+            };
+            put(frame, gap, Line::styled(" › ", theme::dim()));
+            x += gap.width;
+        }
+        let current = app.at() == column;
+        let hovered = app.hover == Some(Target::Column(column));
+        let text = format!(" {key} {} ", truncate(&name, 34));
+        let width = u16::try_from(text.chars().count())
+            .unwrap_or(0)
+            .min(area.right().saturating_sub(x));
+        if width == 0 {
+            break;
+        }
+        let cell = Rect { x, width, ..area };
+        let style = if current {
+            theme::raised()
+                .fg(theme::ACCENT)
+                .add_modifier(Modifier::BOLD)
+        } else if hovered {
+            theme::hover()
+        } else {
+            theme::dim()
+        };
+        put(frame, cell, Line::styled(text, style));
+        hits.add(cell, Target::Column(column));
+        x += width;
+    }
+    let rest = Rect {
+        x,
+        width: area.right().saturating_sub(x),
         ..area
     };
+    if app.at() == Focus::Panes && rest.width > 8 {
+        put(frame, rest, summary(app));
+    }
+}
+
+/// Moves the cells of `area` `by` columns, right when positive, and blanks
+/// the columns left behind.
+fn shift(buf: &mut Buffer, area: Rect, by: i32) {
+    if by == 0 {
+        return;
+    }
+    let width = i32::from(area.width);
+    for y in area.top()..area.bottom() {
+        let row: Vec<Cell> = (area.left()..area.right())
+            .map(|x| buf.cell((x, y)).cloned().unwrap_or(Cell::EMPTY))
+            .collect();
+        for (offset, x) in (area.left()..area.right()).enumerate() {
+            let from = i32::try_from(offset).unwrap_or(0) - by;
+            let cell = usize::try_from(from)
+                .ok()
+                .filter(|_| from < width)
+                .and_then(|from| row.get(from).cloned())
+                .unwrap_or(Cell::EMPTY);
+            if let Some(slot) = buf.cell_mut((x, y)) {
+                *slot = cell;
+            }
+        }
+    }
+}
+
+// The panes.
+
+/// The panes the filter lets through, one section per status, two lines a
+/// pane, as Rex's own sidebar draws its tabs.
+fn panes_list(frame: &mut Frame<'_>, app: &App, list: Rect, hits: &mut Hits) {
     hits.lists.push((list, Focus::Panes));
-    if app.panes.is_empty() {
+    let visible = app.visible_panes();
+    if visible.is_empty() {
+        let text = if app.panes.is_empty() {
+            empty_text(app).to_owned()
+        } else {
+            format!("No pane matches “{}”", app.filter(Focus::Panes))
+        };
         put(
             frame,
             row_at(list, list.y),
-            Line::styled(format!(" {}", empty_text(app)), theme::dim()),
+            Line::styled(format!(" {text}"), theme::dim()),
         );
         return;
     }
-    // A header before each section, then its panes, and a blank line
-    // between sections.
     let mut lines: Vec<Line_> = Vec::new();
     let mut previous = None;
-    for (index, pane) in app.panes.iter().enumerate() {
+    for index in &visible {
+        let Some(pane) = app.panes.get(*index) else {
+            continue;
+        };
         let section = theme::section(pane.status);
         if previous != Some(section) {
             if previous.is_some() {
                 lines.push(Line_::Blank);
             }
-            let count = app
-                .panes
+            let count = visible
                 .iter()
+                .filter_map(|other| app.panes.get(*other))
                 .filter(|other| theme::section(other.status) == section)
                 .count();
             lines.push(Line_::Header(section, count));
             previous = Some(section);
         }
-        lines.push(Line_::Pane(index));
+        lines.push(Line_::Pane(*index));
     }
     let tall = |line: &Line_| -> u16 {
         match line {
@@ -222,7 +587,6 @@ fn side_panel(frame: &mut Frame<'_>, app: &App, area: Rect, hits: &mut Hits) {
     let skip = top_of(app.scroll_of(Focus::Panes), total, list.height, selection);
     hits.tops.push((Focus::Panes, skip));
     scrollbar(frame, list, skip, total);
-    // The rows leave the scrollbar's column free.
     let list = Rect {
         width: list.width.saturating_sub(u16::from(total > list.height)),
         ..list
@@ -262,7 +626,7 @@ fn side_panel(frame: &mut Frame<'_>, app: &App, area: Rect, hits: &mut Hits) {
     }
 }
 
-/// One line of the sidebar's list.
+/// One line of the panes list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Line_ {
     Header(&'static str, usize),
@@ -276,10 +640,7 @@ fn summary(app: &App) -> Line<'static> {
         .iter()
         .filter(|pane| pane.status.needs_user())
         .count();
-    let mut spans = vec![Span::styled(
-        format!(" {} panes", app.panes.len()),
-        theme::dim(),
-    )];
+    let mut spans = vec![Span::styled(format!("  {}", app.panes.len()), theme::dim())];
     if waiting > 0 {
         spans.push(Span::styled(" · ", theme::dim()));
         spans.push(Span::styled(
@@ -316,14 +677,15 @@ fn pane_height(pane: &Pane) -> u16 {
     if quiet { 1 } else { 2 }
 }
 
-/// One sidebar row: the glyph, the newest session's title and its age;
-/// then, when the row has two lines, the Rex session and tab and what
-/// Claude last said.
+/// One pane row: the glyph, the newest session's title and its age; then,
+/// when the row has two lines, the Rex session and tab and what Claude
+/// last said.
 fn pane_row(frame: &mut Frame<'_>, app: &App, index: usize, cell: Rect) {
     let Some(pane) = app.panes.get(index) else {
         return;
     };
     let selected = index == app.pane;
+    let focused = app.at() == Focus::Panes;
     let hovered = app.hover == Some(Target::Pane(index));
     let age = short_age(pane.sessions.first().and_then(|(agent, _)| agent.idle));
     let width = usize::from(cell.width);
@@ -370,107 +732,31 @@ fn pane_row(frame: &mut Frame<'_>, app: &App, index: usize, cell: Rect) {
         ]));
     }
     frame.render_widget(
-        Paragraph::new(lines).style(theme::row(selected, hovered)),
+        Paragraph::new(lines).style(theme::row(selected && focused, hovered)),
         cell,
     );
 }
 
-/// The folded sidebar: the open button, then one glyph per pane.
-fn rail(frame: &mut Frame<'_>, app: &App, area: Rect, hits: &mut Hits) {
-    let open = Rect {
-        x: area.x,
-        width: 3,
-        ..row_at(area, area.y)
-    };
-    button(frame, app, open, Button::Sidebar, "»", hits);
-    let list = Rect {
-        y: area.y + 3,
-        height: area.height.saturating_sub(3),
-        ..area
-    };
-    hits.lists.push((list, Focus::Panes));
-    let height = usize::from(list.height);
-    let offset = app.pane.saturating_sub(height.saturating_sub(1));
-    for (index, pane) in app.panes.iter().enumerate().skip(offset).take(height) {
-        let cell = row_at(list, list.y + u16::try_from(index - offset).unwrap_or(0));
-        let selected = index == app.pane;
-        let hovered = app.hover == Some(Target::Pane(index));
-        frame.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled(
-                    if selected { "▌" } else { " " },
-                    Style::new().fg(theme::ACCENT),
-                ),
-                Span::raw(" "),
-                Span::styled(
-                    theme::glyph(pane.status, app.frame),
-                    theme::status(pane.status),
-                ),
-            ]))
-            .style(theme::row(selected, hovered)),
-            cell,
-        );
-        hits.add(cell, Target::Pane(index));
-    }
-}
-
-/// The sidebar's edge: a thin rule that lights while hovered or dragged.
-fn edge_line(frame: &mut Frame<'_>, app: &App, area: Rect, hits: &mut Hits) {
-    let lit = app.dragging || app.hover == Some(Target::Edge);
-    let (glyph, style) = if lit {
-        ("┃", Style::new().fg(theme::ACCENT))
-    } else {
-        ("│", theme::line())
-    };
-    let lines: Vec<Line<'static>> = (0..area.height)
-        .map(|_| Line::styled(glyph, style))
-        .collect();
-    frame.render_widget(Paragraph::new(lines), area);
-    // The edge's own column only: the columns beside it belong to rows.
-    hits.targets.insert(0, (area, Target::Edge));
-}
-
-/// A small button: hovered, it rises and takes the accent.
-fn button(
-    frame: &mut Frame<'_>,
-    app: &App,
-    area: Rect,
-    button: Button,
-    text: &str,
-    hits: &mut Hits,
-) {
-    let hovered = app.hover == Some(Target::Button(button));
-    let (ground, style) = if hovered {
-        (theme::raised(), Style::new().fg(theme::ACCENT))
-    } else {
-        (Style::new(), theme::dim())
-    };
-    frame.render_widget(
-        Paragraph::new(Line::styled(text.to_owned(), style))
-            .centered()
-            .style(ground),
-        area,
-    );
-    hits.add(area, Target::Button(button));
-}
+// The sessions of a pane.
 
 /// The selected pane: where it is and what its Claude says, the actions,
 /// then its sessions, each title once.
-fn detail(frame: &mut Frame<'_>, app: &App, area: Rect, hits: &mut Hits) {
+fn sessions(frame: &mut Frame<'_>, app: &App, area: Rect, hits: &mut Hits) {
     let Some(pane) = app.selected() else {
         put(
             frame,
             row_at(area, area.y),
-            Line::styled(empty_text(app), theme::dim()),
+            Line::styled(format!(" {}", empty_text(app)), theme::dim()),
         );
         return;
     };
-    if area.height < 7 {
+    if area.height < 6 {
         return;
     }
+    let inner = pad(area, 1, 0);
     put(
         frame,
-        row_at(area, area.y),
+        row_at(inner, inner.y),
         Line::from(vec![
             Span::styled(pane.name.clone(), Style::new().add_modifier(Modifier::BOLD)),
             Span::styled(format!(" · {}", pane.tab), theme::dim()),
@@ -486,77 +772,81 @@ fn detail(frame: &mut Frame<'_>, app: &App, area: Rect, hits: &mut Hits) {
         ),
     ];
     if let Some(msg) = pane.msg.as_deref().filter(|msg| !msg.is_empty()) {
-        let room = usize::from(area.width).saturating_sub(24);
+        let room = usize::from(inner.width).saturating_sub(24);
         status.push(Span::styled(
             format!("   {}", truncate(msg, room)),
             theme::dim(),
         ));
     }
-    put(frame, row_at(area, area.y + 1), Line::from(status));
-    let actions = row_at(area, area.y + 3);
+    put(frame, row_at(inner, inner.y + 1), Line::from(status));
+    let actions = row_at(inner, inner.y + 3);
     action(
         frame,
         app,
         Rect {
-            width: 16,
+            width: 16.min(actions.width),
             ..actions
         },
-        (Button::GoTo, "↵", "Go to pane"),
+        (Button::GoTo, "g", "Go to pane"),
         hits,
     );
-    action(
-        frame,
-        app,
-        Rect {
-            x: actions.x + 18,
-            width: 17,
-            ..actions
-        },
-        (Button::Resume, "r", "Resume here"),
-        hits,
-    );
-    // Sessions with no title in a temporary folder are scripted runs, such
-    // as `claude -p`: one line stands for them until it is clicked.
-    let (scratch, titled): (Vec<Row<'_>>, Vec<Row<'_>>) = pane
+    if actions.width >= 36 {
+        action(
+            frame,
+            app,
+            Rect {
+                x: actions.x + 18,
+                width: 13,
+                ..actions
+            },
+            (Button::Resume, "r", "Resume"),
+            hits,
+        );
+    }
+    let visible = app.visible_sessions();
+    let rows: Vec<Row<'_>> = visible
+        .iter()
+        .filter_map(|index| {
+            let (agent, held) = pane.sessions.get(*index)?;
+            Some(Row {
+                index: *index,
+                agent,
+                held: *held,
+                snippet: None,
+                prompts: None,
+            })
+        })
+        .collect();
+    let filter = app.filter(Focus::Sessions);
+    let scratch = pane
         .sessions
         .iter()
-        .map(|(agent, held)| Row {
-            agent,
-            held: *held,
-            snippet: None,
-            prompts: None,
+        .filter(|(agent, _)| {
+            state::is_scratch(agent)
+                && state::passes(filter, &format!("{} {}", agent.title, agent.cwd))
         })
-        .partition(|row| is_scratch(row.agent));
-    put(
-        frame,
-        row_at(area, area.y + 5),
-        Line::from(vec![
-            Span::styled("Sessions", theme::header()),
-            Span::styled(format!("  {}", titled.len()), theme::dim()),
-        ]),
-    );
-    let scratch_count = scratch.len();
-    let mut rows = titled;
-    if app.show_scratch {
-        rows.extend(scratch);
-    }
-    let shown: u16 = rows.iter().map(|_| 2).sum();
+        .count();
+    let list = below(area, 5);
     let list = Rect {
-        y: area.y + 6,
-        height: area
-            .height
-            .saturating_sub(6 + u16::from(scratch_count > 0))
-            .min(shown),
-        ..area
+        height: list.height.saturating_sub(u16::from(scratch > 0)),
+        ..list
     };
+    if rows.is_empty() && !filter.is_empty() {
+        put(
+            frame,
+            row_at(list, list.y),
+            Line::styled(format!(" No session matches “{filter}”"), theme::dim()),
+        );
+    }
     session_rows(frame, app, list, &rows, (Focus::Sessions, None), hits);
-    if scratch_count > 0 {
-        let cell = row_at(area, list.bottom());
+    if scratch > 0 {
+        let shown: u16 = rows.iter().map(|row| row_height(row)).sum();
+        let cell = row_at(area, list.y + shown.min(list.height));
         let hovered = app.hover == Some(Target::Scratch);
         let text = if app.show_scratch {
-            format!("  − hide {scratch_count} untitled sessions in temporary folders")
+            format!("  − hide {scratch} untitled sessions in temporary folders")
         } else {
-            format!("  + {scratch_count} untitled sessions in temporary folders")
+            format!("  + {scratch} untitled sessions in temporary folders")
         };
         frame.render_widget(
             Paragraph::new(Line::styled(
@@ -574,69 +864,520 @@ fn detail(frame: &mut Frame<'_>, app: &App, area: Rect, hits: &mut Hits) {
     }
 }
 
-/// What the transcript says about the session under the cursor.
-fn facts_panel(frame: &mut Frame<'_>, area: Rect, agent: &Agent, facts: Option<&Facts>) {
-    let width = usize::from(area.width);
-    let mut lines = vec![Line::from(vec![
-        Span::styled("Session", theme::header()),
-        Span::styled(format!("  {}", agent.session_id), theme::dim()),
-    ])];
-    // The transcript is read off the drawing thread; until it arrives the
-    // panel keeps its place.
-    let Some(facts) = facts else {
-        lines.push(Line::styled("reading the transcript…", theme::dim()));
-        lines.push(Line::styled(
-            truncate(&agent.short_cwd(), width),
-            theme::dim(),
-        ));
-        frame.render_widget(Paragraph::new(lines), area);
+/// A session's glyph: its pane's status when a pane runs it, else whether
+/// a Claude holds it.
+fn session_glyph(app: &App, agent: &Agent, held: bool) -> (&'static str, Style) {
+    match app.running(&agent.session_id) {
+        Some(index) => {
+            let status = app
+                .panes
+                .get(index)
+                .map_or(Status::Idle, |pane| pane.status);
+            (theme::glyph(status, app.frame), theme::status(status))
+        }
+        None if held => ("●", Style::new().fg(theme::WORKING)),
+        None => ("○", theme::dim()),
+    }
+}
+
+// One session.
+
+/// One session: its title and place, what it is doing, the actions, then a
+/// tab of its tasks and pull requests, its prompts, its tool calls, or the
+/// files it touched.
+fn session(frame: &mut Frame<'_>, app: &App, area: Rect, shown: Shown<'_>, hits: &mut Hits) {
+    let Some((agent, facts)) = shown else {
+        put(
+            frame,
+            row_at(area, area.y),
+            Line::styled(" No session selected", theme::dim()),
+        );
         return;
     };
-    let mut first = Vec::new();
-    if let Some(model) = &facts.model {
-        first.push(model.trim_start_matches("claude-").to_owned());
+    if area.height < 9 {
+        return;
     }
-    if let Some(branch) = &facts.branch {
-        first.push(format!("on {branch}"));
-    }
-    first.push(format!("{} prompts", facts.prompts));
-    first.push(format!("{} replies", facts.replies));
-    if facts.output_tokens > 0 {
-        first.push(format!("{} tokens out", thousands(facts.output_tokens)));
-    }
-    if facts.agents > 0 {
-        first.push(format!("{} sub-agents", facts.agents));
-    }
-    lines.push(Line::styled(
-        truncate(&first.join(" · "), width),
-        Style::new(),
-    ));
-    let span = match (&facts.started, &facts.last) {
-        (Some(started), Some(last)) => format!("started {} · active {}", when(started), when(last)),
-        _ => String::new(),
+    let inner = pad(area, 1, 0);
+    let width = usize::from(inner.width);
+    put(
+        frame,
+        row_at(inner, inner.y),
+        Line::styled(
+            truncate(&agent.title, width),
+            Style::new().add_modifier(Modifier::BOLD),
+        ),
+    );
+    let id = agent.session_id.get(..8).unwrap_or(&agent.session_id);
+    put(
+        frame,
+        row_at(inner, inner.y + 1),
+        Line::styled(
+            truncate(&format!("{} · {id}", agent.short_cwd()), width),
+            theme::dim(),
+        ),
+    );
+    let held = app
+        .selected()
+        .and_then(|pane| {
+            pane.sessions
+                .iter()
+                .find(|(other, _)| other.session_id == agent.session_id)
+        })
+        .is_some_and(|(_, held)| *held);
+    let running = app
+        .running(&agent.session_id)
+        .and_then(|index| app.panes.get(index));
+    let status = match running {
+        Some(pane) => {
+            let mut spans = vec![pill(pane.status, app.frame)];
+            if let Some(msg) = pane.msg.as_deref().filter(|msg| !msg.is_empty()) {
+                spans.push(Span::styled(
+                    format!("   {}", truncate(msg, width.saturating_sub(24))),
+                    theme::dim(),
+                ));
+            }
+            Line::from(spans)
+        }
+        None if held => Line::styled("● running in a pane rawr has not recorded", theme::dim()),
+        None => Line::styled("○ resumable", theme::dim()),
     };
-    lines.push(Line::styled(
-        truncate(&format!("{span}   {}", agent.short_cwd()), width),
-        theme::dim(),
-    ));
-    // The pull requests go in after the text, as links: their line is held
-    // empty here.
-    let prs_at = (!facts.prs.is_empty()).then(|| {
-        lines.push(Line::default());
-        lines.len() - 1
-    });
-    if let Some(prompt) = &facts.last_prompt {
-        lines.push(Line::from(vec![
-            Span::styled("Last  ", theme::dim()),
-            Span::raw(truncate(prompt, width.saturating_sub(6))),
-        ]));
+    put(frame, row_at(inner, inner.y + 2), status);
+    let actions = row_at(inner, inner.y + 4);
+    if running.is_some() {
+        action(
+            frame,
+            app,
+            Rect {
+                width: 16.min(actions.width),
+                ..actions
+            },
+            (Button::GoTo, "g", "Go to pane"),
+            hits,
+        );
+    } else if !held {
+        action(
+            frame,
+            app,
+            Rect {
+                width: 13.min(actions.width),
+                ..actions
+            },
+            (Button::Resume, "r", "Resume"),
+            hits,
+        );
     }
-    frame.render_widget(Paragraph::new(lines), area);
+    tabs(frame, app, row_at(inner, inner.y + 6), facts, hits);
+    rule(frame, row_at(area, inner.y + 7), theme::line());
+    let content = below(inner, 8);
+    let Some(facts) = facts else {
+        put(
+            frame,
+            row_at(content, content.y),
+            Line::styled("reading the transcript…", theme::dim()),
+        );
+        return;
+    };
+    // The text leaves the scrollbar's columns free, so it keeps its width
+    // as the tab grows past the screen.
+    let text = Rect {
+        width: content.width.saturating_sub(2),
+        ..content
+    };
+    let (lines, prs_at) = tab_lines(app, facts, usize::from(text.width));
+    let total = u16::try_from(lines.len()).unwrap_or(u16::MAX);
+    hits.lists.push((content, Focus::Session));
+    let skip = top_of(app.scroll_of(Focus::Session), total, content.height, None);
+    hits.tops.push((Focus::Session, skip));
+    scrollbar(frame, content, skip, total);
+    frame.render_widget(Paragraph::new(lines).scroll((skip, 0)), text);
     if let Some(at) = prs_at.and_then(|at| u16::try_from(at).ok())
-        && at < area.height
+        && at >= skip
+        && at - skip < text.height
     {
-        pr_links(frame.buffer_mut(), row_at(area, area.y + at), &facts.prs);
+        pr_links(
+            frame.buffer_mut(),
+            row_at(text, text.y + at - skip),
+            &facts.prs,
+        );
     }
+}
+
+/// The tab bar: each tab's name and how many rows it holds.
+fn tabs(frame: &mut Frame<'_>, app: &App, area: Rect, facts: Option<&Facts>, hits: &mut Hits) {
+    let mut x = area.x;
+    for tab in Tab::ALL {
+        let count = facts.map(|facts| match tab {
+            Tab::Overview => None,
+            Tab::Prompts => Some(facts.log.len()),
+            Tab::Activity => Some(facts.activity.len()),
+            Tab::Files => Some(facts.files.len()),
+        });
+        let text = match count.flatten() {
+            Some(count) => format!(" {} {count} ", tab.name()),
+            None => format!(" {} ", tab.name()),
+        };
+        let width = u16::try_from(text.chars().count())
+            .unwrap_or(0)
+            .min(area.right().saturating_sub(x));
+        if width == 0 {
+            break;
+        }
+        let cell = Rect { x, width, ..area };
+        let current = tab == app.tab;
+        let hovered = app.hover == Some(Target::Tab(tab));
+        let style = if current {
+            theme::raised()
+                .fg(theme::ACCENT)
+                .add_modifier(Modifier::BOLD)
+        } else if hovered {
+            theme::hover()
+        } else {
+            theme::dim()
+        };
+        put(frame, cell, Line::styled(text, style));
+        hits.add(cell, Target::Tab(tab));
+        x += width + 1;
+    }
+}
+
+/// The current tab's lines, and which of them holds the pull requests.
+fn tab_lines(app: &App, facts: &Facts, width: usize) -> (Vec<Line<'static>>, Option<usize>) {
+    let filter = app.filter(Focus::Session);
+    let mut lines = Vec::new();
+    let mut prs_at = None;
+    match app.tab {
+        Tab::Overview => {
+            let mut first = Vec::new();
+            if let Some(model) = &facts.model {
+                first.push(model.trim_start_matches("claude-").to_owned());
+            }
+            if let Some(branch) = &facts.branch {
+                first.push(format!("on {branch}"));
+            }
+            first.push(format!("{} prompts", facts.prompts));
+            first.push(format!("{} replies", facts.replies));
+            if facts.output_tokens > 0 {
+                first.push(format!("{} tokens out", thousands(facts.output_tokens)));
+            }
+            if facts.agents > 0 {
+                first.push(format!("{} sub-agents", facts.agents));
+            }
+            lines.push(Line::raw(truncate(&first.join(" · "), width)));
+            if let (Some(started), Some(last)) = (&facts.started, &facts.last) {
+                lines.push(Line::styled(
+                    format!("started {} · active {}", when(started), when(last)),
+                    theme::dim(),
+                ));
+            }
+            if !facts.tasks.is_empty() {
+                let done = facts
+                    .tasks
+                    .iter()
+                    .filter(|task| task.status == "completed")
+                    .count();
+                lines.push(Line::default());
+                lines.push(Line::from(vec![
+                    Span::styled("Tasks", theme::header()),
+                    Span::styled(format!("  {done} of {}", facts.tasks.len()), theme::dim()),
+                ]));
+                for task in &facts.tasks {
+                    let (glyph, glyph_style, text) = match task.status.as_str() {
+                        "completed" => ("✔", Style::new().fg(theme::ACCENT), theme::dim()),
+                        "in_progress" => (
+                            theme::glyph(Status::Working, app.frame),
+                            theme::status(Status::Working),
+                            Style::new(),
+                        ),
+                        _ => ("○", theme::dim(), Style::new()),
+                    };
+                    lines.push(Line::from(vec![
+                        Span::raw("  "),
+                        Span::styled(glyph, glyph_style),
+                        Span::raw(" "),
+                        Span::styled(truncate(&task.subject, width.saturating_sub(5)), text),
+                    ]));
+                }
+            }
+            if !facts.prs.is_empty() {
+                lines.push(Line::default());
+                lines.push(Line::default());
+                prs_at = Some(lines.len() - 1);
+            }
+            if let Some(prompt) = &facts.last_prompt {
+                lines.push(Line::default());
+                lines.push(Line::styled("Last prompt", theme::header()));
+                for part in wrap(prompt, width.saturating_sub(2), 6) {
+                    lines.push(Line::raw(format!("  {part}")));
+                }
+            }
+        }
+        Tab::Prompts => said(&mut lines, &facts.log, filter, width, 3),
+        Tab::Activity => said(&mut lines, &facts.activity, filter, width, 1),
+        Tab::Files => {
+            let mut files: Vec<&(String, usize)> = facts
+                .files
+                .iter()
+                .filter(|(path, _)| state::passes(filter, path))
+                .collect();
+            files.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+            let home = std::env::var("HOME").unwrap_or_default();
+            for (path, count) in files {
+                let short = match path.strip_prefix(&home) {
+                    Some(rest) if !home.is_empty() => format!("~{rest}"),
+                    _ => path.clone(),
+                };
+                lines.push(Line::from(vec![
+                    Span::styled(format!("{count:>4}× "), theme::dim()),
+                    Span::raw(truncate(&short, width.saturating_sub(7))),
+                ]));
+            }
+        }
+    }
+    if lines.is_empty() {
+        let text = if filter.is_empty() {
+            "Nothing yet".to_owned()
+        } else {
+            format!("Nothing matches “{filter}”")
+        };
+        lines.push(Line::styled(text, theme::dim()));
+    }
+    (lines, prs_at)
+}
+
+/// Prompts or tool calls, newest first, each up to `most` lines.
+fn said(lines: &mut Vec<Line<'static>>, items: &[Said], filter: &str, width: usize, most: usize) {
+    for item in items
+        .iter()
+        .rev()
+        .filter(|item| state::passes(filter, &item.text))
+    {
+        let age = item.at.as_deref().map(when).unwrap_or_default();
+        let age = format!("{:>8}  ", age.trim_end_matches(" ago"));
+        let room = width.saturating_sub(age.chars().count());
+        for (index, part) in wrap(&item.text, room, most).into_iter().enumerate() {
+            let lead = if index == 0 {
+                Span::styled(age.clone(), theme::dim())
+            } else {
+                Span::raw(" ".repeat(age.chars().count()))
+            };
+            lines.push(Line::from(vec![lead, Span::raw(part)]));
+        }
+    }
+}
+
+/// `text` on lines of at most `width` characters, broken at spaces where
+/// one is near, at most `most` lines, the last cut with `…`.
+fn wrap(text: &str, width: usize, most: usize) -> Vec<String> {
+    let width = width.max(8);
+    let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut out = Vec::new();
+    let mut rest: &str = &flat;
+    while !rest.is_empty() && out.len() < most {
+        if rest.chars().count() <= width {
+            out.push(rest.to_owned());
+            break;
+        }
+        if out.len() + 1 == most {
+            out.push(truncate(rest, width));
+            break;
+        }
+        let end = rest
+            .char_indices()
+            .nth(width)
+            .map_or(rest.len(), |(at, _)| at);
+        let cut = rest[..end]
+            .rfind(' ')
+            .filter(|at| *at > end / 2)
+            .unwrap_or(end);
+        out.push(rest[..cut].to_owned());
+        rest = rest[cut..].trim_start();
+    }
+    out
+}
+
+// The search over every session.
+
+/// The search, over the columns: the results in session rows, each with
+/// the line that matched.
+fn search_overlay(frame: &mut Frame<'_>, app: &App, area: Rect, hits: &mut Hits) {
+    let rect = centred(
+        area,
+        area.width.saturating_sub(4).min(112),
+        area.height.saturating_sub(1),
+    );
+    hits.cover(rect);
+    frame.render_widget(Clear, rect);
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(theme::ACCENT))
+        .title(" Search every session ")
+        .title_bottom(Line::styled(" esc closes ", theme::dim()).right_aligned())
+        .padding(Padding::horizontal(1));
+    let inner = block.inner(rect);
+    frame.render_widget(block, rect);
+    results(frame, app, inner, hits);
+}
+
+fn results(frame: &mut Frame<'_>, app: &App, area: Rect, hits: &mut Hits) {
+    let mut spans = if app.query.trim().is_empty() {
+        vec![Span::styled(
+            "Type to search prompts, titles, folders, and what Claude wrote",
+            theme::dim(),
+        )]
+    } else {
+        vec![
+            Span::styled("Matches", theme::header()),
+            Span::styled(format!("  {}", app.results.len()), theme::dim()),
+        ]
+    };
+    if app.deep {
+        let (read, total) = app.read;
+        spans.push(Span::styled(
+            format!("  · reading transcripts {read}/{total}…"),
+            theme::dim(),
+        ));
+    }
+    put(frame, row_at(area, area.y), Line::from(spans));
+    let list = below(area, 2);
+    let term = crate::catalog::terms(&app.query).into_iter().next();
+    let rows: Vec<Row<'_>> = app
+        .results
+        .iter()
+        .enumerate()
+        .map(|(index, hit)| Row {
+            index,
+            agent: &hit.agent,
+            held: app.running(&hit.agent.session_id).is_some(),
+            snippet: hit.snippet.as_deref(),
+            prompts: Some(hit.prompts),
+        })
+        .collect();
+    session_rows(
+        frame,
+        app,
+        list,
+        &rows,
+        (Focus::Search, term.as_deref()),
+        hits,
+    );
+}
+
+/// The search box, drawn like Claude Code's prompt box: a rounded rule, a
+/// `❯`, and the terminal's own cursor after the text. It holds the search,
+/// or the focused column's filter.
+fn search_box(frame: &mut Frame<'_>, app: &App, area: Rect, hits: &mut Hits) {
+    let column = app.at();
+    let filter = app.filter(column);
+    let searching = app.focus == Focus::Search;
+    let typing = searching || app.filtering;
+    let hovered = app.hover == Some(Target::Search);
+    let border = if typing {
+        Style::new().fg(theme::ACCENT)
+    } else if hovered {
+        Style::new().fg(Color::Indexed(244))
+    } else {
+        theme::line()
+    };
+    let (_, name) = names(column);
+    let (mark, typed, title) = if searching {
+        (
+            "❯ ",
+            app.query.as_str(),
+            " search every session ".to_owned(),
+        )
+    } else if app.filtering || !filter.is_empty() {
+        ("/ ", filter, format!(" filter {} ", name.to_lowercase()))
+    } else {
+        ("", "", String::new())
+    };
+    let text = if typed.is_empty() && !typing {
+        Line::from(vec![
+            Span::styled("/ ", theme::dim()),
+            Span::styled(
+                format!(
+                    "filter {}   ctrl+f search every session",
+                    name.to_lowercase()
+                ),
+                theme::dim(),
+            ),
+        ])
+    } else {
+        Line::from(vec![
+            Span::styled(mark, Style::new().fg(theme::ACCENT)),
+            Span::raw(typed.to_owned()),
+        ])
+    };
+    let mut block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(border)
+        // The bottom border carries what a footer would: a notice, else
+        // where the keys are, so no row goes to either.
+        .title_bottom(match &app.notice {
+            Some(notice) => Line::styled(
+                format!(
+                    " ▲ {} ",
+                    truncate(notice, usize::from(area.width).saturating_sub(8))
+                ),
+                Style::new().fg(theme::WARNING),
+            ),
+            None => Line::styled(" ? keys · ctrl+l layout ", theme::dim()).right_aligned(),
+        });
+    if !title.is_empty() {
+        block = block.title(Line::styled(title, theme::dim()));
+    }
+    frame.render_widget(Paragraph::new(text).block(block), area);
+    if typing {
+        let typed = u16::try_from(typed.chars().count()).unwrap_or(u16::MAX);
+        hits.cursor = Some(Position::new(
+            (area.x + 3 + typed).min(area.right().saturating_sub(2)),
+            area.y + 1,
+        ));
+    }
+    hits.add(area, Target::Search);
+}
+
+fn help(frame: &mut Frame<'_>) {
+    let keys = [
+        ("tab", "next column; shift+tab the one before"),
+        ("1 2 3", "jump to the panes, the sessions, or the session"),
+        ("← → h l", "go up or down a level"),
+        ("↑ ↓ j k", "move the selection, or scroll the session"),
+        ("enter", "go to the pane; open the session; resume it"),
+        ("g  r", "go to the pane; resume the session here"),
+        ("[  ]", "the session's tabs"),
+        ("/", "filter the column; esc clears it"),
+        ("ctrl+f", "search every session; esc closes it"),
+        ("ctrl+l", "rails or one view at a time"),
+        ("click", "select or focus; click again to act"),
+        ("wheel", "scroll the list under the pointer"),
+        ("esc q", "back a level; quit from the panes"),
+    ];
+    let lines: Vec<Line<'static>> = keys
+        .iter()
+        .map(|(key, what)| {
+            Line::from(vec![
+                Span::styled(format!("  {key:<10}"), Style::new().fg(theme::ACCENT)),
+                Span::raw((*what).to_owned()),
+            ])
+        })
+        .collect();
+    let area = centred(
+        frame.area(),
+        70,
+        u16::try_from(lines.len()).unwrap_or(0) + 4,
+    );
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        Paragraph::new(lines).block(
+            Block::bordered()
+                .border_type(BorderType::Rounded)
+                .title(" Keys ")
+                .title_bottom(Line::styled(" any key closes ", theme::dim()).centered())
+                .border_style(Style::new().fg(theme::ACCENT))
+                .padding(Padding::vertical(1)),
+        ),
+        area,
+    );
 }
 
 /// The pull requests on one line, grouped by repository and named without
@@ -763,56 +1504,11 @@ fn thousands(count: u64) -> String {
     }
 }
 
-/// The search results, in the same rows as a pane's sessions, each with the
-/// line that matched.
-fn results(frame: &mut Frame<'_>, app: &App, area: Rect, hits: &mut Hits) {
-    let mut spans = if app.query.trim().is_empty() {
-        vec![Span::styled(
-            "Type to search every local session: prompts, titles, folders, and what Claude wrote",
-            theme::dim(),
-        )]
-    } else {
-        vec![
-            Span::styled("Search", theme::header()),
-            Span::styled(format!("  {} matches", app.results.len()), theme::dim()),
-        ]
-    };
-    if app.deep {
-        let (read, total) = app.read;
-        spans.push(Span::styled(
-            format!("  · reading transcripts {read}/{total}…"),
-            theme::dim(),
-        ));
-    }
-    put(frame, row_at(area, area.y), Line::from(spans));
-    let list = Rect {
-        y: area.y + 2,
-        height: area.height.saturating_sub(2),
-        ..area
-    };
-    let term = crate::catalog::terms(&app.query).into_iter().next();
-    let rows: Vec<Row<'_>> = app
-        .results
-        .iter()
-        .map(|hit| Row {
-            agent: &hit.agent,
-            held: app.running(&hit.agent.session_id).is_some(),
-            snippet: hit.snippet.as_deref(),
-            prompts: Some(hit.prompts),
-        })
-        .collect();
-    session_rows(
-        frame,
-        app,
-        list,
-        &rows,
-        (Focus::Search, term.as_deref()),
-        hits,
-    );
-}
-
 /// One session in a list.
 struct Row<'a> {
+    /// Its place in the list it comes from: the pane's sessions, or the
+    /// results.
+    index: usize,
     agent: &'a Agent,
     /// Whether a live Claude holds it.
     held: bool,
@@ -852,14 +1548,14 @@ fn session_rows(
     hits.lists.push((area, list));
     let (current, target): (usize, fn(usize) -> Target) = match list {
         Focus::Search => (app.result, Target::Result),
-        Focus::Sessions | Focus::Panes => (app.session, Target::Session),
+        Focus::Sessions | Focus::Panes | Focus::Session => (app.session, Target::Session),
     };
     let focused = app.focus == list;
-    let height = |row: &Row<'_>| -> u16 { if row.snippet.is_some() { 3 } else { 2 } };
+    let height = row_height;
     let total: u16 = rows.iter().map(height).sum();
-    let selection = (focused && current < rows.len()).then(|| {
-        let start: u16 = rows.iter().take(current).map(height).sum();
-        (start, start + rows.get(current).map_or(2, height))
+    let selection = rows.iter().position(|row| row.index == current).map(|at| {
+        let start: u16 = rows.iter().take(at).map(height).sum();
+        (start, start + rows.get(at).map_or(2, height))
     });
     let skip = top_of(app.scroll_of(list), total, area.height, selection);
     hits.tops.push((list, skip));
@@ -869,7 +1565,7 @@ fn session_rows(
         ..area
     };
     let mut y: u16 = 0;
-    for (index, row) in rows.iter().enumerate() {
+    for row in rows {
         let tall = height(row);
         let top = y;
         y += tall;
@@ -885,8 +1581,8 @@ fn session_rows(
             height: tall,
             ..area
         };
-        let selected = focused && index == current;
-        let hovered = app.hover == Some(target(index));
+        let selected = row.index == current;
+        let hovered = app.hover == Some(target(row.index));
         let place = whereabouts(app, row);
         let (glyph, glyph_style, said) = match place {
             Where::Pane(pane) => {
@@ -948,11 +1644,16 @@ fn session_rows(
             ),
         ]));
         frame.render_widget(
-            Paragraph::new(lines).style(theme::row(selected, hovered)),
+            Paragraph::new(lines).style(theme::row(selected && focused, hovered)),
             cell,
         );
-        hits.add(cell, target(index));
+        hits.add(cell, target(row.index));
     }
+}
+
+/// How many lines a session row takes: a third for the line that matched.
+fn row_height(row: &Row<'_>) -> u16 {
+    if row.snippet.is_some() { 3 } else { 2 }
 }
 
 /// `text` with each place `term` occurs lit in the accent, the rest dim.
@@ -1035,103 +1736,6 @@ fn action(
     hits.add(area, Target::Button(button));
 }
 
-/// The search box, drawn like Claude Code's prompt box: a rounded rule, a
-/// `❯`, and the terminal's own cursor after the text.
-fn search_box(frame: &mut Frame<'_>, app: &App, area: Rect, hits: &mut Hits) {
-    let focused = app.focus == Focus::Search;
-    let hovered = app.hover == Some(Target::Search);
-    let border = if focused {
-        Style::new().fg(theme::ACCENT)
-    } else if hovered {
-        Style::new().fg(Color::Indexed(244))
-    } else {
-        theme::line()
-    };
-    let text = if focused || !app.query.is_empty() {
-        Line::from(vec![
-            Span::styled("❯ ", Style::new().fg(theme::ACCENT)),
-            Span::raw(app.query.clone()),
-        ])
-    } else {
-        Line::from(vec![
-            Span::styled("❯ ", theme::dim()),
-            Span::styled("Search every local session", theme::dim()),
-        ])
-    };
-    frame.render_widget(
-        Paragraph::new(text).block(
-            Block::bordered()
-                .border_type(BorderType::Rounded)
-                .border_style(border)
-                // The bottom border carries what a footer would: a notice,
-                // else where the keys are, so no row goes to either.
-                .title_bottom(match &app.notice {
-                    Some(notice) => Line::styled(
-                        format!(
-                            " ▲ {} ",
-                            truncate(notice, usize::from(area.width).saturating_sub(8))
-                        ),
-                        Style::new().fg(theme::WARNING),
-                    ),
-                    None => Line::styled(" ? keys ", theme::dim()).right_aligned(),
-                }),
-        ),
-        area,
-    );
-    if focused {
-        let typed = u16::try_from(app.query.chars().count()).unwrap_or(u16::MAX);
-        hits.cursor = Some(Position::new(
-            (area.x + 3 + typed).min(area.right().saturating_sub(2)),
-            area.y + 1,
-        ));
-    }
-    hits.add(area, Target::Search);
-}
-
-fn help(frame: &mut Frame<'_>) {
-    let keys = [
-        (
-            "enter",
-            "on a pane: show it in the Rex app; on a session: resume it here",
-        ),
-        ("r", "resume the selected session in this terminal"),
-        ("tab ← →", "move between the sidebar and the sessions"),
-        ("↑ ↓ j k", "move the selection"),
-        ("/", "search every local session"),
-        ("ctrl+b", "fold or open the sidebar"),
-        ("< >", "narrow or widen the sidebar, or drag its edge"),
-        ("click", "select; click the selected row to act on it"),
-        ("wheel", "scroll the list under the pointer"),
-        ("q esc", "quit"),
-    ];
-    let lines: Vec<Line<'static>> = keys
-        .iter()
-        .map(|(key, what)| {
-            Line::from(vec![
-                Span::styled(format!("  {key:<10}"), Style::new().fg(theme::ACCENT)),
-                Span::raw((*what).to_owned()),
-            ])
-        })
-        .collect();
-    let area = centred(
-        frame.area(),
-        76,
-        u16::try_from(lines.len()).unwrap_or(0) + 4,
-    );
-    frame.render_widget(Clear, area);
-    frame.render_widget(
-        Paragraph::new(lines).block(
-            Block::bordered()
-                .border_type(BorderType::Rounded)
-                .title(" Keys ")
-                .title_bottom(Line::styled(" any key closes ", theme::dim()).centered())
-                .border_style(Style::new().fg(theme::ACCENT))
-                .padding(Padding::vertical(1)),
-        ),
-        area,
-    );
-}
-
 fn centred(area: Rect, width: u16, height: u16) -> Rect {
     let width = width.min(area.width);
     let height = height.min(area.height);
@@ -1171,16 +1775,6 @@ fn truncate(text: &str, max: usize) -> String {
 /// has the same name.
 fn unique_name(pane: &Pane) -> String {
     format!("{} · {}", pane.name, pane.tab)
-}
-
-/// A session with no title that started in a temporary folder.
-fn is_scratch(agent: &Agent) -> bool {
-    let temp = std::env::temp_dir();
-    agent.title == "Untitled session"
-        && (["/tmp/", "/private/tmp/", "/var/folders/"]
-            .iter()
-            .any(|prefix| agent.cwd.starts_with(prefix))
-            || std::path::Path::new(&agent.cwd).starts_with(&temp))
 }
 
 /// `snippet` with its start dropped so `term` sits a third of the way into

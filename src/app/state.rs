@@ -2,6 +2,8 @@
 //! draws or reads the terminal, so every event is a plain function of the
 //! state.
 
+use std::time::{Duration, Instant};
+
 use ratatui::crossterm::event::{
     KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
@@ -11,15 +13,69 @@ use crate::catalog::Hit;
 use crate::session::Agent;
 use crate::status::Status;
 
-/// Which list the keys move in.
+/// Where the keys go: one of the three columns, or the search over them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) enum Focus {
-    /// The sidebar of panes.
+    /// Every pane, by what it needs.
     Panes,
     /// The selected pane's sessions.
     Sessions,
-    /// The search results; the box at the bottom takes the keys.
+    /// One session: its tasks, prompts, tool calls and files.
+    Session,
+    /// The search over every local session, drawn over the columns.
     Search,
+}
+
+impl Focus {
+    /// The columns, left to right.
+    pub(crate) const COLUMNS: [Self; 3] = [Self::Panes, Self::Sessions, Self::Session];
+
+    /// The column's place, from 0.
+    pub(crate) const fn column(self) -> usize {
+        match self {
+            Self::Panes | Self::Search => 0,
+            Self::Sessions => 1,
+            Self::Session => 2,
+        }
+    }
+}
+
+/// How the columns share the screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) enum Arrangement {
+    /// The focused column takes the width; the other two fold to rails.
+    Rails,
+    /// One column at a time across the whole width, under a path line.
+    Single,
+}
+
+/// The session column's views.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) enum Tab {
+    Overview,
+    Prompts,
+    Activity,
+    Files,
+}
+
+impl Tab {
+    pub(crate) const ALL: [Self; 4] = [Self::Overview, Self::Prompts, Self::Activity, Self::Files];
+
+    pub(crate) const fn name(self) -> &'static str {
+        match self {
+            Self::Overview => "Overview",
+            Self::Prompts => "Prompts",
+            Self::Activity => "Activity",
+            Self::Files => "Files",
+        }
+    }
+
+    fn shift(self, by: isize) -> Self {
+        let at = Self::ALL.iter().position(|tab| *tab == self).unwrap_or(0);
+        let len = Self::ALL.len();
+        let next = (at + len).saturating_add_signed(by) % len;
+        Self::ALL[next]
+    }
 }
 
 /// Whether the app has heard from Rex.
@@ -38,14 +94,14 @@ pub(crate) enum Link {
 pub(crate) enum Action {
     None,
     Quit,
-    /// Give the terminal back and become `claude --resume` for this session.
+    /// Resume this session: in a tab when the window floats, else here.
     Resume(Agent),
     /// Show this pane in the Rex app.
     GoTo {
         session_id: String,
         block_id: String,
     },
-    /// The search text changed; the loop finds the matches.
+    /// The search text changed; the loop asks the daemon for matches.
     Search,
 }
 
@@ -54,8 +110,6 @@ pub(crate) enum Action {
 pub(crate) enum Button {
     GoTo,
     Resume,
-    /// Folds the sidebar to a rail of glyphs, or opens it again.
-    Sidebar,
 }
 
 /// Something on screen that takes a click.
@@ -66,15 +120,15 @@ pub(crate) enum Target {
     Result(usize),
     Search,
     Button(Button),
-    /// The edge of the sidebar; dragging it resizes the sidebar.
-    Edge,
+    /// A column, folded or not; a click focuses it.
+    Column(Focus),
+    Tab(Tab),
     /// The line that stands for a pane's untitled scratch sessions.
     Scratch,
 }
 
-/// The narrowest open sidebar, and the narrowest main area beside it.
-pub(crate) const MIN_SIDEBAR: u16 = 22;
-const MIN_MAIN: u16 = 30;
+/// How long a change of focus takes to settle on screen.
+pub(crate) const MOVE: Duration = Duration::from_millis(160);
 
 /// How many lines one wheel notch moves a list.
 const WHEEL: i16 = 2;
@@ -94,6 +148,12 @@ pub(crate) struct App {
     pub(crate) pane: usize,
     pub(crate) session: usize,
     pub(crate) focus: Focus,
+    /// The column the search returns to.
+    back: Focus,
+    pub(crate) arrangement: Arrangement,
+    pub(crate) tab: Tab,
+    /// The column focus last left, and when, for the move on screen.
+    pub(crate) moved: Option<(Focus, Instant)>,
     pub(crate) link: Link,
     pub(crate) query: String,
     pub(crate) results: Vec<Hit>,
@@ -102,27 +162,25 @@ pub(crate) struct App {
     /// How many transcripts the deep search has read, of how many.
     pub(crate) read: (usize, usize),
     pub(crate) result: usize,
+    /// Each column's filter, typed after `/`.
+    pub(crate) filters: [String; 3],
+    /// Whether the keys type into the focused column's filter.
+    pub(crate) filtering: bool,
     pub(crate) help: bool,
-    /// One line for the status bar, such as the Rex app's refusal.
+    /// One line for the search box's border, such as the Rex app's refusal.
     pub(crate) notice: Option<String>,
     /// The block this app runs in, so its own pane is marked.
     pub(crate) here: Option<String>,
     /// What the pointer is over.
     pub(crate) hover: Option<Target>,
-    /// The open sidebar's width, in columns.
-    pub(crate) sidebar: u16,
-    /// Whether the sidebar is folded to its rail.
-    pub(crate) folded: bool,
-    /// Whether the sidebar's edge is being dragged.
-    pub(crate) dragging: bool,
     /// The spinner's frame, moved on by the loop's tick while a pane works.
     pub(crate) frame: usize,
     /// Whether a pane's untitled scratch sessions are listed.
     pub(crate) show_scratch: bool,
-    /// The panes, sessions and results lists, in that order.
     /// The pane to select once the feed lists it, by block ID.
     pub(crate) want: Option<String>,
-    scrolls: [Scroll; 3],
+    /// The panes, sessions, session and results, in that order.
+    scrolls: [Scroll; 4],
 }
 
 /// A list's place in [`App::scrolls`].
@@ -130,7 +188,8 @@ const fn slot(list: Focus) -> usize {
     match list {
         Focus::Panes => 0,
         Focus::Sessions => 1,
-        Focus::Search => 2,
+        Focus::Session => 2,
+        Focus::Search => 3,
     }
 }
 
@@ -148,6 +207,11 @@ pub(crate) const fn rank(status: Status) -> u8 {
     }
 }
 
+/// Whether `text` holds `filter`, ignoring case; an empty filter holds all.
+pub(crate) fn passes(filter: &str, text: &str) -> bool {
+    filter.is_empty() || text.to_lowercase().contains(&filter.to_lowercase())
+}
+
 impl App {
     pub(crate) fn new(here: Option<String>) -> Self {
         Self {
@@ -155,23 +219,26 @@ impl App {
             pane: 0,
             session: 0,
             focus: Focus::Panes,
+            back: Focus::Panes,
+            arrangement: Arrangement::Rails,
+            tab: Tab::Overview,
+            moved: None,
             link: Link::Connecting,
             query: String::new(),
             results: Vec::new(),
             deep: false,
             read: (0, 0),
             result: 0,
+            filters: Default::default(),
+            filtering: false,
             help: false,
             notice: None,
             here,
             hover: None,
-            sidebar: 38,
-            folded: false,
-            dragging: false,
             frame: 0,
             show_scratch: false,
             want: None,
-            scrolls: [Scroll::default(); 3],
+            scrolls: [Scroll::default(); 4],
         }
     }
 
@@ -197,9 +264,32 @@ impl App {
         self.panes.get(self.pane)
     }
 
-    /// Whether any pane works, so the spinner needs the tick.
+    /// The filter of `column`.
+    pub(crate) fn filter(&self, column: Focus) -> &str {
+        &self.filters[column.column()]
+    }
+
+    /// How far the last move of focus has come, from 0 to 1, eased out.
+    pub(crate) fn progress(&self) -> f32 {
+        self.moved.map_or(1.0, |(_, at)| {
+            let t = (at.elapsed().as_secs_f32() / MOVE.as_secs_f32()).min(1.0);
+            1.0 - (1.0 - t).powi(3)
+        })
+    }
+
+    /// Whether the screen changes with the clock: a pane works, so the
+    /// spinner turns, or focus is still moving.
     pub(crate) fn animating(&self) -> bool {
-        self.panes.iter().any(|pane| pane.status == Status::Working)
+        self.panes.iter().any(|pane| pane.status == Status::Working) || self.moving()
+    }
+
+    /// Moves focus to `column`, marking the move for the screen.
+    fn focus_on(&mut self, column: Focus) {
+        if column != self.focus {
+            self.moved = Some((self.focus, Instant::now()));
+            self.focus = column;
+            self.filtering = false;
+        }
     }
 
     /// Takes a new list of panes, sorted by attention, and keeps the
@@ -236,8 +326,74 @@ impl App {
         self.selected().map_or(0, |pane| pane.sessions.len())
     }
 
-    /// The session `r` resumes: the highlighted one, or the selected pane's
-    /// newest that no live Claude holds.
+    /// The panes the panes filter lets through, by index.
+    pub(crate) fn visible_panes(&self) -> Vec<usize> {
+        let filter = self.filter(Focus::Panes);
+        self.panes
+            .iter()
+            .enumerate()
+            .filter(|(_, pane)| {
+                passes(
+                    filter,
+                    &format!(
+                        "{} {} {} {}",
+                        pane.title(),
+                        pane.name,
+                        pane.tab,
+                        pane.msg.as_deref().unwrap_or_default()
+                    ),
+                )
+            })
+            .map(|(index, _)| index)
+            .collect()
+    }
+
+    /// The selected pane's sessions the sessions filter lets through, titled
+    /// ones first, then the scratch ones when they are shown.
+    pub(crate) fn visible_sessions(&self) -> Vec<usize> {
+        let filter = self.filter(Focus::Sessions);
+        let Some(pane) = self.selected() else {
+            return Vec::new();
+        };
+        let (scratch, titled): (Vec<(usize, bool)>, Vec<(usize, bool)>) = pane
+            .sessions
+            .iter()
+            .enumerate()
+            .filter(|(_, (agent, _))| passes(filter, &format!("{} {}", agent.title, agent.cwd)))
+            .map(|(index, (agent, _))| (index, is_scratch(agent)))
+            .partition(|(_, scratch)| *scratch);
+        let shown = if self.show_scratch {
+            scratch
+        } else {
+            Vec::new()
+        };
+        titled
+            .into_iter()
+            .chain(shown)
+            .map(|(index, _)| index)
+            .collect()
+    }
+
+    /// The first session the selected pane lists.
+    fn first_session(&self) -> usize {
+        self.visible_sessions().first().copied().unwrap_or(0)
+    }
+
+    /// The column on screen: the focused one, or the one the search covers.
+    pub(crate) const fn at(&self) -> Focus {
+        match self.focus {
+            Focus::Search => self.back,
+            Focus::Panes | Focus::Sessions | Focus::Session => self.focus,
+        }
+    }
+
+    /// Whether focus is still moving on screen, so frames come fast.
+    pub(crate) fn moving(&self) -> bool {
+        self.moved.is_some_and(|(_, at)| at.elapsed() < MOVE)
+    }
+
+    /// The session `r` resumes: the one shown, or the selected pane's newest
+    /// that no live Claude holds.
     fn chosen(&self) -> Option<Agent> {
         match self.focus {
             Focus::Search => self
@@ -245,7 +401,7 @@ impl App {
                 .get(self.result)
                 .filter(|hit| self.running(&hit.agent.session_id).is_none())
                 .map(|hit| hit.agent.clone()),
-            Focus::Sessions => self
+            Focus::Sessions | Focus::Session => self
                 .selected()
                 .and_then(|pane| pane.sessions.get(self.session))
                 .filter(|(_, held)| !held)
@@ -265,12 +421,24 @@ impl App {
         }
         self.notice = None;
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-        if ctrl && key.code == KeyCode::Char('c') {
-            return Action::Quit;
-        }
-        if ctrl && key.code == KeyCode::Char('b') {
-            self.folded = !self.folded;
-            return Action::None;
+        match (ctrl, key.code) {
+            (true, KeyCode::Char('c')) => return Action::Quit,
+            (true, KeyCode::Char('l')) => {
+                self.arrangement = match self.arrangement {
+                    Arrangement::Rails => Arrangement::Single,
+                    Arrangement::Single => Arrangement::Rails,
+                };
+                self.moved = Some((self.focus, Instant::now()));
+                return Action::None;
+            }
+            (true, KeyCode::Char('f')) => {
+                if self.focus != Focus::Search {
+                    self.back = self.focus;
+                    self.focus = Focus::Search;
+                }
+                return Action::Search;
+            }
+            _ => {}
         }
         if self.help {
             self.help = false;
@@ -279,29 +447,66 @@ impl App {
         if self.focus == Focus::Search {
             return self.on_search_key(key);
         }
+        if self.filtering {
+            return self.on_filter_key(key);
+        }
         match key.code {
-            KeyCode::Char('q') | KeyCode::Esc => Action::Quit,
+            KeyCode::Char('q') => Action::Quit,
+            KeyCode::Esc => {
+                let column = self.focus.column();
+                if !self.filters[column].is_empty() {
+                    self.filters[column].clear();
+                } else if column == 0 {
+                    return Action::Quit;
+                } else {
+                    self.focus_on(Focus::COLUMNS[column - 1]);
+                }
+                Action::None
+            }
             KeyCode::Char('?') => {
                 self.help = true;
                 Action::None
             }
             KeyCode::Char('/') => {
-                self.focus = Focus::Search;
-                Action::Search
+                self.filtering = true;
+                Action::None
             }
-            KeyCode::Tab | KeyCode::BackTab => {
-                self.focus = match self.focus {
-                    Focus::Panes => Focus::Sessions,
-                    Focus::Sessions | Focus::Search => Focus::Panes,
-                };
+            KeyCode::Char('1') => {
+                self.focus_on(Focus::Panes);
+                Action::None
+            }
+            KeyCode::Char('2') => {
+                self.focus_on(Focus::Sessions);
+                Action::None
+            }
+            KeyCode::Char('3') => {
+                self.focus_on(Focus::Session);
+                Action::None
+            }
+            KeyCode::Tab => {
+                self.focus_on(Focus::COLUMNS[(self.focus.column() + 1) % 3]);
+                Action::None
+            }
+            KeyCode::BackTab => {
+                self.focus_on(Focus::COLUMNS[(self.focus.column() + 2) % 3]);
                 Action::None
             }
             KeyCode::Right | KeyCode::Char('l') => {
-                self.focus = Focus::Sessions;
+                self.focus_on(Focus::COLUMNS[(self.focus.column() + 1).min(2)]);
                 Action::None
             }
-            KeyCode::Left | KeyCode::Char('h') => {
-                self.focus = Focus::Panes;
+            KeyCode::Left | KeyCode::Char('h') | KeyCode::Backspace => {
+                self.focus_on(Focus::COLUMNS[self.focus.column().saturating_sub(1)]);
+                Action::None
+            }
+            KeyCode::Char(']') if self.focus == Focus::Session => {
+                self.tab = self.tab.shift(1);
+                *self.scroll_mut(Focus::Session) = Scroll::default();
+                Action::None
+            }
+            KeyCode::Char('[') if self.focus == Focus::Session => {
+                self.tab = self.tab.shift(-1);
+                *self.scroll_mut(Focus::Session) = Scroll::default();
                 Action::None
             }
             KeyCode::Down | KeyCode::Char('j') => {
@@ -313,26 +518,70 @@ impl App {
                 Action::None
             }
             KeyCode::Char('r') => self.resume(),
-            KeyCode::Char('<' | '[') => {
-                self.widen(-4, u16::MAX);
-                Action::None
-            }
-            KeyCode::Char('>' | ']') => {
-                self.widen(4, u16::MAX);
-                Action::None
-            }
+            KeyCode::Char('g') => self.go_to(),
             KeyCode::Enter => match self.focus {
                 Focus::Panes => self.go_to(),
-                Focus::Sessions | Focus::Search => self.resume(),
+                Focus::Sessions => {
+                    self.focus_on(Focus::Session);
+                    Action::None
+                }
+                Focus::Session | Focus::Search => self.resume(),
             },
             _ => Action::None,
+        }
+    }
+
+    fn on_filter_key(&mut self, key: KeyEvent) -> Action {
+        let column = self.focus.column();
+        match key.code {
+            KeyCode::Esc => {
+                self.filters[column].clear();
+                self.filtering = false;
+            }
+            KeyCode::Enter | KeyCode::Down | KeyCode::Up => {
+                self.filtering = false;
+                if key.code != KeyCode::Enter {
+                    self.step(if key.code == KeyCode::Down { 1 } else { -1 });
+                }
+            }
+            KeyCode::Backspace => {
+                self.filters[column].pop();
+            }
+            KeyCode::Char(c) => self.filters[column].push(c),
+            _ => {}
+        }
+        self.keep_visible();
+        Action::None
+    }
+
+    /// Moves the selection onto the first row the filters let through, when
+    /// the selected one is filtered out.
+    fn keep_visible(&mut self) {
+        let panes = self.visible_panes();
+        if !panes.contains(&self.pane)
+            && let Some(first) = panes.first()
+        {
+            self.pane = *first;
+            self.session = self.first_session();
+        }
+        let sessions = self.visible_sessions();
+        if !sessions.contains(&self.session)
+            && let Some(first) = sessions.first()
+        {
+            self.session = *first;
+        }
+        for list in [Focus::Panes, Focus::Sessions, Focus::Session] {
+            *self.scroll_mut(list) = Scroll {
+                top: 0,
+                follow: true,
+            };
         }
     }
 
     fn on_search_key(&mut self, key: KeyEvent) -> Action {
         match key.code {
             KeyCode::Esc => {
-                self.focus = Focus::Panes;
+                self.focus = self.back;
                 self.query.clear();
                 self.results.clear();
                 Action::None
@@ -359,8 +608,7 @@ impl App {
     }
 
     /// Handles a mouse report. `hit` is what the last frame drew under the
-    /// pointer, `list` the list under it, and `width` the screen's width,
-    /// which bounds the sidebar.
+    /// pointer, `list` the list under it, and `size` the screen's size.
     pub(crate) fn on_mouse(
         &mut self,
         mouse: MouseEvent,
@@ -368,7 +616,6 @@ impl App {
         list: Option<Focus>,
         size: (u16, u16),
     ) -> Action {
-        let width = size.0;
         if self.help {
             if matches!(mouse.kind, MouseEventKind::Down(_)) {
                 self.help = false;
@@ -380,8 +627,7 @@ impl App {
                 // Rex goes on reporting while the pointer is outside the pane,
                 // in its padding or beyond, with the position clamped to the
                 // outermost cells. A report there may be the pointer outside,
-                // so the outermost ring never hovers; nothing that takes a
-                // click lies only in it.
+                // so the outermost ring never hovers.
                 let (width, height) = size;
                 let edge = mouse.column == 0
                     || mouse.row == 0
@@ -403,40 +649,14 @@ impl App {
             }
             MouseEventKind::Down(MouseButton::Left) => {
                 self.notice = None;
-                match hit {
-                    Some(Target::Edge) => {
-                        self.dragging = true;
-                        Action::None
-                    }
-                    Some(target) => self.click(target),
-                    None => Action::None,
-                }
-            }
-            MouseEventKind::Drag(MouseButton::Left) if self.dragging => {
-                if self.folded {
-                    self.folded = false;
-                }
-                self.sidebar = mouse.column.saturating_add(1);
-                self.widen(0, width);
-                Action::None
+                hit.map_or(Action::None, |target| self.click(target))
             }
             MouseEventKind::Up(_) => {
-                self.dragging = false;
                 self.hover = hit;
                 Action::None
             }
             _ => Action::None,
         }
-    }
-
-    /// Grows the sidebar by `by` columns, keeping both parts usable on a
-    /// screen `width` wide.
-    fn widen(&mut self, by: i16, width: u16) {
-        let most = width.saturating_sub(MIN_MAIN).max(MIN_SIDEBAR);
-        self.sidebar = self
-            .sidebar
-            .saturating_add_signed(by)
-            .clamp(MIN_SIDEBAR, most);
     }
 
     fn click(&mut self, target: Target) -> Action {
@@ -445,18 +665,20 @@ impl App {
                 if self.focus == Focus::Panes && self.pane == index {
                     return self.go_to();
                 }
-                self.focus = Focus::Panes;
+                self.focus_on(Focus::Panes);
                 self.pane = index;
-                self.session = 0;
+                self.session = self.first_session();
                 *self.scroll_mut(Focus::Sessions) = Scroll::default();
                 Action::None
             }
             Target::Session(index) => {
                 if self.focus == Focus::Sessions && self.session == index {
-                    return self.resume();
+                    self.focus_on(Focus::Session);
+                    return Action::None;
                 }
-                self.focus = Focus::Sessions;
+                self.focus_on(Focus::Sessions);
                 self.session = index;
+                *self.scroll_mut(Focus::Session) = Scroll::default();
                 Action::None
             }
             Target::Result(index) => {
@@ -467,24 +689,27 @@ impl App {
                 Action::None
             }
             Target::Search => {
-                self.focus = Focus::Search;
+                if self.focus != Focus::Search {
+                    self.back = self.focus;
+                    self.focus = Focus::Search;
+                }
                 Action::Search
             }
-            Target::Button(button) => self.press(button),
-            Target::Edge => Action::None,
-            Target::Scratch => {
-                self.show_scratch = !self.show_scratch;
+            Target::Column(column) => {
+                self.focus_on(column);
                 Action::None
             }
-        }
-    }
-
-    fn press(&mut self, button: Button) -> Action {
-        match button {
-            Button::GoTo => self.go_to(),
-            Button::Resume => self.resume(),
-            Button::Sidebar => {
-                self.folded = !self.folded;
+            Target::Tab(tab) => {
+                self.focus_on(Focus::Session);
+                self.tab = tab;
+                *self.scroll_mut(Focus::Session) = Scroll::default();
+                Action::None
+            }
+            Target::Button(Button::GoTo) => self.go_to(),
+            Target::Button(Button::Resume) => self.resume(),
+            Target::Scratch => {
+                self.show_scratch = !self.show_scratch;
+                self.keep_visible();
                 Action::None
             }
         }
@@ -499,15 +724,23 @@ impl App {
     }
 
     pub(crate) fn on_paste(&mut self, text: &str) -> Action {
-        self.focus = Focus::Search;
-        self.query.push_str(&text.replace(['\n', '\r', '\t'], " "));
+        let text = text.replace(['\n', '\r', '\t'], " ");
+        if self.filtering {
+            self.filters[self.focus.column()].push_str(&text);
+            self.keep_visible();
+            return Action::None;
+        }
+        if self.focus != Focus::Search {
+            self.back = self.focus;
+            self.focus = Focus::Search;
+        }
+        self.query.push_str(&text);
         Action::Search
     }
 
-    /// The window lost focus: nothing is hovered or dragged.
+    /// The window lost focus: nothing is hovered.
     pub(crate) fn on_blur(&mut self) {
         self.hover = None;
-        self.dragging = false;
     }
 
     pub(crate) fn set_results(&mut self, results: Vec<Hit>) {
@@ -570,66 +803,97 @@ impl App {
         })
     }
 
+    /// Moves the focused list's selection by `by` rows the filters let
+    /// through; in the session column, scrolls it.
     fn step(&mut self, by: isize) {
-        let (at, len) = match self.focus {
-            Focus::Panes => (&mut self.pane, self.panes.len()),
-            Focus::Sessions => {
-                let len = self.session_count();
-                (&mut self.session, len)
+        let focus = self.focus;
+        match focus {
+            Focus::Panes => {
+                let rows = self.visible_panes();
+                if let Some(next) = moved_in(&rows, self.pane, by) {
+                    self.pane = next;
+                    self.session = self.first_session();
+                    *self.scroll_mut(Focus::Sessions) = Scroll::default();
+                    *self.scroll_mut(Focus::Session) = Scroll::default();
+                }
             }
-            Focus::Search => (&mut self.result, self.results.len()),
-        };
-        if len == 0 {
-            return;
+            Focus::Sessions => {
+                let rows = self.visible_sessions();
+                if let Some(next) = moved_in(&rows, self.session, by) {
+                    self.session = next;
+                    *self.scroll_mut(Focus::Session) = Scroll::default();
+                }
+            }
+            Focus::Session => {
+                self.scroll(Focus::Session, i16::try_from(by).unwrap_or(0));
+                return;
+            }
+            Focus::Search => {
+                let len = self.results.len();
+                if len > 0 {
+                    self.result = self.result.saturating_add_signed(by).min(len - 1);
+                }
+            }
         }
-        *at = at.saturating_add_signed(by).min(len - 1);
-        self.scroll_mut(self.focus).follow = true;
-        if self.focus == Focus::Panes {
-            self.session = 0;
-            *self.scroll_mut(Focus::Sessions) = Scroll::default();
-        }
+        self.scroll_mut(focus).follow = true;
     }
+}
+
+/// The row `by` places from `at` in `rows`, kept inside the list.
+fn moved_in(rows: &[usize], at: usize, by: isize) -> Option<usize> {
+    let place = rows.iter().position(|row| *row == at).unwrap_or(0);
+    let next = place
+        .saturating_add_signed(by)
+        .min(rows.len().checked_sub(1)?);
+    rows.get(next).copied()
+}
+
+/// A session with no title that started in a temporary folder: a scripted
+/// run, such as `claude -p`.
+pub(crate) fn is_scratch(agent: &Agent) -> bool {
+    let temp = std::env::temp_dir();
+    agent.title == "Untitled session"
+        && (["/tmp/", "/private/tmp/", "/var/folders/"]
+            .iter()
+            .any(|prefix| agent.cwd.starts_with(prefix))
+            || std::path::Path::new(&agent.cwd).starts_with(&temp))
 }
 
 /// How long ago a pane's newest session was active; a pane with no age
 /// sorts last.
-fn newest(pane: &Pane) -> std::time::Duration {
+fn newest(pane: &Pane) -> Duration {
     pane.sessions
         .first()
         .and_then(|(agent, _)| agent.idle)
-        .unwrap_or(std::time::Duration::MAX)
+        .unwrap_or(Duration::MAX)
 }
 
 impl App {
-    /// The session under the cursor: the search hit, the highlighted session,
-    /// or the selected pane's newest.
+    /// The session the session column shows: the search hit, or the
+    /// selected session of the selected pane.
     pub(crate) fn current(&self) -> Option<&Agent> {
         match self.focus {
             Focus::Search => self.results.get(self.result).map(|hit| &hit.agent),
-            Focus::Sessions => self
+            Focus::Panes | Focus::Sessions | Focus::Session => self
                 .selected()
                 .and_then(|pane| pane.sessions.get(self.session))
-                .map(|(agent, _)| agent),
-            Focus::Panes => self
-                .selected()
-                .and_then(|pane| pane.sessions.first())
                 .map(|(agent, _)| agent),
         }
     }
 }
 
-/// What a copy of the app hands to the copy that replaces it, so the new
-/// one opens as the old one was: the same list, query, sidebar and scroll.
-/// The selected pane goes by its block ID, as `--select`.
+/// What a window hands to the copy that replaces it, so the new one opens
+/// as the old one was.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Carry {
     /// The pane to select once the panes arrive, by block ID.
     pub(crate) select: Option<String>,
     focus: Focus,
+    arrangement: Arrangement,
+    tab: Tab,
     session: usize,
     query: String,
-    sidebar: u16,
-    folded: bool,
+    filters: [String; 3],
     show_scratch: bool,
     panes_top: u16,
 }
@@ -639,10 +903,11 @@ impl App {
         Carry {
             select: None,
             focus: self.focus,
+            arrangement: self.arrangement,
+            tab: self.tab,
             session: self.session,
             query: self.query.clone(),
-            sidebar: self.sidebar,
-            folded: self.folded,
+            filters: self.filters.clone(),
             show_scratch: self.show_scratch,
             panes_top: self.scroll_of(Focus::Panes).top,
         }
@@ -653,10 +918,11 @@ impl App {
     pub(crate) fn restore(&mut self, carry: Carry) -> bool {
         self.want = carry.select;
         self.focus = carry.focus;
+        self.arrangement = carry.arrangement;
+        self.tab = carry.tab;
         self.session = carry.session;
         self.query = carry.query;
-        self.sidebar = carry.sidebar;
-        self.folded = carry.folded;
+        self.filters = carry.filters;
         self.show_scratch = carry.show_scratch;
         self.scroll_mut(Focus::Panes).top = carry.panes_top;
         self.focus == Focus::Search && !self.query.trim().is_empty()

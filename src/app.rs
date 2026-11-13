@@ -35,6 +35,9 @@ use crate::session::Agent;
 /// input with no timer otherwise.
 const SPIN: Duration = Duration::from_millis(100);
 
+/// How often a moving focus redraws: about 60 frames a second.
+const FRAME: Duration = Duration::from_millis(16);
+
 enum Msg {
     Input(Event),
     Daemon(Incoming),
@@ -107,7 +110,7 @@ pub(crate) fn run(view: Option<u64>) -> Result<Option<Agent>> {
             replacing = false;
             daemon.send(ToDaemon::Drawn);
         }
-        screen.set_pointer(if app.dragging || app.hover.is_some() {
+        screen.set_pointer(if app.hover.is_some() {
             Pointer::Hand
         } else {
             Pointer::Default
@@ -118,8 +121,14 @@ pub(crate) fn run(view: Option<u64>) -> Result<Option<Agent>> {
         let tick = elapsed.as_millis() / SPIN.as_millis();
         app.frame = usize::try_from(tick).unwrap_or(0);
         let first = if app.animating() {
-            let next = SPIN.saturating_mul(u32::try_from(tick + 1).unwrap_or(u32::MAX));
-            match receive.recv_timeout(next.saturating_sub(elapsed)) {
+            // A moving focus draws at the screen's rate; a spinner at its own.
+            let wait = if app.moving() {
+                FRAME
+            } else {
+                SPIN.saturating_mul(u32::try_from(tick + 1).unwrap_or(u32::MAX))
+                    .saturating_sub(elapsed)
+            };
+            match receive.recv_timeout(wait) {
                 Ok(msg) => Some(msg),
                 Err(mpsc::RecvTimeoutError::Timeout) => None,
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
@@ -212,7 +221,7 @@ pub(crate) fn run(view: Option<u64>) -> Result<Option<Agent>> {
                     // the daemon decides, and answers `exec` for a tiled one.
                     let session = match app.focus {
                         state::Focus::Search => None,
-                        state::Focus::Panes | state::Focus::Sessions => {
+                        state::Focus::Panes | state::Focus::Sessions | state::Focus::Session => {
                             app.selected().map(|pane| pane.session_id.clone())
                         }
                     };
