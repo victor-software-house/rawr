@@ -27,7 +27,6 @@ pub(crate) struct Window {
 
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct Layer {
-    pub(crate) layer_id: String,
     /// `tiled` for the layer that fills the window; anything else floats.
     pub(crate) kind: String,
     /// `[x, y, w, h]`, fractions of the window.
@@ -206,15 +205,19 @@ impl Client {
 }
 
 impl Client {
-    /// Closes a floating layer and every block in it.
+    /// Closes the one block `block_id`, by its ID, and nothing else: other
+    /// blocks in its layer stay, and a label, which any program may set,
+    /// never picks the block.
     ///
     /// # Errors
     ///
     /// Fails when the server refuses the call.
-    pub(crate) fn close_layer(&mut self, session_id: &str, layer_id: &str) -> Result<()> {
+    /// It never closes the last block of a window, which would close the
+    /// window too.
+    pub(crate) fn close_block(&mut self, session_id: &str, block_id: &str) -> Result<()> {
         self.call::<_, IgnoredAny>(
-            "session.close_layer",
-            &json!({ "session_id": session_id, "layer_id": layer_id }),
+            "block.close",
+            &json!({ "session_id": session_id, "block_id": block_id, "keep_last": true }),
         )?;
         Ok(())
     }

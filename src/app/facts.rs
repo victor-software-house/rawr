@@ -5,10 +5,12 @@
 //! A transcript is read once per change: the result is kept by path, with
 //! the size and time it had, so moving the selection back costs nothing.
 
-use std::collections::HashMap;
-use std::fs;
+use std::collections::{HashMap, HashSet};
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::SystemTime;
+use std::{fs, thread};
 
 use serde::Deserialize;
 
@@ -32,26 +34,67 @@ pub(crate) struct Facts {
     pub(crate) agents: usize,
 }
 
-/// The transcripts read so far, by path.
-#[derive(Debug, Default)]
+/// A file's size and modification time: when either moves, its facts are
+/// read again.
+type Stamp = (u64, Option<SystemTime>);
+
+/// The transcripts read so far, by path, and one worker thread that reads
+/// them, so a large transcript never holds up a frame.
+#[derive(Debug)]
 pub(crate) struct Cache {
-    read: HashMap<PathBuf, (u64, Option<SystemTime>, Facts)>,
+    read: HashMap<PathBuf, (Stamp, Facts)>,
+    asked: HashSet<PathBuf>,
+    jobs: Sender<(PathBuf, Stamp)>,
+    done: Receiver<(PathBuf, Stamp, Option<Facts>)>,
 }
 
 impl Cache {
-    /// The facts of `path`, read again only when the file changed.
+    /// Starts the worker; `wake` runs after each read, so the loop draws the
+    /// facts that arrived.
+    pub(crate) fn new(wake: impl Fn() + Send + 'static) -> Self {
+        let (jobs, inbox) = mpsc::channel::<(PathBuf, Stamp)>();
+        let (outbox, done) = mpsc::channel();
+        thread::spawn(move || {
+            while let Ok(mut job) = inbox.recv() {
+                // Only the newest ask is read; the ones it replaced are
+                // answered empty, so they can be asked again later.
+                while let Ok(newer) = inbox.try_recv() {
+                    let (path, stamp) = std::mem::replace(&mut job, newer);
+                    if outbox.send((path, stamp, None)).is_err() {
+                        return;
+                    }
+                }
+                let facts = read(&job.0);
+                if outbox.send((job.0, job.1, facts)).is_err() {
+                    return;
+                }
+                wake();
+            }
+        });
+        Self {
+            read: HashMap::new(),
+            asked: HashSet::new(),
+            jobs,
+            done,
+        }
+    }
+
+    /// The facts of `path` as last read, asking the worker for a fresh read
+    /// when the file changed since. `None` until the first read arrives.
     pub(crate) fn get(&mut self, path: &Path) -> Option<&Facts> {
+        while let Ok((done, stamp, facts)) = self.done.try_recv() {
+            self.asked.remove(&done);
+            if let Some(facts) = facts {
+                self.read.insert(done, (stamp, facts));
+            }
+        }
         let meta = fs::metadata(path).ok()?;
         let stamp = (meta.len(), meta.modified().ok());
-        let fresh = self
-            .read
-            .get(path)
-            .is_some_and(|(len, at, _)| (*len, *at) == stamp);
-        if !fresh {
-            let facts = read(path)?;
-            self.read.insert(path.to_owned(), (stamp.0, stamp.1, facts));
+        let fresh = self.read.get(path).is_some_and(|(read, _)| *read == stamp);
+        if !fresh && self.asked.insert(path.to_owned()) {
+            let _ = self.jobs.send((path.to_owned(), stamp));
         }
-        self.read.get(path).map(|(_, _, facts)| facts)
+        self.read.get(path).map(|(_, facts)| facts)
     }
 }
 
@@ -93,10 +136,15 @@ struct Usage {
 }
 
 fn read(path: &Path) -> Option<Facts> {
-    let bytes = fs::read(path).ok()?;
+    let mut lines = BufReader::new(fs::File::open(path).ok()?);
+    let mut line = Vec::new();
     let mut facts = Facts::default();
-    for line in bytes.split(|byte| *byte == b'\n') {
-        let Ok(record) = serde_json::from_slice::<Record>(line) else {
+    loop {
+        line.clear();
+        if lines.read_until(b'\n', &mut line).ok()? == 0 {
+            break;
+        }
+        let Ok(record) = serde_json::from_slice::<Record>(&line) else {
             continue;
         };
         if record.sidechain {

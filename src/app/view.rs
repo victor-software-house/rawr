@@ -9,11 +9,13 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Clear, Padding, Paragraph};
+use ratatui::widgets::{
+    Block, BorderType, Clear, Padding, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
+};
 
 use crate::app::facts::Facts;
 use crate::app::feed::Pane;
-use crate::app::state::{App, Button, Focus, Link, Target};
+use crate::app::state::{App, Button, Focus, Link, Scroll, Target};
 use crate::app::theme;
 use crate::session::Agent;
 use crate::status::Status;
@@ -32,6 +34,8 @@ pub(crate) struct Hits {
     pub(crate) height: u16,
     /// Where the terminal's cursor goes: after the text in the search box.
     pub(crate) cursor: Option<Position>,
+    /// Where this frame scrolled each list to, for the next to start from.
+    pub(crate) tops: Vec<(Focus, u16)>,
 }
 
 impl Hits {
@@ -56,7 +60,11 @@ impl Hits {
     }
 }
 
-pub(crate) fn draw(frame: &mut Frame<'_>, app: &App, facts: Option<(&Agent, &Facts)>) -> Hits {
+pub(crate) fn draw(
+    frame: &mut Frame<'_>,
+    app: &App,
+    facts: Option<(&Agent, Option<&Facts>)>,
+) -> Hits {
     let mut hits = Hits {
         width: frame.area().width,
         height: frame.area().height,
@@ -199,17 +207,26 @@ fn side_panel(frame: &mut Frame<'_>, app: &App, area: Rect, hits: &mut Hits) {
     }
     let tall = |line: &Line_| -> u16 {
         match line {
-            Line_::Pane(_) => 2,
+            Line_::Pane(index) => app.panes.get(*index).map_or(1, pane_height),
             Line_::Header(..) | Line_::Blank => 1,
         }
     };
-    // Scroll so the selected pane's two lines show.
-    let end_of = |at: usize| -> u16 { lines.iter().take(at + 1).map(tall).sum() };
-    let selected = lines
+    let total: u16 = lines.iter().map(tall).sum();
+    let selection = lines
         .iter()
         .position(|line| *line == Line_::Pane(app.pane))
-        .unwrap_or(0);
-    let skip = end_of(selected).saturating_sub(list.height);
+        .map(|at| {
+            let start: u16 = lines.iter().take(at).map(tall).sum();
+            (start, start + lines.get(at).map_or(1, tall))
+        });
+    let skip = top_of(app.scroll_of(Focus::Panes), total, list.height, selection);
+    hits.tops.push((Focus::Panes, skip));
+    scrollbar(frame, list, skip, total);
+    // The rows leave the scrollbar's column free.
+    let list = Rect {
+        width: list.width.saturating_sub(u16::from(total > list.height)),
+        ..list
+    };
     let mut y: u16 = 0;
     for line in &lines {
         let height = tall(line);
@@ -290,8 +307,18 @@ fn empty_text(app: &App) -> &'static str {
     }
 }
 
-/// One sidebar row, two lines: the glyph, the newest session's title and
-/// its age; then the Rex session and tab, and what Claude last said.
+/// How many lines a pane's row takes: one for a quiet pane, which needs
+/// nothing and says nothing; two for the rest, whose second line says
+/// where the pane is and what its Claude says.
+fn pane_height(pane: &Pane) -> u16 {
+    let quiet = matches!(pane.status, Status::Idle | Status::Stopped)
+        && pane.msg.as_deref().is_none_or(str::is_empty);
+    if quiet { 1 } else { 2 }
+}
+
+/// One sidebar row: the glyph, the newest session's title and its age;
+/// then, when the row has two lines, the Rex session and tab and what
+/// Claude last said.
 fn pane_row(frame: &mut Frame<'_>, app: &App, index: usize, cell: Rect) {
     let Some(pane) = app.panes.get(index) else {
         return;
@@ -323,27 +350,27 @@ fn pane_row(frame: &mut Frame<'_>, app: &App, index: usize, cell: Rect) {
         Some(msg) if !msg.is_empty() => format!("{place} · {msg}"),
         _ => place,
     };
+    let mut lines = vec![Line::from(vec![
+        bar.clone(),
+        Span::raw(" "),
+        Span::styled(
+            theme::glyph(pane.status, app.frame),
+            theme::status(pane.status),
+        ),
+        Span::raw(" "),
+        Span::styled(title, title_style),
+        Span::raw(" ".repeat(gap)),
+        Span::styled(format!(" {age} "), theme::dim()),
+    ])];
+    if cell.height > 1 {
+        lines.push(Line::from(vec![
+            bar,
+            Span::raw("   "),
+            Span::styled(truncate(&under, width.saturating_sub(5)), theme::dim()),
+        ]));
+    }
     frame.render_widget(
-        Paragraph::new(vec![
-            Line::from(vec![
-                bar.clone(),
-                Span::raw(" "),
-                Span::styled(
-                    theme::glyph(pane.status, app.frame),
-                    theme::status(pane.status),
-                ),
-                Span::raw(" "),
-                Span::styled(title, title_style),
-                Span::raw(" ".repeat(gap)),
-                Span::styled(format!(" {age} "), theme::dim()),
-            ]),
-            Line::from(vec![
-                bar,
-                Span::raw("   "),
-                Span::styled(truncate(&under, width.saturating_sub(5)), theme::dim()),
-            ]),
-        ])
-        .style(theme::row(selected, hovered)),
+        Paragraph::new(lines).style(theme::row(selected, hovered)),
         cell,
     );
 }
@@ -548,12 +575,23 @@ fn detail(frame: &mut Frame<'_>, app: &App, area: Rect, hits: &mut Hits) {
 }
 
 /// What the transcript says about the session under the cursor.
-fn facts_panel(frame: &mut Frame<'_>, area: Rect, agent: &Agent, facts: &Facts) {
+fn facts_panel(frame: &mut Frame<'_>, area: Rect, agent: &Agent, facts: Option<&Facts>) {
     let width = usize::from(area.width);
     let mut lines = vec![Line::from(vec![
         Span::styled("Session", theme::header()),
         Span::styled(format!("  {}", agent.session_id), theme::dim()),
     ])];
+    // The transcript is read off the drawing thread; until it arrives the
+    // panel keeps its place.
+    let Some(facts) = facts else {
+        lines.push(Line::styled("reading the transcript…", theme::dim()));
+        lines.push(Line::styled(
+            truncate(&agent.short_cwd(), width),
+            theme::dim(),
+        ));
+        frame.render_widget(Paragraph::new(lines), area);
+        return;
+    };
     let mut first = Vec::new();
     if let Some(model) = &facts.model {
         first.push(model.trim_start_matches("claude-").to_owned());
@@ -739,11 +777,18 @@ fn session_rows(
     };
     let focused = app.focus == list;
     let height = |row: &Row<'_>| -> u16 { if row.snippet.is_some() { 3 } else { 2 } };
-    let mut skip: u16 = 0;
-    if focused {
-        let end: u16 = rows.iter().take(current + 1).map(height).sum();
-        skip = end.saturating_sub(area.height);
-    }
+    let total: u16 = rows.iter().map(height).sum();
+    let selection = (focused && current < rows.len()).then(|| {
+        let start: u16 = rows.iter().take(current).map(height).sum();
+        (start, start + rows.get(current).map_or(2, height))
+    });
+    let skip = top_of(app.scroll_of(list), total, area.height, selection);
+    hits.tops.push((list, skip));
+    scrollbar(frame, area, skip, total);
+    let area = Rect {
+        width: area.width.saturating_sub(u16::from(total > area.height)),
+        ..area
+    };
     let mut y: u16 = 0;
     for (index, row) in rows.iter().enumerate() {
         let tall = height(row);
@@ -1118,4 +1163,42 @@ fn centre_on(snippet: &str, term: Option<&str>, room: usize) -> String {
     }
     let rest: String = snippet.chars().skip(drop + 1).collect();
     format!("…{rest}")
+}
+
+/// The first line to show of a list `total` lines tall in `height` rows:
+/// where it was scrolled to, moved to show the `selection` lines when it
+/// follows the selection, and never past its end.
+fn top_of(scroll: Scroll, total: u16, height: u16, selection: Option<(u16, u16)>) -> u16 {
+    let mut top = scroll.top;
+    if scroll.follow
+        && let Some((start, end)) = selection
+    {
+        if start < top {
+            top = start;
+        } else if end > top.saturating_add(height) {
+            top = end.saturating_sub(height);
+        }
+    }
+    top.min(total.saturating_sub(height))
+}
+
+/// A thin scrollbar down the right edge of `area`, when a list `total` lines
+/// tall does not fit in it.
+fn scrollbar(frame: &mut Frame<'_>, area: Rect, top: u16, total: u16) {
+    if total <= area.height {
+        return;
+    }
+    let mut state = ScrollbarState::new(usize::from(total - area.height) + 1)
+        .position(usize::from(top))
+        .viewport_content_length(usize::from(area.height));
+    frame.render_stateful_widget(
+        Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(None)
+            .end_symbol(None)
+            .track_symbol(Some(" "))
+            .thumb_symbol("┃")
+            .thumb_style(theme::line()),
+        area,
+        &mut state,
+    );
 }

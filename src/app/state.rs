@@ -79,6 +79,18 @@ pub(crate) enum Target {
 pub(crate) const MIN_SIDEBAR: u16 = 22;
 const MIN_MAIN: u16 = 30;
 
+/// How many lines one wheel notch moves a list.
+const WHEEL: i16 = 2;
+
+/// How far a list is scrolled: the first of its lines on screen. Keys move
+/// the selection and the list follows it; the wheel moves the list alone.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct Scroll {
+    pub(crate) top: u16,
+    /// Whether the next frame brings the selection into view.
+    pub(crate) follow: bool,
+}
+
 #[derive(Debug)]
 pub(crate) struct App {
     pub(crate) panes: Vec<Pane>,
@@ -110,6 +122,17 @@ pub(crate) struct App {
     pub(crate) frame: usize,
     /// Whether a pane's untitled scratch sessions are listed.
     pub(crate) show_scratch: bool,
+    /// The panes, sessions and results lists, in that order.
+    scrolls: [Scroll; 3],
+}
+
+/// A list's place in [`App::scrolls`].
+const fn slot(list: Focus) -> usize {
+    match list {
+        Focus::Panes => 0,
+        Focus::Sessions => 1,
+        Focus::Search => 2,
+    }
 }
 
 /// Where panes go in the list: the ones that need the user first.
@@ -148,6 +171,25 @@ impl App {
             dragging: false,
             frame: 0,
             show_scratch: false,
+            scrolls: [Scroll::default(); 3],
+        }
+    }
+
+    pub(crate) const fn scroll_of(&self, list: Focus) -> Scroll {
+        self.scrolls[slot(list)]
+    }
+
+    fn scroll_mut(&mut self, list: Focus) -> &mut Scroll {
+        &mut self.scrolls[slot(list)]
+    }
+
+    /// Keeps where the last frame scrolled each list to.
+    pub(crate) fn settle(&mut self, tops: &[(Focus, u16)]) {
+        for (list, top) in tops {
+            *self.scroll_mut(*list) = Scroll {
+                top: *top,
+                follow: false,
+            };
         }
     }
 
@@ -324,12 +366,13 @@ impl App {
         match mouse.kind {
             MouseEventKind::Moved => {
                 // A terminal stops reporting once the pointer leaves the pane,
-                // so a report on the outer cells is the last one before it
-                // goes.
+                // and the window's padding has no cells, so a fast move can
+                // leave with its last report a cell or two inside. A band of
+                // two columns and one row at each side counts as outside.
                 let (width, height) = size;
-                let edge = mouse.column == 0
-                    || mouse.row == 0
-                    || mouse.column + 1 >= width
+                let edge = mouse.column < 2
+                    || mouse.row < 1
+                    || mouse.column + 2 >= width
                     || mouse.row + 1 >= height;
                 self.hover = if edge { None } else { hit };
                 Action::None
@@ -392,6 +435,7 @@ impl App {
                 self.focus = Focus::Panes;
                 self.pane = index;
                 self.session = 0;
+                *self.scroll_mut(Focus::Sessions) = Scroll::default();
                 Action::None
             }
             Target::Session(index) => {
@@ -442,12 +486,12 @@ impl App {
         }
     }
 
-    /// Moves the selection of `list`, the list under the pointer.
-    fn scroll(&mut self, list: Focus, by: isize) {
-        let focus = self.focus;
-        self.focus = list;
-        self.step(by);
-        self.focus = focus;
+    /// Moves `list`, the list under the pointer, by `by` notches, leaving its
+    /// selection where it is. The next frame clamps it to the list.
+    fn scroll(&mut self, list: Focus, by: i16) {
+        let scroll = self.scroll_mut(list);
+        scroll.top = scroll.top.saturating_add_signed(by.saturating_mul(WHEEL));
+        scroll.follow = false;
     }
 
     pub(crate) fn on_paste(&mut self, text: &str) -> Action {
@@ -465,6 +509,7 @@ impl App {
     pub(crate) fn set_results(&mut self, results: Vec<Hit>) {
         self.results = results;
         self.result = 0;
+        *self.scroll_mut(Focus::Search) = Scroll::default();
     }
 
     /// Adds the transcript matches a deep search found for the current query.
@@ -534,8 +579,10 @@ impl App {
             return;
         }
         *at = at.saturating_add_signed(by).min(len - 1);
+        self.scroll_mut(self.focus).follow = true;
         if self.focus == Focus::Panes {
             self.session = 0;
+            *self.scroll_mut(Focus::Sessions) = Scroll::default();
         }
     }
 }

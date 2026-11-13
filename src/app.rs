@@ -38,6 +38,8 @@ enum Msg {
     Feed(feed::Update),
     /// What a deep search found for the query of this generation.
     Deep(u64, Vec<catalog::Hit>, (usize, usize)),
+    /// A transcript's facts arrived; drawing picks them up.
+    Wake,
 }
 
 /// Opens the app and returns the session the user chose to resume, or
@@ -61,6 +63,7 @@ pub(crate) fn run() -> Result<Option<Agent>> {
         }
     });
     let deep_results = send.clone();
+    let wake = send.clone();
     let (feed_send, feed_receive) = mpsc::channel();
     thread::spawn(move || feed::run(&feed_send));
     thread::spawn(move || {
@@ -117,7 +120,9 @@ pub(crate) fn run() -> Result<Option<Agent>> {
     let mut screen = Screen::enter_with(false)?;
     execute!(std::io::stderr(), SetCursorStyle::BlinkingBar).context("set the cursor shape")?;
     let mut reporter = Reporter::default();
-    let mut cache = facts::Cache::default();
+    let mut cache = facts::Cache::new(move || {
+        let _ = wake.send(Msg::Wake);
+    });
     let started = std::time::Instant::now();
     loop {
         reporter.send(own_status(&app))?;
@@ -127,11 +132,12 @@ pub(crate) fn run() -> Result<Option<Agent>> {
         let facts = agent
             .as_ref()
             .and_then(|agent| cache.get(&agent.transcript).cloned());
-        let shown = agent.as_ref().zip(facts.as_ref());
+        let shown = agent.as_ref().map(|agent| (agent, facts.as_ref()));
         screen
             .terminal()
             .draw(|frame| hits = view::draw(frame, &app, shown))
             .context("draw the app")?;
+        app.settle(&hits.tops);
         screen.set_pointer(if app.dragging || app.hover.is_some() {
             Pointer::Hand
         } else {
@@ -168,7 +174,7 @@ pub(crate) fn run() -> Result<Option<Agent>> {
                     app.on_blur();
                     Action::None
                 }
-                Msg::Input(_) => Action::None,
+                Msg::Input(_) | Msg::Wake => Action::None,
                 Msg::Deep(id, hits, progress) => {
                     if id == generation.load(Ordering::Acquire) {
                         app.add_results(hits, progress);
@@ -296,7 +302,7 @@ fn go_to(session_id: &str, block_id: &str) -> Result<Went> {
             .view(here)?
             .find(me)
             .filter(|(_, own, layer)| layer.floats() && own.window_id != window_id)
-            .map(|(_, _, layer)| (layer.bounds, layer.layer_id.clone())),
+            .map(|(_, _, layer)| layer.bounds),
         _ => None,
     };
     client.focus_block(session_id, block_id)?;
@@ -305,7 +311,7 @@ fn go_to(session_id: &str, block_id: &str) -> Result<Went> {
         session_id,
         &window_id,
     )?;
-    let (Some((bounds, layer)), Some(here), Some(me)) = (floating, here, me) else {
+    let (Some(bounds), Some(here), Some(me)) = (floating, here, me) else {
         return Ok(Went::Stayed);
     };
     if here == session_id {
@@ -316,5 +322,8 @@ fn go_to(session_id: &str, block_id: &str) -> Result<Went> {
     }
     let exe = std::env::current_exe().context("find the rawr binary")?;
     client.float_command(session_id, &window_id, bounds, &[exe.display().to_string()])?;
+    // The copy floating here goes, by its own block ID: never by a label,
+    // which a session or program may share, and never with its layer.
+    client.close_block(&here, &me)?;
     Ok(Went::Handed)
 }
