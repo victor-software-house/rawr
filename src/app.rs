@@ -235,7 +235,13 @@ pub(crate) fn run(view: Option<u64>) -> Result<Option<Agent>> {
                     let file = app
                         .current()
                         .and_then(|agent| facts.get(&agent.transcript))
-                        .and_then(|known| known.files.get(index))
+                        .and_then(|known| {
+                            // Past the changed files come the ones only read.
+                            known
+                                .files
+                                .get(index)
+                                .or_else(|| known.read.get(index.checked_sub(known.files.len())?))
+                        })
                         .map(|(path, _)| PathBuf::from(path));
                     if let Some(file) = file {
                         open_file(file, &mut app);

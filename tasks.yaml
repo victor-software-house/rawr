@@ -212,6 +212,7 @@ queue:
       - Files a Bash command plainly writes, such as a redirect or sd and sed -i, list as changed.
     notes:
       - 2026-11-13, the tab listed 3 files for a session that wrote dozens through Bash (operator, 2026-11-13).
+      - '2026-11-13, step 1 done: NotebookEdit counts by notebook_path, and files only read list under Read; Bash-written files are next.'
 
   - id: RAWR-020
     title: Filter the files tab
