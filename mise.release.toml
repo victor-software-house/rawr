@@ -2,4 +2,4 @@
 # together with the ver task's ref in mise.toml and the workflow's pin.
 
 [tools]
-"github:victor-software-house/verctl" = "0.7.2"
+"github:victor-software-house/verctl" = "0.8.3"
