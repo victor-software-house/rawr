@@ -156,6 +156,7 @@ queue:
       - Entries Claude Code draws nothing for, such as ticks and command caveats, are left out.
     notes:
       - 'Source of truth: the recovered Claude Code source, product/src/tui/repl/messages/user-text-message.tsx and the views it calls.'
+      - '2026-11-13, prompts and tool rows follow Claude Code: names, brackets, marks and the user-line kinds; assistant replies and tool results are not shown yet.'
 
   - id: RAWR-016
     title: Stream a session's facts from its newest line backwards
