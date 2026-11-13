@@ -88,7 +88,7 @@ The closest first-party models are Claude Code's own supervisor, which defers it
      When more sessions exist, a dim `+N earlier · ctrl+o` row stands for the rest, and `ctrl+o` expands and collapses them, as it does for detail in Claude Code.
    - Esc, `q` and `ctrl+c` leave one dim line in the shell: `rawr pick reopens this pane's sessions · rawr find searches all`.
 6. **The history per pane is a setting.**
-   `history.per_pane` (default 10) bounds each pane's index.
+   `history.per_pane` (default 5) bounds each pane's index.
    `picker.rows` bounds what shows before `ctrl+o`.
    Both live in `$XDG_CONFIG_HOME/rawr/config.yaml`, read through ctl-core's `input` loader, so a bad value names its file and line.
 7. **A drain is a request in a file, and nothing types into a terminal.**
@@ -97,7 +97,12 @@ The closest first-party models are Claude Code's own supervisor, which defers it
      A session that starts while a drain is open reads it on its first read, like any other.
    - An idle session gets the hand-off request through `$.prompt.submit`, which Claude Code marks as sent by the rawr mod.
    - A busy session gets it through `$.session.append` before its next step.
-   - The mod acknowledges a request with `rawr drain ack <id>` when the turn that carried it ends, however it ends: on `turn.complete`, whose reason marks an error, and on `turn.abort`.
+   - A busy session that has not settled after `drain.interrupt` (default 2 minutes) gets its running turn cancelled with `$.turn.abort`, which stops the turn's running tools, and, once that turn's `turn.complete` arrives with `reason` `aborted` or `error`, the hand-off request through `$.prompt.submit`.
+     That happens once per request ID, only for a request delivered through `$.session.append`; the submitted hand-off turn becomes the turn that carries the request, and it is not interrupted again.
+     No mod call moves a running tool to the background, as `ctrl+b` does for the user, so cancelling the turn is the one way to cut a long tool call short.
+   - The mod acknowledges a request with `rawr drain ack <id>` on `turn.complete` of the turn that carried it.
+     After a `$.turn.abort` for `drain.interrupt`, the mod waits for the cancelled turn's `turn.complete`: with `reason` `aborted` or `error` it submits the hand-off and acknowledges only when the hand-off turn completes; with `reason` `answer` or `refusal` the turn ended before the abort took effect, so it submits no hand-off and acknowledges on that completion.
+     That event fires however the turn ends: its `reason` is `answer`, `aborted`, `refusal` or `error`.
      A user who presses Esc during the hand-off turn also ends it; the pane then settles without a hand-off, since the user stepped in.
      The acknowledgement sits under the session's block, keyed by the drain's ID and the session's ID, and counts only for the block's current session, so neither an earlier drain's acknowledgement nor an earlier session's in the same pane counts.
    - The request text covers finishing the current step, committing or noting what is unfinished, writing a hand-off, starting no new work, and ending the turn.
@@ -113,8 +118,8 @@ The closest first-party models are Claude Code's own supervisor, which defers it
    - The set of blocks is live: a block whose Claude exits or whose pane closes leaves it, and a Claude that starts during the drain joins it.
    - A block that reads Needs input is named at once, so the user can answer it, and the wait goes on.
    - A block whose session has no rawr mod, such as one started before `rawr setup`, is named at once as one that cannot acknowledge.
-     It counts as settled once it has read Idle with no child record for `drain.grace` (default 2 minutes).
-   - Past `restart.wait` (default 30 minutes, Claude Code's own cap), the restart fails, closes the drain so no later session receives its request, and names each pane as busy, waiting on input, or not acknowledged.
+     It counts as settled once it has read Idle with no child record for `drain.grace` (default 1 minute).
+   - Past `restart.wait` (default 5 minutes), the restart fails, closes the drain so no later session receives its request, and names each pane as busy, waiting on input, or not acknowledged.
    - Once every block has settled, the daemon checks every block once more right before the stop.
    - It then stops the Rex server, starts it again, and closes the drain.
    - On a timeout or any other failure, the daemon closes the drain, so no session goes on winding down for a restart that will not come.
@@ -122,11 +127,18 @@ The closest first-party models are Claude Code's own supervisor, which defers it
    - Interrupting `rawr restart` with `ctrl+c` cancels the restart and closes its drain.
    - At start, the daemon closes any drain it finds open, unless its restart record says a restart is pending, in which case it resumes the wait.
    - `drain.yaml` records the daemon's process ID and start time; a drain whose owner is gone is stale, delivers nothing, and goes at the next daemon start.
+   - While it waits, `rawr restart` draws a live list of the panes and their state.
+     `f` restarts at once, despite the panes still pending, and Esc cancels.
    - `--force` skips the wait, and so does a second `rawr restart` during the wait, after the self-hosted runner's second-signal rule.
-9. **The daemon offers restored panes their sessions.**
-   After a restart, each block comes back with no program status.
-   For each block with sessions in the index whose foreground process is a shell, the daemon runs the picker there, as the "Resume Claude here" Rex action does today.
-   The shell snippet becomes optional, for those who want the picker without the daemon.
+9. **The shell offers a restored pane its sessions.**
+   - A line in the shell's startup file runs `rawr pick` once, before the first prompt, so each restored pane with sessions opens the full-screen picker when Rex starts.
+   - `rawr setup` prints that line for the user's shell; `rawr init <shell>` prints the hook it loads, from ctl-core's shared shell integration.
+   - `rawr init` takes the shell as a required argument, as `direnv hook`, `zoxide init` and `starship init` do; `rawr setup` picks the shell for the line it prints from the running shell, then `$SHELL`, as `brew shellenv` does, through ctl-core's shell detection (CTC-057).
+   - Like those `init` commands, `rawr setup` prints the line and edits no startup file.
+   - The hook unhooks itself after its first run, since every shell's prompt hook fires on each prompt: `add-zsh-hook precmd` in zsh, `PROMPT_COMMAND` in bash, a `fish_prompt` event in fish.
+   - bash, zsh and fish come first, the shells ctl-core's `Shell` holds; nushell and PowerShell, which mise and direnv also cover, follow when ctl-core adds them.
+   - Alternative: the daemon types `rawr pick` into each restored shell, as the "Resume Claude here" Rex action does.
+     It lost: typed input can collide with what the user types first, and nothing else in rawr types into a terminal.
 10. **The index cleans itself.**
     - Each entry carries `transcript_seen`, set the first time rawr finds its transcript.
     - An entry goes when `transcript_seen` is set and the transcript is gone; Claude Code deletes transcripts with no message after `cleanupPeriodDays`, 30 days by default ([settings][cc-settings]).
@@ -151,14 +163,21 @@ The closest first-party models are Claude Code's own supervisor, which defers it
     - Rule 4: the binary also talks to Claude Code's plugin commands during `rawr setup`.
       Nothing resumes without a choice, as before.
 
-## Open points for the maintainer
-
-1. **How rawr talks to Rex.**
-   Rex documents its methods (`rex api list`, `rex api describe`) and its Lua API, but not the protocol a program speaks on the server socket.
-   - Speaking the socket directly gives one connection and streamed events with no process per call, but the protocol can change without notice.
-   - A Lua module in Rex's configuration uses only documented calls (`rex.call`, `terminal.program_status_changed`) and runs inside the server, but it stops with the server and must hand rawr what it needs.
-2. **Who offers restored panes their sessions:** the daemon (decision 9), or the shell snippet as today.
-3. **The defaults:** 10 sessions kept per pane, 3 rows shown before `ctrl+o`, 30 minutes of drain wait, and 2 minutes of grace for a session with no rawr mod.
+13. **rawr speaks Rex's documented control protocol, behind one client interface.**
+    - The Rex server documents its own API and serves the documentation from the same socket: `GET /llms.txt` describes the protocol, and `GET /api/help` lists every method with the JSON Schema of its arguments and result.
+    - The control connection is a WebSocket at `GET /api/control` with the subprotocol `rex.control.v1`.
+      Every message is one JSON object: the client sends one `hello`, then `request` messages; the server sends a `welcome`, a `response` per request, and `event` messages.
+    - The hello names the newest and oldest API revisions the client speaks, and the welcome names the revision the connection uses, so rawr pins the revision it was written for (13 today) and refuses a server outside its range.
+    - A `rex` module owns the connection and exposes typed calls and an event stream: list sessions and blocks, read a block's program status, watch status and block events, stop and start the server.
+    - Its request and response types come from `/api/help`'s schemas, and a test against a recorded exchange shows when a Rex change touches them.
+    - Nothing outside that module sees the protocol.
+    - Alternative: a Lua module in Rex's configuration, which uses only documented calls.
+      It lost: it runs inside the server, stops with it, and can hand rawr its findings only through a file or a process.
+    - Alternative: running `rex api call` per request.
+      It lost: one process per call, and no event stream.
+14. **The mods API comes from Claude Code's own types.**
+    Claude Code writes the mods API's TypeScript declarations into each mod's `.claude-plugin/types/claude-code/index.d.ts` when it loads the mod.
+    The calls this design uses, `$.turn.abort`, `$.prompt.submit`, `$.session.append`, `$.fs.read`, `$.clock.every` and the `turn.complete` reasons, are checked there for Claude Code 2.1.322, and the mod's type check runs against that file.
 
 ## Not verified
 
@@ -166,7 +185,6 @@ The closest first-party models are Claude Code's own supervisor, which defers it
 2. How a stopped Rex server starts again on macOS when the app started it, and whether `rex server install` is the right owner there.
 3. Whether `$.prompt.submit` keeps a half-typed prompt in the session's prompt box.
 4. Which Rex call or event marks a server whose sessions are restored, as decision 10 needs.
-5. Which mods event and reason mark a turn that ended in an API error, as decision 7 needs; the mods events page was not read.
 
 [pps]: https://www.superlogical.com/rex/docs/build/program-status
 [rex-events]: https://www.superlogical.com/rex/docs/reference/events#terminal-events

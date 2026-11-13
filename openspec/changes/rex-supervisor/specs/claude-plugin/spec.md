@@ -40,9 +40,45 @@ When a drain the mod delivered to the session closes without a restart, whether 
 
 ### Requirement: Acknowledge when the carrying turn ends
 
-The rawr mod SHALL acknowledge a drain request with the session's ID when the turn that carried it ends, on `turn.complete` and on `turn.abort`.
+The rawr mod SHALL acknowledge a drain request with the session's ID on `turn.complete` of the turn that carried it, whatever its `reason`: `answer`, `aborted`, `refusal` or `error`, except for a turn it cancelled under "Interrupt a turn that runs too long", which "Acknowledge an interrupted request after its hand-off" governs.
 
 #### Scenario: The hand-off turn ends in an error
 
 - **WHEN** the turn that carried `d-7a21` ends with an API error
 - **THEN** the mod acknowledges `d-7a21`, and a block that reads `Failed` counts as settled
+
+### Requirement: Interrupt a turn that runs too long
+
+When a session that received a drain request through `$.session.append` has held it for `drain.interrupt` without its carrying turn ending, the rawr mod SHALL, once per request ID, cancel the running turn with `$.turn.abort`, and SHALL then submit the hand-off as "Acknowledge an interrupted request after its hand-off" sets out.
+The submitted hand-off turn SHALL become the carrying turn and SHALL NOT be interrupted again.
+
+#### Scenario: A long build during a drain
+
+- **WHEN** `drain.interrupt` is `2m` and a session is still running a foreground build 2 minutes after `d-7a21` was appended
+- **THEN** the mod cancels the turn, the build stops, and, once the cancelled turn completes with `reason` `aborted` or `error`, the session starts its hand-off turn
+
+#### Scenario: The hand-off turn itself runs long
+
+- **WHEN** the mod cancelled a turn for `d-7a21` and the submitted hand-off turn runs past `drain.interrupt`
+- **THEN** the mod does not cancel it, and acknowledges `d-7a21` only when that turn ends
+
+### Requirement: Acknowledge an interrupted request after its hand-off
+
+Once it has called `$.turn.abort`, the mod SHALL wait for the cancelled turn's `turn.complete` before submitting the hand-off.
+If that completion's `reason` is `aborted` or `error`, the mod SHALL submit the hand-off with `$.prompt.submit` and SHALL acknowledge only when the hand-off turn completes.
+If its `reason` is `answer` or `refusal`, the turn ended before the abort took effect: the mod SHALL submit no hand-off and SHALL acknowledge on that completion.
+
+#### Scenario: The cancelled turn reports the abort
+
+- **WHEN** the mod cancels the turn carrying `d-7a21` and that turn's `turn.complete` has `reason` `aborted`
+- **THEN** the mod submits the hand-off and does not acknowledge `d-7a21` until the hand-off turn completes
+
+#### Scenario: The turn ends just before the abort
+
+- **WHEN** the turn carrying `d-7a21` completes with `reason` `answer` before the mod's `$.turn.abort` takes effect
+- **THEN** the mod submits no hand-off and acknowledges `d-7a21`
+
+#### Scenario: The cancelled turn ends in an error
+
+- **WHEN** the mod cancels the turn carrying `d-7a21` and that turn's `turn.complete` has `reason` `error`
+- **THEN** the mod submits the hand-off and does not acknowledge `d-7a21` until the hand-off turn completes
