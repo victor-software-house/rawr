@@ -24,6 +24,15 @@ const DRAIN: Duration = Duration::from_millis(50);
 /// terminal is, and lets the panic hook and the guard give it back once.
 static HELD: AtomicBool = AtomicBool::new(false);
 
+/// The Program Status Protocol (OSC 7501) record that marks the pane as
+/// waiting for the user while the picker is open; Rex shows it as a
+/// needs-attention dot on the pane's tab. The message is "Resume a Claude Code
+/// session" in base64. Terminals that do not know OSC 7501 ignore it.
+const STATUS_WAITING: &[u8] = b"\x1b]7501;state=blocked:kind=question:app=rawr:id=rawr:msg=UmVzdW1lIGEgQ2xhdWRlIENvZGUgc2Vzc2lvbg==\x1b\\";
+
+/// Clears the record [`STATUS_WAITING`] set.
+const STATUS_CLEAR: &[u8] = b"\x1b]7501;state=clear:id=rawr\x1b\\";
+
 /// The pointer shapes the picker asks for with OSC 22.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Pointer {
@@ -75,7 +84,13 @@ impl Screen {
         }));
         enable_raw_mode().context("enter raw mode")?;
         HELD.store(true, Ordering::Release);
-        let taken = execute!(io::stderr(), EnterAlternateScreen, EnableMouseCapture, Hide)
+        let mut err = io::stderr();
+        let taken = err
+            .write_all(STATUS_WAITING)
+            .map_err(anyhow::Error::from)
+            .and_then(|()| {
+                execute!(err, EnterAlternateScreen, EnableMouseCapture, Hide).map_err(Into::into)
+            })
             .context("take the screen")
             .and_then(|()| {
                 Terminal::new(CrosstermBackend::new(io::stderr())).context("start drawing")
@@ -130,6 +145,7 @@ fn leave() {
     }
     let mut err = io::stderr();
     let _ = err.write_all(Pointer::Default.sequence());
+    let _ = err.write_all(STATUS_CLEAR);
     let _ = execute!(err, DisableMouseCapture, Show, LeaveAlternateScreen);
     let deadline = Instant::now() + DRAIN;
     while let Some(left) = deadline.checked_duration_since(Instant::now()) {
@@ -141,4 +157,26 @@ fn leave() {
         }
     }
     let _ = disable_raw_mode();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{STATUS_CLEAR, STATUS_WAITING};
+
+    #[test]
+    fn status_records_match_the_protocol() {
+        let waiting = std::str::from_utf8(STATUS_WAITING).unwrap();
+        let fields = waiting
+            .strip_prefix("\x1b]7501;")
+            .and_then(|rest| rest.strip_suffix("\x1b\\"))
+            .unwrap();
+        let pairs: Vec<&str> = fields.split(':').collect();
+        assert_eq!(
+            pairs[..4],
+            ["state=blocked", "kind=question", "app=rawr", "id=rawr"]
+        );
+        let message = pairs[4].strip_prefix("msg=").unwrap();
+        assert_eq!(message, "UmVzdW1lIGEgQ2xhdWRlIENvZGUgc2Vzc2lvbg==");
+        assert_eq!(STATUS_CLEAR, b"\x1b]7501;state=clear:id=rawr\x1b\\");
+    }
 }
