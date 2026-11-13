@@ -71,6 +71,8 @@ pub(crate) enum Target {
     Button(Button),
     /// The edge of the sidebar; dragging it resizes the sidebar.
     Edge,
+    /// The line that stands for a pane's untitled scratch sessions.
+    Scratch,
 }
 
 /// The narrowest open sidebar, and the narrowest main area beside it.
@@ -88,6 +90,8 @@ pub(crate) struct App {
     pub(crate) results: Vec<Hit>,
     /// Whether the transcripts are still being read for the current query.
     pub(crate) deep: bool,
+    /// How many transcripts the deep search has read, of how many.
+    pub(crate) read: (usize, usize),
     pub(crate) result: usize,
     pub(crate) help: bool,
     /// One line for the status bar, such as the Rex app's refusal.
@@ -104,6 +108,8 @@ pub(crate) struct App {
     pub(crate) dragging: bool,
     /// The spinner's frame, moved on by the loop's tick while a pane works.
     pub(crate) frame: usize,
+    /// Whether a pane's untitled scratch sessions are listed.
+    pub(crate) show_scratch: bool,
 }
 
 /// Where panes go in the list: the ones that need the user first.
@@ -131,6 +137,7 @@ impl App {
             query: String::new(),
             results: Vec::new(),
             deep: false,
+            read: (0, 0),
             result: 0,
             help: false,
             notice: None,
@@ -140,6 +147,7 @@ impl App {
             folded: false,
             dragging: false,
             frame: 0,
+            show_scratch: false,
         }
     }
 
@@ -304,8 +312,9 @@ impl App {
         mouse: MouseEvent,
         hit: Option<Target>,
         list: Option<Focus>,
-        width: u16,
+        size: (u16, u16),
     ) -> Action {
+        let width = size.0;
         if self.help {
             if matches!(mouse.kind, MouseEventKind::Down(_)) {
                 self.help = false;
@@ -314,7 +323,15 @@ impl App {
         }
         match mouse.kind {
             MouseEventKind::Moved => {
-                self.hover = hit;
+                // A terminal stops reporting once the pointer leaves the pane,
+                // so a report on the outer cells is the last one before it
+                // goes.
+                let (width, height) = size;
+                let edge = mouse.column == 0
+                    || mouse.row == 0
+                    || mouse.column + 1 >= width
+                    || mouse.row + 1 >= height;
+                self.hover = if edge { None } else { hit };
                 Action::None
             }
             MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => {
@@ -398,6 +415,10 @@ impl App {
             }
             Target::Button(button) => self.press(button),
             Target::Edge => Action::None,
+            Target::Scratch => {
+                self.show_scratch = !self.show_scratch;
+                Action::None
+            }
         }
     }
 
@@ -447,7 +468,7 @@ impl App {
     }
 
     /// Adds the transcript matches a deep search found for the current query.
-    pub(crate) fn add_results(&mut self, more: Vec<Hit>) {
+    pub(crate) fn add_results(&mut self, more: Vec<Hit>, (read, total): (usize, usize)) {
         let known: std::collections::HashSet<String> = self
             .results
             .iter()
@@ -457,7 +478,8 @@ impl App {
             more.into_iter()
                 .filter(|hit| !known.contains(&hit.agent.session_id)),
         );
-        self.deep = false;
+        self.deep = read < total;
+        self.read = (read, total);
     }
 
     /// The pane whose Claude runs `session_id` now, when the sidebar has it.
@@ -525,4 +547,22 @@ fn newest(pane: &Pane) -> std::time::Duration {
         .first()
         .and_then(|(agent, _)| agent.idle)
         .unwrap_or(std::time::Duration::MAX)
+}
+
+impl App {
+    /// The session under the cursor: the search hit, the highlighted session,
+    /// or the selected pane's newest.
+    pub(crate) fn current(&self) -> Option<&Agent> {
+        match self.focus {
+            Focus::Search => self.results.get(self.result).map(|hit| &hit.agent),
+            Focus::Sessions => self
+                .selected()
+                .and_then(|pane| pane.sessions.get(self.session))
+                .map(|(agent, _)| agent),
+            Focus::Panes => self
+                .selected()
+                .and_then(|pane| pane.sessions.first())
+                .map(|(agent, _)| agent),
+        }
+    }
 }

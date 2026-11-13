@@ -321,6 +321,7 @@ mod tests {
             cwd: "/srv/code/shop".to_owned(),
             title: title.to_owned(),
             idle: Some(Duration::from_hours(2)),
+            transcript: std::path::PathBuf::new(),
         }
     }
 

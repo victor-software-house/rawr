@@ -11,6 +11,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Padding, Paragraph};
 
+use crate::app::facts::Facts;
 use crate::app::feed::Pane;
 use crate::app::state::{App, Button, Focus, Link, Target};
 use crate::app::theme;
@@ -26,8 +27,9 @@ const RAIL: u16 = 4;
 pub(crate) struct Hits {
     targets: Vec<(Rect, Target)>,
     lists: Vec<(Rect, Focus)>,
-    /// The screen's width, which bounds the sidebar.
+    /// The screen's width, which bounds the sidebar, and its height.
     pub(crate) width: u16,
+    pub(crate) height: u16,
     /// Where the terminal's cursor goes: after the text in the search box.
     pub(crate) cursor: Option<Position>,
 }
@@ -54,9 +56,10 @@ impl Hits {
     }
 }
 
-pub(crate) fn draw(frame: &mut Frame<'_>, app: &App) -> Hits {
+pub(crate) fn draw(frame: &mut Frame<'_>, app: &App, facts: Option<(&Agent, &Facts)>) -> Hits {
     let mut hits = Hits {
         width: frame.area().width,
+        height: frame.area().height,
         ..Hits::default()
     };
     let body = frame.area();
@@ -80,6 +83,24 @@ pub(crate) fn draw(frame: &mut Frame<'_>, app: &App) -> Hits {
     ])
     .areas(main);
     let content = pad(content, 1, 1);
+    let (content, panel) = match facts {
+        Some(_) => {
+            let [top, bottom] =
+                Layout::vertical([Constraint::Fill(1), Constraint::Length(6)]).areas(content);
+            (top, Some(bottom))
+        }
+        None => (content, None),
+    };
+    if let (Some(panel), Some((agent, facts))) = (panel, facts) {
+        frame.render_widget(
+            Paragraph::new(Line::styled(
+                "─".repeat(usize::from(panel.width)),
+                theme::line(),
+            )),
+            row_at(panel, panel.y),
+        );
+        facts_panel(frame, pad(panel, 0, 1), agent, facts);
+    }
     if app.focus == Focus::Search {
         results(frame, app, content, &mut hits);
     } else {
@@ -406,8 +427,8 @@ fn button(
     hits.add(area, Target::Button(button));
 }
 
-/// The selected pane: its newest title, a status line, the actions, then
-/// its sessions.
+/// The selected pane: where it is and what its Claude says, the actions,
+/// then its sessions, each title once.
 fn detail(frame: &mut Frame<'_>, app: &App, area: Rect, hits: &mut Hits) {
     let Some(pane) = app.selected() else {
         put(
@@ -423,37 +444,28 @@ fn detail(frame: &mut Frame<'_>, app: &App, area: Rect, hits: &mut Hits) {
     put(
         frame,
         row_at(area, area.y),
-        Line::styled(
-            truncate(pane.title(), usize::from(area.width)),
-            Style::new().add_modifier(Modifier::BOLD),
-        ),
-    );
-    let folder = pane
-        .sessions
-        .first()
-        .map(|(agent, _)| agent.short_cwd())
-        .unwrap_or_default();
-    put(
-        frame,
-        row_at(area, area.y + 1),
         Line::from(vec![
-            pill(pane.status, app.frame),
-            Span::styled(
-                pane.progress
-                    .map(|percent| format!(" {percent}%"))
-                    .unwrap_or_default(),
-                theme::status(pane.status),
-            ),
-            Span::styled(format!("   {}   {folder}", unique_name(pane)), theme::dim()),
+            Span::styled(pane.name.clone(), Style::new().add_modifier(Modifier::BOLD)),
+            Span::styled(format!(" · {}", pane.tab), theme::dim()),
         ]),
     );
-    if let Some(msg) = &pane.msg {
-        put(
-            frame,
-            row_at(area, area.y + 2),
-            Line::styled(truncate(msg, usize::from(area.width)), theme::dim()),
-        );
+    let mut status = vec![
+        pill(pane.status, app.frame),
+        Span::styled(
+            pane.progress
+                .map(|percent| format!(" {percent}%"))
+                .unwrap_or_default(),
+            theme::status(pane.status),
+        ),
+    ];
+    if let Some(msg) = pane.msg.as_deref().filter(|msg| !msg.is_empty()) {
+        let room = usize::from(area.width).saturating_sub(24);
+        status.push(Span::styled(
+            format!("   {}", truncate(msg, room)),
+            theme::dim(),
+        ));
     }
+    put(frame, row_at(area, area.y + 1), Line::from(status));
     let actions = row_at(area, area.y + 3);
     action(
         frame,
@@ -476,31 +488,9 @@ fn detail(frame: &mut Frame<'_>, app: &App, area: Rect, hits: &mut Hits) {
         (Button::Resume, "r", "Resume here"),
         hits,
     );
-    put(
-        frame,
-        row_at(area, area.y + 5),
-        Line::from(vec![
-            Span::styled("Sessions", theme::header()),
-            Span::styled(
-                format!(
-                    "  {}",
-                    pane.sessions
-                        .iter()
-                        .filter(|(agent, _)| !is_scratch(agent))
-                        .count()
-                ),
-                theme::dim(),
-            ),
-        ]),
-    );
-    let list = Rect {
-        y: area.y + 6,
-        height: area.height.saturating_sub(6),
-        ..area
-    };
     // Sessions with no title in a temporary folder are scripted runs, such
-    // as `claude -p`: one count line stands for them.
-    let (scratch, rows): (Vec<Row<'_>>, Vec<Row<'_>>) = pane
+    // as `claude -p`: one line stands for them until it is clicked.
+    let (scratch, titled): (Vec<Row<'_>>, Vec<Row<'_>>) = pane
         .sessions
         .iter()
         .map(|(agent, held)| Row {
@@ -510,26 +500,119 @@ fn detail(frame: &mut Frame<'_>, app: &App, area: Rect, hits: &mut Hits) {
             prompts: None,
         })
         .partition(|row| is_scratch(row.agent));
-    let list = if scratch.is_empty() {
-        list
-    } else {
-        put(
-            frame,
-            row_at(list, list.bottom().saturating_sub(1)),
-            Line::styled(
-                format!(
-                    "  + {} untitled sessions in temporary folders",
-                    scratch.len()
-                ),
-                theme::dim(),
-            ),
-        );
-        Rect {
-            height: list.height.saturating_sub(2),
-            ..list
-        }
+    put(
+        frame,
+        row_at(area, area.y + 5),
+        Line::from(vec![
+            Span::styled("Sessions", theme::header()),
+            Span::styled(format!("  {}", titled.len()), theme::dim()),
+        ]),
+    );
+    let scratch_count = scratch.len();
+    let mut rows = titled;
+    if app.show_scratch {
+        rows.extend(scratch);
+    }
+    let shown: u16 = rows.iter().map(|_| 2).sum();
+    let list = Rect {
+        y: area.y + 6,
+        height: area
+            .height
+            .saturating_sub(6 + u16::from(scratch_count > 0))
+            .min(shown),
+        ..area
     };
     session_rows(frame, app, list, &rows, (Focus::Sessions, None), hits);
+    if scratch_count > 0 {
+        let cell = row_at(area, list.bottom());
+        let hovered = app.hover == Some(Target::Scratch);
+        let text = if app.show_scratch {
+            format!("  − hide {scratch_count} untitled sessions in temporary folders")
+        } else {
+            format!("  + {scratch_count} untitled sessions in temporary folders")
+        };
+        frame.render_widget(
+            Paragraph::new(Line::styled(
+                text,
+                if hovered {
+                    Style::new().fg(theme::ACCENT)
+                } else {
+                    theme::dim()
+                },
+            ))
+            .style(theme::row(false, hovered)),
+            cell,
+        );
+        hits.add(cell, Target::Scratch);
+    }
+}
+
+/// What the transcript says about the session under the cursor.
+fn facts_panel(frame: &mut Frame<'_>, area: Rect, agent: &Agent, facts: &Facts) {
+    let width = usize::from(area.width);
+    let mut lines = vec![Line::from(vec![
+        Span::styled("Session", theme::header()),
+        Span::styled(format!("  {}", agent.session_id), theme::dim()),
+    ])];
+    let mut first = Vec::new();
+    if let Some(model) = &facts.model {
+        first.push(model.trim_start_matches("claude-").to_owned());
+    }
+    if let Some(branch) = &facts.branch {
+        first.push(format!("on {branch}"));
+    }
+    first.push(format!("{} prompts", facts.prompts));
+    first.push(format!("{} replies", facts.replies));
+    if facts.output_tokens > 0 {
+        first.push(format!("{} tokens out", thousands(facts.output_tokens)));
+    }
+    if facts.agents > 0 {
+        first.push(format!("{} sub-agents", facts.agents));
+    }
+    lines.push(Line::styled(
+        truncate(&first.join(" · "), width),
+        Style::new(),
+    ));
+    let span = match (&facts.started, &facts.last) {
+        (Some(started), Some(last)) => format!("{} → {}", when(started), when(last)),
+        _ => String::new(),
+    };
+    lines.push(Line::styled(
+        truncate(&format!("{span}   {}", agent.short_cwd()), width),
+        theme::dim(),
+    ));
+    if !facts.prs.is_empty() {
+        lines.push(Line::from(vec![
+            Span::styled("PRs  ", theme::dim()),
+            Span::styled(
+                truncate(&facts.prs.join("  "), width.saturating_sub(5)),
+                Style::new().fg(theme::ACCENT),
+            ),
+        ]));
+    }
+    if let Some(prompt) = &facts.last_prompt {
+        lines.push(Line::from(vec![
+            Span::styled("Last  ", theme::dim()),
+            Span::raw(truncate(prompt, width.saturating_sub(6))),
+        ]));
+    }
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
+/// `2026-11-13T13:40:12.000Z` as `11-13 13:40`, in UTC as written.
+fn when(stamp: &str) -> String {
+    stamp
+        .get(5..16)
+        .map_or_else(|| stamp.to_owned(), |cut| cut.replace('T', " "))
+}
+
+/// `123456` as `123k`.
+fn thousands(count: u64) -> String {
+    match count {
+        0..1_000 => count.to_string(),
+        1_000..1_000_000 => format!("{}k", count / 1_000),
+        _ => format!("{:.1}M", count as f64 / 1_000_000.0),
+    }
 }
 
 /// The search results, in the same rows as a pane's sessions, each with the
@@ -547,7 +630,11 @@ fn results(frame: &mut Frame<'_>, app: &App, area: Rect, hits: &mut Hits) {
         ]
     };
     if app.deep {
-        spans.push(Span::styled("  · reading transcripts…", theme::dim()));
+        let (read, total) = app.read;
+        spans.push(Span::styled(
+            format!("  · reading transcripts {read}/{total}…"),
+            theme::dim(),
+        ));
     }
     put(frame, row_at(area, area.y), Line::from(spans));
     let list = Rect {

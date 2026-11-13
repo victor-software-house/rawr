@@ -27,6 +27,7 @@ pub(crate) struct Window {
 
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct Layer {
+    pub(crate) layer_id: String,
     /// `tiled` for the layer that fills the window; anything else floats.
     pub(crate) kind: String,
     /// `[x, y, w, h]`, fractions of the window.
@@ -195,9 +196,25 @@ impl Client {
                 "focus": true,
                 "layout": { "block": {
                     "flavor": "com.superlogical.terminal.shell",
+                    "label": "rawr",
                     "options": { "command": command, "shell": "none" },
                 } },
             }),
+        )?;
+        Ok(())
+    }
+}
+
+impl Client {
+    /// Closes a floating layer and every block in it.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the server refuses the call.
+    pub(crate) fn close_layer(&mut self, session_id: &str, layer_id: &str) -> Result<()> {
+        self.call::<_, IgnoredAny>(
+            "session.close_layer",
+            &json!({ "session_id": session_id, "layer_id": layer_id }),
         )?;
         Ok(())
     }

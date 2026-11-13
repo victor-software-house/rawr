@@ -24,6 +24,8 @@ pub(crate) struct Agent {
     pub(crate) title: String,
     /// Time since the transcript was last written.
     pub(crate) idle: Option<Duration>,
+    /// The transcript, which the app reads for the session's facts.
+    pub(crate) transcript: PathBuf,
 }
 
 impl Agent {
@@ -128,6 +130,7 @@ pub(crate) fn resumable(entries: &[Entry], live: &HashSet<String>) -> Vec<Agent>
                 title: transcript_title(&entry.transcript)
                     .map_or_else(|| "Untitled session".to_owned(), |title| sanitize(&title)),
                 idle: now.duration_since(modified).ok(),
+                transcript: entry.transcript.clone(),
             })
         })
         .collect()
@@ -286,6 +289,7 @@ mod tests {
             cwd: cwd.to_owned(),
             title: "t".to_owned(),
             idle: None,
+            transcript: PathBuf::new(),
         }
     }
 

@@ -105,6 +105,7 @@ pub(crate) fn load(claude: &Path, live: &HashSet<String>) -> Result<Vec<Found>> 
                 idle: transcript
                     .modified
                     .and_then(|at| now.duration_since(at).ok()),
+                transcript: transcript.path.clone(),
             },
             text: format!("{}\n{}\n", prompt.project.to_lowercase(), id.to_lowercase()),
             latest: 0,

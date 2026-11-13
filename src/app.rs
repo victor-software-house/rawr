@@ -4,6 +4,7 @@
 //! Two threads feed one channel: the terminal's input and the Rex feed. The
 //! loop drains the channel and draws once after each batch, with no timer.
 
+mod facts;
 mod feed;
 mod report;
 mod state;
@@ -36,7 +37,7 @@ enum Msg {
     Input(Event),
     Feed(feed::Update),
     /// What a deep search found for the query of this generation.
-    Deep(u64, Vec<catalog::Hit>),
+    Deep(u64, Vec<catalog::Hit>, (usize, usize)),
 }
 
 /// Opens the app and returns the session the user chose to resume, or
@@ -90,12 +91,24 @@ pub(crate) fn run() -> Result<Option<Agent>> {
                 if generation.load(Ordering::Acquire) != id {
                     continue;
                 }
-                let hits = catalog::deep(&found, &terms, &skip, || {
-                    generation.load(Ordering::Acquire) != id
-                });
-                if generation.load(Ordering::Acquire) == id
-                    && results.send(Msg::Deep(id, hits)).is_err()
-                {
+                // A few transcripts at a time, newest first, so matches show
+                // as they are found.
+                let stale = || generation.load(Ordering::Acquire) != id;
+                let total = found.len();
+                let mut read = 0;
+                let mut closed = false;
+                for chunk in found.chunks(4) {
+                    if stale() {
+                        break;
+                    }
+                    let hits = catalog::deep(chunk, &terms, &skip, stale);
+                    read += chunk.len();
+                    if results.send(Msg::Deep(id, hits, (read, total))).is_err() {
+                        closed = true;
+                        break;
+                    }
+                }
+                if closed {
                     break;
                 }
             }
@@ -104,14 +117,20 @@ pub(crate) fn run() -> Result<Option<Agent>> {
     let mut screen = Screen::enter_with(false)?;
     execute!(std::io::stderr(), SetCursorStyle::BlinkingBar).context("set the cursor shape")?;
     let mut reporter = Reporter::default();
+    let mut cache = facts::Cache::default();
     let started = std::time::Instant::now();
     loop {
         reporter.send(own_status(&app))?;
         app.frame = usize::try_from(started.elapsed().as_millis() / SPIN.as_millis()).unwrap_or(0);
         let mut hits = view::Hits::default();
+        let agent = app.current().cloned();
+        let facts = agent
+            .as_ref()
+            .and_then(|agent| cache.get(&agent.transcript).cloned());
+        let shown = agent.as_ref().zip(facts.as_ref());
         screen
             .terminal()
-            .draw(|frame| hits = view::draw(frame, &app))
+            .draw(|frame| hits = view::draw(frame, &app, shown))
             .context("draw the app")?;
         screen.set_pointer(if app.dragging || app.hover.is_some() {
             Pointer::Hand
@@ -142,7 +161,7 @@ pub(crate) fn run() -> Result<Option<Agent>> {
                     mouse,
                     hits.target(mouse.column, mouse.row),
                     hits.list(mouse.column, mouse.row),
-                    hits.width,
+                    (hits.width, hits.height),
                 ),
                 Msg::Input(Event::Paste(text)) => app.on_paste(&text),
                 Msg::Input(Event::FocusLost) => {
@@ -150,9 +169,9 @@ pub(crate) fn run() -> Result<Option<Agent>> {
                     Action::None
                 }
                 Msg::Input(_) => Action::None,
-                Msg::Deep(id, hits) => {
+                Msg::Deep(id, hits, progress) => {
                     if id == generation.load(Ordering::Acquire) {
-                        app.add_results(hits);
+                        app.add_results(hits, progress);
                     }
                     Action::None
                 }
@@ -277,7 +296,7 @@ fn go_to(session_id: &str, block_id: &str) -> Result<Went> {
             .view(here)?
             .find(me)
             .filter(|(_, own, layer)| layer.floats() && own.window_id != window_id)
-            .map(|(_, _, layer)| layer.bounds),
+            .map(|(_, _, layer)| (layer.bounds, layer.layer_id.clone())),
         _ => None,
     };
     client.focus_block(session_id, block_id)?;
@@ -286,7 +305,7 @@ fn go_to(session_id: &str, block_id: &str) -> Result<Went> {
         session_id,
         &window_id,
     )?;
-    let (Some(bounds), Some(here), Some(me)) = (floating, here, me) else {
+    let (Some((bounds, layer)), Some(here), Some(me)) = (floating, here, me) else {
         return Ok(Went::Stayed);
     };
     if here == session_id {
