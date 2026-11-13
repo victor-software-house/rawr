@@ -347,6 +347,55 @@ impl Reading {
     }
 }
 
+/// The task list Claude Code keeps for the session whose transcript is
+/// at `transcript`, one file per task under `~/.claude/tasks`: in the
+/// folder of the session's team, `session-` and the first 8 characters
+/// of its ID, else in the folder named by the ID, following the note a
+/// cleared session leaves of the list it moved to. `None` when the
+/// session keeps no list there, and its transcript's calls tell instead.
+pub(crate) fn stored_tasks(transcript: &Path) -> Option<Vec<Task>> {
+    let id = transcript.file_stem()?.to_str()?;
+    let root = crate::session::claude_dir().ok()?.join("tasks");
+    let mut folders = vec![
+        root.join(format!("session-{}", id.get(..8)?)),
+        root.join(id),
+    ];
+    // A cleared session's folder names the list it followed after.
+    if let Some(note) = folders
+        .iter()
+        .find_map(|folder| fs::read_to_string(folder.join(".session-list")).ok())
+    {
+        let note: String = note.trim().chars().take(64).collect();
+        let name: String = note
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                    c
+                } else {
+                    '-'
+                }
+            })
+            .collect();
+        if !name.is_empty() {
+            folders.insert(0, root.join(name));
+        }
+    }
+    let folder = folders.into_iter().find(|folder| folder.is_dir())?;
+    let mut tasks: Vec<Task> = fs::read_dir(folder)
+        .ok()?
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .path()
+                .extension()
+                .is_some_and(|extension| extension == "json")
+        })
+        .filter_map(|entry| serde_json::from_slice::<Task>(&fs::read(entry.path()).ok()?).ok())
+        .collect();
+    tasks.sort_by_key(|task| (task.id.parse::<u64>().unwrap_or(u64::MAX), task.id.clone()));
+    Some(tasks)
+}
+
 /// What a run of consecutive lines gives. The task calls stay as they
 /// came: an update may name a task an older run created.
 #[derive(Debug, Clone, Default)]
