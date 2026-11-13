@@ -12,4 +12,4 @@
 
 ## 3. Claude Code mod
 
-- [ ] 3.1 The plugin and mod in this repository record sessions and carry drains, typed against Claude Code's generated declarations; proved by `claude plugin test` in CI.
+- [ ] 3.1 The plugin and mod in this repository record sessions, carry drains and send the background key through `rawr drain background`, typed against Claude Code's generated declarations; proved by `claude plugin test` in CI.

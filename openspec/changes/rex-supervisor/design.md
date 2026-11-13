@@ -70,21 +70,28 @@ The closest first-party models are Claude Code's own supervisor, which defers it
    Its format is not documented ([.claude directory][cc-dir]), and Rex already marks which blocks run a live Claude.
    Alternative: `claude agents --json`, the documented outside view.
    It lost: it needs Claude Code's agent view on, and adds nothing for sessions that run in Rex.
-4. **A drain is a request in a file, and nothing types into a terminal.**
+4. **A drain is a request in a file, and nothing types text into a terminal.**
    - `rawr drain [--reason TEXT]` makes the daemon write one request to `$XDG_STATE_HOME/rawr/drain.yaml`: an ID, the reason, and the time it opened.
    - Each session's mod reads that file every 2 seconds with `$.fs.read`, and acts once per request ID.
      A session that starts while a drain is open reads it on its first read, like any other.
    - An idle session gets the hand-off request through `$.prompt.submit`, which Claude Code marks as sent by the rawr mod.
    - A busy session gets it through `$.session.append` before its next step.
+   - When that busy session has a Bash or Agent call running in the foreground, the mod at once asks the binary to press `ctrl+x ctrl+b` in its own block, with `rawr drain background`.
+     The binary sends the two bytes `0x18 0x02` through Rex's `com.superlogical.terminal.write` on that block.
+     Claude Code binds both `ctrl+b` and `ctrl+x ctrl+b` to `task:background` while a task runs in the foreground, and only the chord works when `CLAUDE_CODE_KB_COHESION_FIXES` is set.
+     Each backgrounded call returns at once with a "running in the background" result, so the turn reaches its next step, and the request, without waiting for the call.
+     The mods API has no call that backgrounds a task, so a key is the one way, and a control key cannot merge with text the user is typing as a message would.
+     The mod tracks its session's running calls from `tool.call`, so it sends the key only while one is in flight.
    - A busy session that has not settled after `drain.interrupt` (default 2 minutes) gets its running turn cancelled with `$.turn.abort`, which stops the turn's running tools, and, once that turn's `turn.complete` arrives with `reason` `aborted` or `error`, the hand-off request through `$.prompt.submit`.
      That happens once per request ID, only for a request delivered through `$.session.append`; the submitted hand-off turn becomes the turn that carries the request, and it is not interrupted again.
-     No mod call moves a running tool to the background, as `ctrl+b` does for the user, so cancelling the turn is the one way to cut a long tool call short.
+     It covers what the key cannot: a long model response, or a tool other than Bash and Agent.
    - The mod acknowledges a request with `rawr drain ack <id>` on `turn.complete` of the turn that carried it.
      After a `$.turn.abort` for `drain.interrupt`, the mod waits for the cancelled turn's `turn.complete`: with `reason` `aborted` or `error` it submits the hand-off and acknowledges only when the hand-off turn completes; with `reason` `answer` or `refusal` the turn ended before the abort took effect, so it submits no hand-off and acknowledges on that completion.
      That event fires however the turn ends: its `reason` is `answer`, `aborted`, `refusal` or `error`.
      A user who presses Esc during the hand-off turn also ends it; the pane then settles without a hand-off, since the user stepped in.
      The acknowledgement sits under the session's block, keyed by the drain's ID and the session's ID, and counts only for the block's current session, so neither an earlier drain's acknowledgement nor an earlier session's in the same pane counts.
-   - The request text covers finishing the current step, committing or noting what is unfinished, writing a hand-off, starting no new work, and ending the turn.
+   - The request text covers finishing the current step, stopping or noting each background task, committing or noting what is unfinished, writing a hand-off, starting no new work, and ending the turn.
+     A background task keeps its child record, so its block does not settle for a restart until the task ends or the wait runs out.
 
    Delivery does not depend on `crossSessionInbound` or on the inbox socket.
    Alternative: Claude Code's per-session inbox socket.
@@ -142,6 +149,7 @@ The closest first-party models are Claude Code's own supervisor, which defers it
 2. How a stopped Rex server starts again on macOS when the app started it, and whether `rex server install` is the right owner there.
 3. Whether `$.prompt.submit` keeps a half-typed prompt in the session's prompt box.
 4. Which Rex call or event marks a server whose sessions are restored, as decision 6 needs.
+5. Whether the bytes `0x18 0x02` written by Rex reach Claude Code as `ctrl+x ctrl+b` while Claude Code has the kitty keyboard protocol on.
 
 [picker-and-index]: ../picker-and-index/design.md
 [pps]: https://www.superlogical.com/rex/docs/build/program-status

@@ -47,15 +47,30 @@ The rawr mod SHALL acknowledge a drain request with the session's ID on `turn.co
 - **WHEN** the turn that carried `d-7a21` ends with an API error
 - **THEN** the mod acknowledges `d-7a21`, and a block that reads `Failed` counts as settled
 
+### Requirement: Background a running call at once
+
+When the rawr mod appends a drain request through `$.session.append` while a Bash or Agent call of its session runs in the foreground, it SHALL at once run `rawr drain background`, which SHALL write the bytes `0x18 0x02` (`ctrl+x ctrl+b`) to the session's own block through Rex's `com.superlogical.terminal.write`.
+The mod SHALL NOT send the key while no such call is in flight.
+
+#### Scenario: A long build during a drain
+
+- **WHEN** a session is running a foreground build when `d-7a21` is appended
+- **THEN** the build moves to the background and keeps running, and the session reads the request at its next step
+
+#### Scenario: No call in flight
+
+- **WHEN** a session is streaming a model response with no tool call running when `d-7a21` is appended
+- **THEN** no key is sent
+
 ### Requirement: Interrupt a turn that runs too long
 
 When a session that received a drain request through `$.session.append` has held it for `drain.interrupt` without its carrying turn ending, the rawr mod SHALL, once per request ID, cancel the running turn with `$.turn.abort`, and SHALL then submit the hand-off as "Acknowledge an interrupted request after its hand-off" sets out.
 The submitted hand-off turn SHALL become the carrying turn and SHALL NOT be interrupted again.
 
-#### Scenario: A long build during a drain
+#### Scenario: A long tool call that cannot move to the background
 
-- **WHEN** `drain.interrupt` is `2m` and a session is still running a foreground build 2 minutes after `d-7a21` was appended
-- **THEN** the mod cancels the turn, the build stops, and, once the cancelled turn completes with `reason` `aborted` or `error`, the session starts its hand-off turn
+- **WHEN** `drain.interrupt` is `2m` and a session is still waiting on a long MCP tool call 2 minutes after `d-7a21` was appended
+- **THEN** the mod cancels the turn, the call stops, and, once the cancelled turn completes with `reason` `aborted` or `error`, the session starts its hand-off turn
 
 #### Scenario: The hand-off turn itself runs long
 
