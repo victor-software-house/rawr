@@ -104,6 +104,7 @@ pub(crate) fn run(view: Option<u64>) -> Result<Option<Agent>> {
             .draw(|frame| hits = view::draw(frame, &app, shown))
             .context("draw the app")?;
         app.settle(&hits.tops);
+        app.cols = hits.width;
         // The window this one replaces stays on screen until this one has
         // drawn the panes; then the daemon swaps them.
         if replacing && panes_in && matches!(app.link, Link::Live) {

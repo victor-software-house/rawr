@@ -20,17 +20,12 @@ use ratatui::widgets::{
 use crate::app::facts::{Facts, Pr, Said};
 use crate::app::feed::Pane;
 use crate::app::state::{
-    self, App, Arrangement, Button, Focus, Grip, Link, Scroll, Tab, Target, Under,
+    self, App, Arrangement, Button, FULL, Focus, Grip, Link, RAIL, Scroll, Tab, Target, Under,
+    widths,
 };
 use crate::app::theme;
 use crate::session::Agent;
 use crate::status::Status;
-
-/// A folded column's width.
-const RAIL: u16 = 5;
-
-/// The narrowest a column draws in full; narrower, it draws as a rail.
-const FULL: u16 = 28;
 
 /// How many columns a view slides in from in the single arrangement.
 const SLIDE: f32 = 10.0;
@@ -170,24 +165,6 @@ fn rule(frame: &mut Frame<'_>, area: Rect, style: Style) {
 // The rails arrangement.
 
 /// Each column's width when `focus` has settled, of `total` columns.
-/// The focused column takes the width it wants, the next one the rest
-/// when that is enough to draw in full, and the others fold to rails.
-fn widths(focus: Focus, total: u16, wants: [u16; 3]) -> [u16; 3] {
-    let at = focus.column();
-    let mut out = [RAIL; 3];
-    let wide = total.saturating_sub(2 * RAIL);
-    out[at] = wide;
-    if at < 2 {
-        let want = wants[at].min(wide);
-        let spare = wide.saturating_sub(want);
-        if spare + RAIL >= FULL {
-            out[at] = want;
-            out[at + 1] = RAIL + spare;
-        }
-    }
-    out
-}
-
 /// The widths `progress` of the way from `from` to `to`, summing to `total`.
 fn blend(from: [u16; 3], to: [u16; 3], progress: f32, total: u16) -> [u16; 3] {
     let mix = |a: u16, b: u16| -> u16 {
@@ -258,7 +235,7 @@ fn drawer(
     hits: &mut Hits,
 ) {
     let rightward = column.column() < app.at().column();
-    let full = app.wants[column.column()].min(area.width.saturating_sub(RAIL));
+    let full = app.drawer_full(column);
     #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let wide = (f32::from(RAIL) + (f32::from(full) - f32::from(RAIL)) * out)
         .round()

@@ -163,8 +163,46 @@ pub(crate) struct Under {
     pub(crate) size: (u16, u16),
 }
 
-/// How long a change of focus takes to settle on screen.
-pub(crate) const MOVE: Duration = Duration::from_millis(160);
+/// A folded column's width.
+pub(crate) const RAIL: u16 = 5;
+
+/// The narrowest a column draws in full; narrower, it draws as a rail.
+pub(crate) const FULL: u16 = 28;
+
+/// How fast a column's edge moves on screen, in columns a second, so a
+/// long move and a short one go at the same speed.
+const SPEED: f32 = 320.0;
+
+/// How long a move of `columns` takes: at [`SPEED`], kept between a
+/// glance and a quarter second.
+fn span(columns: u16) -> Duration {
+    Duration::from_secs_f32(f32::from(columns) / SPEED)
+        .clamp(Duration::from_millis(70), Duration::from_millis(240))
+}
+
+/// `elapsed` of `span`, from 0 to 1, eased out.
+fn eased(elapsed: Duration, span: Duration) -> (f32, f32) {
+    let t = (elapsed.as_secs_f32() / span.as_secs_f32()).min(1.0);
+    (t, 1.0 - (1.0 - t).powi(3))
+}
+
+/// The focused column takes the width it wants, the next one the rest
+/// when that is enough to draw in full, and the others fold to rails.
+pub(crate) fn widths(focus: Focus, total: u16, wants: [u16; 3]) -> [u16; 3] {
+    let at = focus.column();
+    let mut out = [RAIL; 3];
+    let wide = total.saturating_sub(2 * RAIL);
+    out[at] = wide;
+    if at < 2 {
+        let want = wants[at].min(wide);
+        let spare = wide.saturating_sub(want);
+        if spare + RAIL >= FULL {
+            out[at] = want;
+            out[at + 1] = RAIL + spare;
+        }
+    }
+    out
+}
 
 /// The narrowest a column may be dragged.
 pub(crate) const NARROWEST: u16 = 28;
@@ -224,6 +262,8 @@ pub(crate) struct App {
     /// session column takes the rest when it has focus.
     pub(crate) wants: [u16; 3],
     pub(crate) drawer: Option<Drawer>,
+    /// The screen's width as last drawn, which sets how far a move goes.
+    pub(crate) cols: u16,
     /// The edge being dragged.
     pub(crate) dragging: Option<Grip>,
 }
@@ -288,6 +328,7 @@ impl App {
             scrolls: [Scroll::default(); 4],
             wants: [48, 60, 72],
             drawer: None,
+            cols: 0,
             dragging: None,
         }
     }
@@ -319,12 +360,46 @@ impl App {
         &self.filters[column.column()]
     }
 
+    /// The width the columns share: the screen less its margins and the
+    /// two edges between columns.
+    pub(crate) const fn total(&self) -> u16 {
+        self.cols.saturating_sub(4)
+    }
+
+    /// How long the last move of focus takes: the farthest any edge goes.
+    fn move_span(&self) -> Duration {
+        let Some((was, _)) = self.moved else {
+            return Duration::ZERO;
+        };
+        // One view at a time slides a few columns in.
+        if self.arrangement == Arrangement::Single {
+            return span(10);
+        }
+        let from = widths(was, self.total(), self.wants);
+        let to = widths(self.at(), self.total(), self.wants);
+        let far = from
+            .iter()
+            .zip(to)
+            .map(|(a, b)| a.abs_diff(b))
+            .max()
+            .unwrap_or(0);
+        span(far)
+    }
+
     /// How far the last move of focus has come, from 0 to 1, eased out.
     pub(crate) fn progress(&self) -> f32 {
-        self.moved.map_or(1.0, |(_, at)| {
-            let t = (at.elapsed().as_secs_f32() / MOVE.as_secs_f32()).min(1.0);
-            1.0 - (1.0 - t).powi(3)
-        })
+        self.moved
+            .map_or(1.0, |(_, at)| eased(at.elapsed(), self.move_span()).1)
+    }
+
+    /// How wide `column` is when drawn out all the way.
+    pub(crate) fn drawer_full(&self, column: Focus) -> u16 {
+        self.wants[column.column()].min(self.cols.saturating_sub(2 + RAIL))
+    }
+
+    /// How long the drawer of `column` takes to open or shut.
+    fn drawer_span(&self, column: Focus) -> Duration {
+        span(self.drawer_full(column).saturating_sub(RAIL))
     }
 
     /// Whether the screen changes with the clock: a pane works, so the
@@ -347,8 +422,7 @@ impl App {
     /// How far the drawer is out, from 0 to 1, eased; none once it has shut.
     pub(crate) fn drawn(&self) -> Option<(Focus, f32)> {
         let drawer = self.drawer?;
-        let t = (drawer.at.elapsed().as_secs_f32() / MOVE.as_secs_f32()).min(1.0);
-        let eased = 1.0 - (1.0 - t).powi(3);
+        let (t, eased) = eased(drawer.at.elapsed(), self.drawer_span(drawer.column));
         if drawer.open {
             Some((drawer.column, eased))
         } else if t < 1.0 {
@@ -388,7 +462,7 @@ impl App {
             1.0 - out.cbrt()
         };
         let at = Instant::now()
-            .checked_sub(MOVE.mul_f32(t))
+            .checked_sub(self.drawer_span(target).mul_f32(t))
             .unwrap_or_else(Instant::now);
         self.drawer = Some(Drawer {
             column: target,
@@ -494,8 +568,11 @@ impl App {
 
     /// Whether focus is still moving on screen, so frames come fast.
     pub(crate) fn moving(&self) -> bool {
-        self.moved.is_some_and(|(_, at)| at.elapsed() < MOVE)
-            || self.drawer.is_some_and(|drawer| drawer.at.elapsed() < MOVE)
+        self.moved
+            .is_some_and(|(_, at)| at.elapsed() < self.move_span())
+            || self
+                .drawer
+                .is_some_and(|drawer| drawer.at.elapsed() < self.drawer_span(drawer.column))
     }
 
     /// The session `r` resumes: the one shown, or the selected pane's newest
