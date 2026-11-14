@@ -21,7 +21,12 @@ allow = [
 confidence-threshold = 0.93
 
 [bans]
-multiple-versions = "warn"
+# Two versions of one crate fail. A repository whose dependencies still need
+# two versions, after updating each to its latest release, adds a skip below
+# deny = [...], one entry per crate with the reason, and removes it when the
+# graph converges:
+# skip = [{ crate = "syn@2", reason = "<crate> <version>, the latest, requires syn 2" }]
+multiple-versions = "deny"
 wildcards = "deny"
 # Path dependencies carry no version; wildcards stay denied for the rest.
 allow-wildcard-paths = true
@@ -29,6 +34,9 @@ highlight = "all"
 deny = [
     { crate = "openssl", reason = "TLS is rustls" },
     { crate = "native-tls", reason = "TLS is rustls" },
+]
+skip = [
+    { crate = "syn@2", reason = "derive_more-impl 2.1.1, garde_derive 0.23.0 and strum_macros 0.28.0, their latest releases, require syn 2" },
 ]
 
 # Declarations repeated outside [workspace.dependencies], and unused entries.

@@ -25,6 +25,7 @@
     expect(dead_code, reason = "a later slice of the supervisor reads these keys")
 )]
 
+use std::env;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -157,9 +158,9 @@ impl Config {
 
 /// `$XDG_CONFIG_HOME/rawr/config.yaml`, or `~/.config/rawr/config.yaml`.
 fn path() -> Result<PathBuf> {
-    let base = match std::env::var_os("XDG_CONFIG_HOME") {
+    let base = match env::var_os("XDG_CONFIG_HOME") {
         Some(dir) if !dir.is_empty() => PathBuf::from(dir),
-        _ => std::env::home_dir()
+        _ => env::home_dir()
             .context("no home directory")?
             .join(".config"),
     };
@@ -196,18 +197,20 @@ fn parse_duration(text: &str) -> Result<Duration, String> {
 
 #[cfg(test)]
 mod tests {
+    use std::{fs, process};
+
     use ctl_core::indoc;
 
     use super::*;
 
     /// Loads `text` as the config file `config.yaml` in a folder of its own.
     fn load(name: &str, text: &str) -> Result<Config> {
-        let dir = std::env::temp_dir().join(format!("rawr-config-{name}-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = env::temp_dir().join(format!("rawr-config-{name}-{}", process::id()));
+        fs::create_dir_all(&dir).unwrap();
         let path = dir.join("config.yaml");
-        std::fs::write(&path, text).unwrap();
+        fs::write(&path, text).unwrap();
         let loaded = Config::load_from(&path);
-        std::fs::remove_dir_all(&dir).unwrap();
+        fs::remove_dir_all(&dir).unwrap();
         loaded
     }
 
@@ -217,7 +220,7 @@ mod tests {
 
     #[test]
     fn an_absent_file_holds_the_defaults() {
-        let dir = std::env::temp_dir().join(format!("rawr-config-absent-{}", std::process::id()));
+        let dir = env::temp_dir().join(format!("rawr-config-absent-{}", process::id()));
         let config = Config::load_from(&dir.join("config.yaml")).unwrap();
         assert_eq!(config.history.per_pane, 5);
         assert_eq!(config.picker.rows, 3);

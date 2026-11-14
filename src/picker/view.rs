@@ -7,6 +7,8 @@
 //! dimmed, so both read in light and dark colour themes. The selected session
 //! is the one accent: its pointer and bold title in bright blue.
 
+use std::iter;
+
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Color, Modifier, Style};
@@ -251,7 +253,7 @@ pub(crate) fn draw(frame: &mut Frame<'_>, agents: &[Agent], state: &State, offse
         };
         let start = lines.len();
         let drawn = block(agent, look, width);
-        owners.extend(std::iter::repeat_n(Some(index), drawn.len()));
+        owners.extend(iter::repeat_n(Some(index), drawn.len()));
         lines.extend(drawn);
         spans.push((start, lines.len()));
     }

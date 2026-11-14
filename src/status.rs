@@ -179,7 +179,7 @@ pub(crate) fn rows(client: &mut Client, dir: &Path) -> Result<Vec<Row>> {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::{env, fs, process};
 
     use super::*;
     use crate::rex::fake::FakeServer;
@@ -270,7 +270,7 @@ mod tests {
 
     #[test]
     fn a_row_for_each_terminal_whose_index_lists_a_session() {
-        let dir = std::env::temp_dir().join(format!("rawr-status-{}", std::process::id()));
+        let dir = env::temp_dir().join(format!("rawr-status-{}", process::id()));
         fs::create_dir_all(&dir).unwrap();
         let transcript = dir.join("6f1c2a90-3b7e-4d21-9c55-0a8e4f7b1d33.jsonl");
         fs::write(
