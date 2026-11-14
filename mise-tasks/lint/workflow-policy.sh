@@ -5,6 +5,11 @@
 # repository carries no copy. --absolute-paths keeps a linked worktree's
 # absolute git directory whole.
 #
+# git exports GIT_DIR, GIT_WORK_TREE and GIT_INDEX_FILE to pre-push in a linked
+# worktree. The task unsets them before its first git call: with them set, a
+# render below the root would take its own folder as the top, and the pull's
+# clone would read the pusher's repository.
+#
 # Each pinned commit gets a folder of its own, filled once and never
 # rewritten. verify then runs offline after the first run, and no file of an
 # older pin mixes in.
@@ -39,10 +44,11 @@
 # checks the tracked workflows only. With none, nothing runs and the check
 # passes. -z hands xargs each path unquoted, whatever it holds.
 render=$(pwd)
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
 cd "$(git rev-parse --show-toplevel)" || exit 1
 files=$(git ls-files ':(glob).github/workflows/*.yml' ':(glob).github/workflows/*.yaml') || exit 1
 [ -n "$files" ] || exit 0
-commit=bead5c01b61e14ecf1e923a5bcff97e8c421f151
+commit=5ad08e7382a53bd35c65fc1e1aaa1c2fae427ed9
 policy=$(git rev-parse --git-path "workflow-policy/$commit") || exit 1
 texts=$(git rev-parse --git-path "workflow-texts.$$.yaml") || exit 1
 trap 'rm -f "$texts"' EXIT
@@ -64,7 +70,7 @@ if [ ! -d "$policy" ]; then
   trap 'rm -rf "${policy:?}.part"; rmdir "$policy.lock" 2>/dev/null; rm -f "$texts"' EXIT
   if [ ! -d "$policy" ]; then
     rm -rf "${policy:?}.part"
-    url='git::https://github.com/victor-software-house/actions.git//policy?ref=bead5c01b61e14ecf1e923a5bcff97e8c421f151'
+    url='git::https://github.com/victor-software-house/actions.git//policy?ref=5ad08e7382a53bd35c65fc1e1aaa1c2fae427ed9'
     if conftest pull --absolute-paths -p "$policy.part" "$url"; then
       mv "$policy.part" "$policy"
     fi

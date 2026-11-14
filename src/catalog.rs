@@ -7,6 +7,7 @@
 //! session's title comes from its transcript's end, read once per load.
 
 use std::borrow::Cow;
+use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, ErrorKind};
@@ -125,7 +126,7 @@ pub(crate) fn load(claude: &Path, live: &HashSet<String>) -> Result<Vec<Found>> 
         }
     }
     let mut found: Vec<Found> = sessions.into_values().collect();
-    found.sort_by_key(|found| std::cmp::Reverse(found.latest));
+    found.sort_by_key(|found| Reverse(found.latest));
     Ok(found)
 }
 
@@ -170,8 +171,7 @@ fn title(prompt: &str) -> String {
         .lines()
         .map(str::trim)
         .find(|line| !line.is_empty())
-        .map(sanitize)
-        .unwrap_or_default();
+        .map_or_default(sanitize);
     if line.is_empty() {
         return "Untitled session".to_owned();
     }
@@ -215,6 +215,8 @@ pub(crate) fn search(pane: &[Agent], catalog: &[Found], terms: &[String]) -> Vec
 
 #[cfg(test)]
 mod tests {
+    use std::{env, process, slice};
+
     use indoc::formatdoc;
 
     use super::*;
@@ -225,8 +227,8 @@ mod tests {
 
     /// A Claude Code folder with a history naming three sessions, two of
     /// which still have a transcript.
-    fn fixture(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("rawr-catalog-{name}-{}", std::process::id()));
+    fn fixture(name: &str) -> PathBuf {
+        let dir = env::temp_dir().join(format!("rawr-catalog-{name}-{}", process::id()));
         let shop = dir.join("projects/-home-dev-code-shop");
         let notes = dir.join("projects/-home-dev-notes");
         fs::create_dir_all(&shop).unwrap();
@@ -307,7 +309,7 @@ mod tests {
         let catalog = load(&dir, &HashSet::new()).unwrap();
         let mut pane = catalog[1].agent.clone();
         pane.title = "Weekly notes".to_owned();
-        let results = search(std::slice::from_ref(&pane), &catalog, &terms("dev"));
+        let results = search(slice::from_ref(&pane), &catalog, &terms("dev"));
         assert_eq!(ids(&results), [NOTES, SHOP]);
         assert_eq!(results[0].title, "Weekly notes");
         fs::remove_dir_all(&dir).unwrap();

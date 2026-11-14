@@ -5,6 +5,7 @@
 use std::io::{self, Stderr, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
+use std::{fmt, panic};
 
 use anyhow::{Context, Result};
 use ratatui::Terminal;
@@ -59,8 +60,8 @@ pub(crate) struct Screen {
     pointer: Pointer,
 }
 
-impl std::fmt::Debug for Screen {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for Screen {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Screen")
             .field("pointer", &self.pointer)
             .finish_non_exhaustive()
@@ -77,8 +78,8 @@ impl Screen {
     /// Fails when the terminal refuses raw mode or a write to stderr fails;
     /// whatever was already set is undone.
     pub(crate) fn enter() -> Result<Self> {
-        let previous = std::panic::take_hook();
-        std::panic::set_hook(Box::new(move |info| {
+        let previous = panic::take_hook();
+        panic::set_hook(Box::new(move |info| {
             leave();
             previous(info);
         }));
@@ -165,7 +166,7 @@ mod tests {
 
     #[test]
     fn status_records_match_the_protocol() {
-        let waiting = std::str::from_utf8(STATUS_WAITING).unwrap();
+        let waiting = str::from_utf8(STATUS_WAITING).unwrap();
         let fields = waiting
             .strip_prefix("\x1b]7501;")
             .and_then(|rest| rest.strip_suffix("\x1b\\"))

@@ -4,12 +4,12 @@
 //! the client must send next, a message the server sends, or a close.
 
 use std::collections::VecDeque;
-use std::fs;
 use std::io::ErrorKind;
 use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
-use std::thread::JoinHandle;
+use std::thread::{self, JoinHandle};
 use std::time::Duration;
+use std::{env, fs, process};
 
 use anyhow::{Result, anyhow, bail, ensure};
 use serde::Deserialize;
@@ -59,11 +59,11 @@ impl FakeServer {
     /// Starts a server that plays the lines of `parts`, in order.
     pub(crate) fn start(name: &str, parts: &[&str]) -> Self {
         let steps = script(parts);
-        let dir = std::env::temp_dir().join(format!("rawr-rex-{name}-{}", std::process::id()));
+        let dir = env::temp_dir().join(format!("rawr-rex-{name}-{}", process::id()));
         fs::create_dir_all(&dir).unwrap();
         let socket = dir.join("s.sock");
         let listener = UnixListener::bind(&socket).unwrap();
-        let thread = std::thread::spawn(move || serve(&listener, steps));
+        let thread = thread::spawn(move || serve(&listener, steps));
         Self {
             dir,
             endpoint: Endpoint::at(socket),
