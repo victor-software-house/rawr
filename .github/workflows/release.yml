@@ -1,8 +1,9 @@
 name: Release
 
 # verctl's reusable release workflow, on every push to main and on demand.
-# It releases each version commit not yet fully released, builds its
-# binaries, then opens or updates the Version PR from .changeset.
+# It releases, from HEAD, each version HEAD holds whose release is
+# incomplete, builds its binaries, then opens or updates the Version PR from
+# .changeset.
 on:
   push:
     branches: [main]
@@ -20,12 +21,10 @@ jobs:
       contents: write # tags, Releases, assets, and verctl/release/main without the App
       pull-requests: write # the Version PR without the App
       id-token: write # the called workflow's publish job requests it
-    uses: victor-software-house/verctl/.github/workflows/release.yml@894850b6d761dc0015b25d07517e7ed0abacf02b # v0.8.4
+    uses: victor-software-house/verctl/.github/workflows/release.yml@fd46e7e62a7020295fa967f00f21bdf274f5218c # v0.8.6-rc.3
     with:
       mise-version: 2026.11.6
       mise-env: ci,release
-      # No crate goes to crates.io, so docs.rs has nothing to build.
-      docs: false
     # The App token opens the Version PR so that its CI starts; a PR opened
     # with GITHUB_TOKEN starts no workflow.
     secrets:
