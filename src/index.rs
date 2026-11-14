@@ -2,9 +2,10 @@
 //! that last ran in that pane, newest first.
 
 use std::collections::HashSet;
-use std::fs;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
+use std::{env, fs};
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -95,7 +96,7 @@ impl PaneIndex {
             Ok(bytes) => {
                 serde_json::from_slice(&bytes).with_context(|| format!("parse {}", path.display()))
             }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(Self::default()),
             Err(error) => Err(error).with_context(|| format!("read {}", path.display())),
         }
     }
@@ -137,7 +138,7 @@ impl PaneIndex {
         self.entries.retain_mut(|entry| {
             let gone = matches!(
                 fs::metadata(&entry.transcript),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound
+                Err(error) if error.kind() == ErrorKind::NotFound
             );
             if gone {
                 return !entry.transcript_seen
@@ -162,9 +163,9 @@ pub(crate) fn unix_now() -> u64 {
 
 /// `$XDG_STATE_HOME/rawr`, or `~/.local/state/rawr`.
 pub(crate) fn state_dir() -> Result<PathBuf> {
-    let base = match std::env::var_os("XDG_STATE_HOME") {
+    let base = match env::var_os("XDG_STATE_HOME") {
         Some(dir) if !dir.is_empty() => PathBuf::from(dir),
-        _ => std::env::home_dir()
+        _ => env::home_dir()
             .context("no home directory")?
             .join(".local/state"),
     };
@@ -218,6 +219,8 @@ pub(crate) fn prune(dir: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::process;
+
     use super::*;
 
     fn entry(id: &str) -> Entry {
@@ -241,7 +244,7 @@ mod tests {
 
     /// An empty folder of its own for a test to put transcripts in.
     fn folder(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("rawr-index-{name}-{}", std::process::id()));
+        let dir = env::temp_dir().join(format!("rawr-index-{name}-{}", process::id()));
         fs::create_dir_all(&dir).unwrap();
         dir
     }

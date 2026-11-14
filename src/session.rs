@@ -3,14 +3,17 @@
 
 use std::collections::HashSet;
 use std::convert::Infallible;
+use std::env;
 use std::fs::{self, File};
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{ErrorKind, Read, Seek, SeekFrom};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, Result, bail};
 use memchr::memmem;
+use rustix::io::Errno;
 use rustix::process::{Pid, test_kill_process};
 use serde::Deserialize;
 
@@ -37,7 +40,7 @@ impl Agent {
         if !Path::new(&self.cwd).is_dir() {
             bail!("{} no longer exists", self.cwd);
         }
-        let error = std::process::Command::new("claude")
+        let error = Command::new("claude")
             .arg("--resume")
             .arg(&self.session_id)
             .current_dir(&self.cwd)
@@ -47,7 +50,7 @@ impl Agent {
 
     /// The start folder with the home directory written as `~`.
     pub(crate) fn short_cwd(&self) -> String {
-        let home = std::env::home_dir();
+        let home = env::home_dir();
         match home.as_deref().and_then(Path::to_str) {
             Some(home) if self.cwd == home => "~".to_owned(),
             Some(home) => match self.cwd.strip_prefix(home) {
@@ -69,9 +72,9 @@ struct Running {
 
 /// Claude Code's configuration folder: `$CLAUDE_CONFIG_DIR`, or `~/.claude`.
 pub(crate) fn claude_dir() -> Result<PathBuf> {
-    match std::env::var_os("CLAUDE_CONFIG_DIR") {
+    match env::var_os("CLAUDE_CONFIG_DIR") {
         Some(dir) if !dir.is_empty() => Ok(PathBuf::from(dir)),
-        _ => Ok(std::env::home_dir()
+        _ => Ok(env::home_dir()
             .context("no home directory")?
             .join(".claude")),
     }
@@ -80,7 +83,7 @@ pub(crate) fn claude_dir() -> Result<PathBuf> {
 fn is_alive(pid: i32) -> bool {
     Pid::from_raw(pid).is_some_and(|pid| match test_kill_process(pid) {
         Ok(()) => true,
-        Err(error) => error == rustix::io::Errno::PERM,
+        Err(error) => error == Errno::PERM,
     })
 }
 
@@ -89,7 +92,7 @@ pub(crate) fn live_sessions() -> Result<HashSet<String>> {
     let dir = claude_dir()?.join("sessions");
     let entries = match fs::read_dir(&dir) {
         Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(HashSet::new()),
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(HashSet::new()),
         Err(error) => return Err(error).with_context(|| format!("list {}", dir.display())),
     };
     let mut live = HashSet::new();
@@ -278,6 +281,8 @@ pub(crate) fn ago(idle: Option<Duration>) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::process;
+
     use super::*;
 
     fn agent(cwd: &str) -> Agent {
@@ -297,7 +302,7 @@ mod tests {
 
     #[test]
     fn title_prefers_the_user_title() {
-        let dir = std::env::temp_dir().join(format!("rawr-test-{}", std::process::id()));
+        let dir = env::temp_dir().join(format!("rawr-test-{}", process::id()));
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("t.jsonl");
         fs::write(
@@ -316,7 +321,7 @@ mod tests {
 
     #[test]
     fn a_user_title_in_the_head_beats_a_generated_one_in_the_tail() {
-        let dir = std::env::temp_dir().join(format!("rawr-tail-{}", std::process::id()));
+        let dir = env::temp_dir().join(format!("rawr-tail-{}", process::id()));
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("t.jsonl");
         let filler = format!(
@@ -336,7 +341,7 @@ mod tests {
 
     #[test]
     fn a_user_title_beats_a_later_generated_one_across_the_window() {
-        let dir = std::env::temp_dir().join(format!("rawr-order-{}", std::process::id()));
+        let dir = env::temp_dir().join(format!("rawr-order-{}", process::id()));
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("t.jsonl");
         let filler = format!(
@@ -355,7 +360,7 @@ mod tests {
 
     #[test]
     fn a_title_between_the_windows_is_not_read() {
-        let dir = std::env::temp_dir().join(format!("rawr-middle-{}", std::process::id()));
+        let dir = env::temp_dir().join(format!("rawr-middle-{}", process::id()));
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("t.jsonl");
         let filler = format!(
@@ -372,7 +377,7 @@ mod tests {
 
     #[test]
     fn a_title_file_beats_a_generated_title_in_the_tail() {
-        let dir = std::env::temp_dir().join(format!("rawr-file-{}", std::process::id()));
+        let dir = env::temp_dir().join(format!("rawr-file-{}", process::id()));
         fs::create_dir_all(dir.join("7c2e5a10-4b8d-4f61-9a3e-2d5b8c1f6e04")).unwrap();
         let path = dir.join("7c2e5a10-4b8d-4f61-9a3e-2d5b8c1f6e04.jsonl");
         fs::write(&path, "{\"type\":\"ai-title\",\"aiTitle\":\"A guess\"}\n").unwrap();
@@ -390,7 +395,7 @@ mod tests {
 
     #[test]
     fn a_user_title_in_the_tail_beats_the_title_file() {
-        let dir = std::env::temp_dir().join(format!("rawr-both-{}", std::process::id()));
+        let dir = env::temp_dir().join(format!("rawr-both-{}", process::id()));
         fs::create_dir_all(dir.join("0b9d4e2a-6c71-4f3e-8a52-9e1c7d3b5f20")).unwrap();
         let path = dir.join("0b9d4e2a-6c71-4f3e-8a52-9e1c7d3b5f20.jsonl");
         fs::write(
