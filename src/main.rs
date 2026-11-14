@@ -15,12 +15,14 @@ mod setup;
 mod status;
 
 use std::collections::HashSet;
-use std::io::IsTerminal;
+use std::env;
+use std::io::{self, IsTerminal};
 
 use anyhow::{Context, Result};
 use ctl_core::completion::CompletionCommand;
 use ctl_core::prelude::*;
 use ctl_core::shell::{self, Script};
+use ctl_core::view;
 use serde::Serialize;
 
 use crate::config::Config;
@@ -130,14 +132,14 @@ impl Present for Outcome {
 
     /// A dismissal is an error outcome, so its hint goes to stderr and
     /// `pick` and `find` write nothing to stdout.
-    fn outcome(&self) -> ctl_core::view::Outcome {
+    fn outcome(&self) -> view::Outcome {
         match self {
-            Self::Dismissed => ctl_core::view::Outcome::Error,
+            Self::Dismissed => view::Outcome::Error,
             Self::Recorded
             | Self::Nothing
             | Self::Status { .. }
             | Self::Setup { .. }
-            | Self::Completion(_) => ctl_core::view::Outcome::Success,
+            | Self::Completion(_) => view::Outcome::Success,
         }
     }
 
@@ -175,7 +177,7 @@ fn main() -> ExitCode {
 
 /// The pane this process runs in, from Rex's `REX_BLOCK`.
 fn current_block() -> Result<Option<BlockId>> {
-    match std::env::var("REX_BLOCK") {
+    match env::var("REX_BLOCK") {
         Ok(raw) => BlockId::try_new(&raw).map(Some),
         Err(_) => Ok(None),
     }
@@ -190,7 +192,7 @@ fn record() -> Result<()> {
     };
     let config = Config::load()?;
     let input: HookInput =
-        serde_json::from_reader(std::io::stdin().lock()).context("read the hook input on stdin")?;
+        serde_json::from_reader(io::stdin().lock()).context("read the hook input on stdin")?;
     let dir = index::state_dir()?;
     let now = index::unix_now();
     let mut pane = PaneIndex::load(&dir, &block)?;
@@ -225,7 +227,7 @@ fn choose(pane: &[Agent], start: Start, live: HashSet<String>, config: &Config) 
 /// [`Outcome::Nothing`] when there is nothing to offer, and
 /// [`Outcome::Dismissed`] when the user dismisses the picker.
 fn pick() -> Result<Outcome> {
-    if !std::io::stderr().is_terminal() {
+    if !io::stderr().is_terminal() {
         return Ok(Outcome::Nothing);
     }
     let live = session::live_sessions()?;
@@ -239,7 +241,7 @@ fn pick() -> Result<Outcome> {
 /// Opens the picker over every local session, with `words` typed in the
 /// search box.
 fn find(words: &[String]) -> Result<Outcome> {
-    if !std::io::stderr().is_terminal() {
+    if !io::stderr().is_terminal() {
         return Ok(Outcome::Nothing);
     }
     let live = session::live_sessions()?;

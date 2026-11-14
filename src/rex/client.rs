@@ -1,11 +1,11 @@
 //! The connection: opening it, and calling methods on it.
 
 use std::ffi::OsString;
-use std::fmt;
 use std::os::unix::ffi::OsStringExt;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::time::Duration;
+use std::{env, error, fmt};
 
 use anyhow::{Context, Result, anyhow, bail};
 use serde::Serialize;
@@ -38,7 +38,7 @@ impl Endpoint {
 
     /// The server a pane's `REX_SERVER` names, else the default socket.
     pub(crate) fn from_environment() -> Result<Self> {
-        match std::env::var_os("REX_SERVER") {
+        match env::var_os("REX_SERVER") {
             Some(value) if !value.is_empty() => {
                 Self::parse(value.to_str().context("REX_SERVER is not text")?)
             }
@@ -61,7 +61,7 @@ impl Endpoint {
         if !cfg!(target_os = "macos") {
             bail!("REX_SERVER is not set, and the Rex socket has no default on this system");
         }
-        let home = std::env::home_dir().context("no home directory")?;
+        let home = env::home_dir().context("no home directory")?;
         Ok(Self::at(
             home.join("Library/Application Support/rex/server.sock"),
         ))
@@ -108,7 +108,7 @@ impl fmt::Display for ErrorResponse {
     }
 }
 
-impl std::error::Error for ErrorResponse {}
+impl error::Error for ErrorResponse {}
 
 /// The server closed the connection.
 #[derive(Debug)]
@@ -130,7 +130,7 @@ impl fmt::Display for Closed {
     }
 }
 
-impl std::error::Error for Closed {}
+impl error::Error for Closed {}
 
 /// The next message the server sends. Pings are answered by the socket library,
 /// and a message that is not text is skipped, as the protocol sends only text.
@@ -143,9 +143,7 @@ pub(super) fn read_message(socket: &mut WebSocket<UnixStream>) -> Result<ServerM
             }
             Ok(Message::Close(frame)) => {
                 let code = frame.as_ref().map(|frame| u16::from(frame.code));
-                let reason = frame
-                    .map(|frame| frame.reason.as_str().to_owned())
-                    .unwrap_or_default();
+                let reason = frame.map_or_default(|frame| frame.reason.as_str().to_owned());
                 return Err(Closed { code, reason }.into());
             }
             Ok(Message::Binary(_) | Message::Ping(_) | Message::Pong(_) | Message::Frame(_)) => {}
