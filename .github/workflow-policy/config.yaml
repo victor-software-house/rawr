@@ -23,7 +23,7 @@ workflow_policy:
   exceptions:
     - rule: pins
       file: release.yml
-      reason: verctl 0.8.6-rc.3 is a candidate, and the rule reads a release comment only as vX.Y.Z; drop this when the rule takes a semver prerelease
+      reason: verctl 0.8.6-rc.4 is a candidate, and the rule reads a release comment only as vX.Y.Z; drop this when the rule takes a semver prerelease
   # exceptions:
   #   - rule: permissions
   #     file: release.yml
