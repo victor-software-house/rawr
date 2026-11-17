@@ -1,4 +1,4 @@
 #!/usr/bin/env bash
 #MISE description="Lint one commit or range with committed"
-# pre-push runs this once for each pushed commit.
+# A by-hand check; the pre-push hook runs committed itself.
 committed "${1:-HEAD}"
