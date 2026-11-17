@@ -1,5 +1,5 @@
 # Changes here will be overwritten by Copier; edit with `copier update --data`.
-_commit: v0.0.111
+_commit: v0.0.119
 _src_path: https://github.com/victor-software-house/templates.git
 build_os: linux
 cargo_min_publish_age: 3 days
@@ -21,7 +21,7 @@ layout: crate
 library: false
 linux_image: ubuntu-26.04
 max_width: 100
-merge_queue: false
+merge_queue: true
 merge_queue_cancel_lower: true
 mise_version: 2026.11.6
 nightly_fmt: true
