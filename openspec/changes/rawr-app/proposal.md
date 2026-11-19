@@ -32,8 +32,9 @@ Nobody learns four verbs to answer two questions: which Claude needs me, and how
 
 ### Modified Capabilities
 
-None.
-The `fullscreen-picker` and `session-search` changes describe `rawr pick` and `rawr find`; task 3.2 removes those requirements from them.
+- `session-picker` and `picker-layout`: every requirement goes with the picker.
+- `session-search`: the search line and `rawr find` go; the app opens the search with `ctrl+f`.
+- `config`: `picker.rows` goes.
 
 ## Impact
 
