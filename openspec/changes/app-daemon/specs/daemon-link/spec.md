@@ -45,17 +45,52 @@ The daemon SHALL refuse a `hello` whose build differs from its own, and the clie
 
 ### Requirement: Facts and hits stream from the daemon
 
-The daemon SHALL answer a `facts` request once the transcript is read, and a `search` with `hits` batches as transcripts are read, ending an older search from the same client when a newer one arrives.
+The daemon SHALL read a transcript from its newest line back and send its facts as the read goes, and SHALL stop that read when the same client asks for another transcript.
+It SHALL answer a `search` with `hits` batches as transcripts are read, ending an older search from the same client when a newer one arrives.
 
 #### Scenario: A large transcript is selected
 
 - **WHEN** the user selects a session whose transcript is 60 MB
-- **THEN** the window keeps drawing and taking keys, shows `reading the transcript…`, and shows the facts when the daemon's `facts` message arrives
+- **THEN** the window keeps drawing and taking keys, shows the newest entries from the first `facts` message, and shows `reading older lines…` until the read reaches the start
+
+#### Scenario: Another session is selected mid-read
+
+- **WHEN** the daemon is reading session A's transcript for a client, and that client asks for session B's
+- **THEN** the daemon stops reading A between parts and sends B's facts next, and asking for A again goes on from where its read stopped
 
 #### Scenario: The query changes mid-search
 
 - **WHEN** the client sends `search` with ID 4 for `kodus`, then ID 5 for `kodus ci` before ID 4 has read every transcript
 - **THEN** the daemon sends no more `hits` for ID 4
+
+### Requirement: Sessions no pane holds are listed
+
+The daemon SHALL add to `panes`, after the open panes, a closed pane for each session whose transcript was written in the last day and that no open pane holds, up to 40, newest first.
+
+#### Scenario: A pane closed with its Claude
+
+- **WHEN** the user closes a Rex pane whose Claude wrote its transcript an hour ago
+- **THEN** within 15 seconds `panes` lists that session as a closed pane, and the user can resume it
+
+#### Scenario: A scripted run
+
+- **WHEN** a Claude ran today from a folder under the system's temporary folder, and no pane holds it
+- **THEN** `panes` does not list it
+
+### Requirement: The daemon acts in Rex for the window
+
+The daemon SHALL run `go_to` and `resume` in Rex for the window that sent them, and SHALL answer a failure with a `notice`.
+A `resume` for a window that does not float SHALL be answered with `exec`, and the window SHALL then become `claude --resume` itself.
+
+#### Scenario: Remote Control is off
+
+- **WHEN** the window sends `go_to` and the Rex app refuses client actions
+- **THEN** the daemon sends a `notice` with the app's message, and the window stays open
+
+#### Scenario: Resume from a tiled pane
+
+- **WHEN** a window tiled in its Rex tab sends `resume` for session `Fix checkout`
+- **THEN** the daemon answers `exec`, and the window gives the terminal back and becomes `claude --resume <its id>` in its folder
 
 ### Requirement: A slow client is dropped
 
@@ -68,9 +103,9 @@ The daemon SHALL close a connection whose queue holds 64 unsent messages, and th
 
 ### Requirement: View state stays in the window
 
-The daemon SHALL hold no selection, focus, query or scroll; the copy started by going to a pane SHALL open with the state of the copy it replaces.
+The daemon SHALL hold no window's selection, focus, query or scroll, except the view a `go_to` carries, which it SHALL give in `welcome` to the copy it starts and then drop.
 
 #### Scenario: Going to a pane in another Rex session
 
-- **WHEN** the floating window has query `ci`, the sidebar folded and pane `notes/shell` selected, and the user goes to `notes/shell` in session `notes`
-- **THEN** the new window in `notes` opens with query `ci`, the sidebar folded and `notes/shell` selected
+- **WHEN** the floating window has query `ci`, the panes column folded and pane `notes/shell` selected, and the user goes to `notes/shell` in session `notes`
+- **THEN** the new window in `notes` opens with query `ci`, the panes column folded and `notes/shell` selected
