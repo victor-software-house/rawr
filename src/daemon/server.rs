@@ -20,7 +20,7 @@ use crate::app::facts::{self, Reading};
 use crate::app::feed::{self, Pane, Update};
 use crate::app::state::Carry;
 use crate::catalog::{self, Found};
-use crate::session;
+use crate::session::{self, Agent};
 
 /// How many messages wait for one client before the daemon drops it.
 const QUEUE: usize = 64;
@@ -41,7 +41,12 @@ struct Hub {
 }
 
 struct State {
+    /// The open panes and then the closed ones, as windows get them.
     panes: Vec<Pane>,
+    /// The open panes, as the feed last sent them.
+    open: Vec<Pane>,
+    /// The sessions written lately whose pane was closed, newest first.
+    closed: Vec<Agent>,
     link: (Reach, Option<String>),
     clients: HashMap<u64, SyncSender<FromDaemon>>,
     next: u64,
@@ -99,6 +104,8 @@ pub(crate) fn run() -> Result<()> {
         build: Build::current()?,
         state: Mutex::new(State {
             panes: Vec::new(),
+            open: Vec::new(),
+            closed: Vec::new(),
             link: (Reach::Stale, Some("reading Rex".to_owned())),
             clients: HashMap::new(),
             next: 0,
@@ -111,6 +118,12 @@ pub(crate) fn run() -> Result<()> {
     {
         let hub = Arc::clone(&hub);
         thread::spawn(move || follow(&hub));
+    }
+    {
+        // The closed sessions come from the transcripts, read on a thread
+        // of their own so the open panes never wait for them.
+        let hub = Arc::clone(&hub);
+        thread::spawn(move || watch_closed(&hub));
     }
     let mut out = std::io::stdout();
     writeln!(out, "ready").context("say ready")?;
@@ -132,8 +145,10 @@ fn follow(hub: &Hub) {
         let feed = thread::spawn(move || feed::run(&send));
         for update in receive {
             match update {
-                Update::Panes(panes) => {
+                Update::Panes(open) => {
                     let mut state = hold(&hub.state);
+                    state.open = open;
+                    let panes = feed::with_closed(&state.open, &state.closed);
                     state.panes.clone_from(&panes);
                     if state.link.0 != Reach::Live {
                         state.link = (Reach::Live, None);
@@ -153,6 +168,31 @@ fn follow(hub: &Hub) {
         }
         let _ = feed.join();
         thread::sleep(RETRY);
+    }
+}
+
+/// Reads the sessions whose pane was closed every [`feed::CLOSED_EVERY`],
+/// and sends the panes again when they changed.
+fn watch_closed(hub: &Hub) {
+    loop {
+        let closed = feed::recent().unwrap_or_default();
+        {
+            let mut state = hold(&hub.state);
+            let same = closed.len() == state.closed.len()
+                && closed
+                    .iter()
+                    .zip(&state.closed)
+                    .all(|(new, old)| new.session_id == old.session_id && new.title == old.title);
+            if !same {
+                state.closed = closed;
+                let panes = feed::with_closed(&state.open, &state.closed);
+                state.panes.clone_from(&panes);
+                if state.link.0 == Reach::Live {
+                    broadcast(&mut state, &FromDaemon::Panes { panes });
+                }
+            }
+        }
+        thread::sleep(feed::CLOSED_EVERY);
     }
 }
 

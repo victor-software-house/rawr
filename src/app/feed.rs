@@ -9,7 +9,7 @@
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 use std::sync::mpsc::Sender;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, SystemTime};
 
 use anyhow::Result;
 
@@ -97,15 +97,11 @@ fn follow(updates: &Sender<Update>) -> Result<()> {
         }
     };
     let dir = index::state_dir()?;
-    let mut closed = Closed::default();
     let mut panes = BTreeMap::new();
     for session in &watch.sessions {
         list_session(&mut lister, session, &mut panes)?;
     }
-    if updates
-        .send(Update::Panes(view(&panes, &dir, &mut closed)))
-        .is_err()
-    {
+    if updates.send(Update::Panes(view(&panes, &dir))).is_err() {
         return Ok(());
     }
     for event in watch.events {
@@ -135,11 +131,7 @@ fn follow(updates: &Sender<Update>) -> Result<()> {
                 true
             }
         };
-        if changed
-            && updates
-                .send(Update::Panes(view(&panes, &dir, &mut closed)))
-                .is_err()
-        {
+        if changed && updates.send(Update::Panes(view(&panes, &dir))).is_err() {
             return Ok(());
         }
     }
@@ -213,12 +205,19 @@ fn relist(
 
 /// The panes whose index lists a session, with each pane's sessions read
 /// again, so a session recorded since the last update shows.
-fn view(panes: &BTreeMap<String, Tracked>, dir: &Path, closed: &mut Closed) -> Vec<Pane> {
+fn view(panes: &BTreeMap<String, Tracked>, dir: &Path) -> Vec<Pane> {
     let live = session::live_sessions().unwrap_or_default();
-    let mut listed: Vec<Pane> = panes
+    panes
         .values()
         .filter_map(|tracked| pane(tracked, dir, &live))
-        .collect();
+        .collect()
+}
+
+/// The open panes, then a closed pane for each of `closed` that no open
+/// pane holds.
+pub(crate) fn with_closed(open: &[Pane], closed: &[Agent]) -> Vec<Pane> {
+    let live = session::live_sessions().unwrap_or_default();
+    let mut listed = open.to_vec();
     let held: HashSet<String> = listed
         .iter()
         .flat_map(|pane| {
@@ -229,7 +228,6 @@ fn view(panes: &BTreeMap<String, Tracked>, dir: &Path, closed: &mut Closed) -> V
         .collect();
     listed.extend(
         closed
-            .agents()
             .iter()
             .filter(|agent| !held.contains(&agent.session_id))
             .map(|agent| Pane {
@@ -251,32 +249,14 @@ fn view(panes: &BTreeMap<String, Tracked>, dir: &Path, closed: &mut Closed) -> V
 const CLOSED_WITHIN: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// How often the transcripts are looked at again for closed sessions.
-const CLOSED_EVERY: Duration = Duration::from_secs(15);
+pub(crate) const CLOSED_EVERY: Duration = Duration::from_secs(15);
 
 /// The most closed sessions listed, newest first.
 const CLOSED_MOST: usize = 40;
 
-/// The sessions written in the last day, read from Claude's transcripts
-/// at most every [`CLOSED_EVERY`].
-#[derive(Default)]
-struct Closed {
-    read: Option<Instant>,
-    agents: Vec<Agent>,
-}
-
-impl Closed {
-    fn agents(&mut self) -> &[Agent] {
-        if self.read.is_none_or(|read| read.elapsed() >= CLOSED_EVERY) {
-            self.agents = recent().unwrap_or_default();
-            self.read = Some(Instant::now());
-        }
-        &self.agents
-    }
-}
-
 /// Every session whose transcript was written in the last day, newest
 /// first, but the scripted runs that started in a temporary folder.
-fn recent() -> Result<Vec<Agent>> {
+pub(crate) fn recent() -> Result<Vec<Agent>> {
     let claude = session::claude_dir()?;
     let now = SystemTime::now();
     let mut found: Vec<(Duration, String, std::path::PathBuf)> =

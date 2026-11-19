@@ -9,7 +9,7 @@
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
-use std::io::{BufRead, BufReader, ErrorKind};
+use std::io::{BufRead, BufReader, ErrorKind, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -303,7 +303,7 @@ pub(crate) fn deep(
         .filter(|found| !skip.contains(&found.agent.session_id))
         .take_while(|_| !stale())
         .filter_map(|found| {
-            let raw = scan(&found.transcript, terms)?;
+            let raw = scan(&found.transcript, terms, &stale)?;
             Some(Hit {
                 agent: found.agent.clone(),
                 snippet: Some(around(&raw, first)),
@@ -313,52 +313,83 @@ pub(crate) fn deep(
         .collect()
 }
 
-/// Reads the transcript at `path` and returns the stretch around the first
-/// term's first spoken occurrence, once every term has occurred in a spoken
-/// line; `None` when one never does. Memory stays at the longest line.
-fn scan(path: &Path, terms: &[String]) -> Option<String> {
+/// How much of a transcript one step of a search reads.
+const PART: u64 = 1 << 18;
+
+/// Reads the transcript at `path` from its newest line back, a part at a
+/// time, and returns the stretch around the first term's newest spoken
+/// occurrence, once every term has occurred in a spoken line; `None` when
+/// one never does, or when `stale` says a newer search has begun, which
+/// it asks between parts. Memory stays at a part, or the longest line.
+fn scan(path: &Path, terms: &[String], stale: &impl Fn() -> bool) -> Option<String> {
     let first = terms.first()?;
-    let mut reader = BufReader::with_capacity(1 << 18, File::open(path).ok()?);
-    let mut line = Vec::new();
+    let mut file = File::open(path).ok()?;
+    let mut back = file.metadata().ok()?.len();
+    let mut size = PART;
     let mut lower = Vec::new();
     let mut seen = vec![false; terms.len()];
     let mut snippet = None;
-    loop {
-        line.clear();
-        if reader.read_until(b'\n', &mut line).ok()? == 0 {
+    while back > 0 {
+        if stale() {
             return None;
         }
-        // Only what the user and Claude wrote counts: the instructions,
-        // reminders and attachments Claude Code adds to every session would
-        // match everything.
-        if !spoken(&line) {
-            continue;
-        }
-        lower.clear();
-        lower.extend(line.iter().map(u8::to_ascii_lowercase));
-        for (term, seen) in terms.iter().zip(seen.iter_mut()) {
-            if *seen {
+        let from = back.saturating_sub(size);
+        file.seek(SeekFrom::Start(from)).ok()?;
+        let mut bytes = vec![0; usize::try_from(back - from).ok()?];
+        file.read_exact(&mut bytes).ok()?;
+        // The part's first bytes end a line that starts before it; a line
+        // longer than the part takes a larger one.
+        let start = if from == 0 {
+            0
+        } else {
+            match memchr::memchr(b'\n', &bytes) {
+                Some(at) if at + 1 < bytes.len() => at + 1,
+                _ => {
+                    size = size.saturating_mul(2);
+                    continue;
+                }
+            }
+        };
+        for line in bytes
+            .get(start..)
+            .unwrap_or_default()
+            .rsplit(|byte| *byte == b'\n')
+        {
+            // Only what the user and Claude wrote counts: the instructions,
+            // reminders and attachments Claude Code adds to every session
+            // would match everything.
+            if !spoken(line) {
                 continue;
             }
-            let Some(at) = memchr::memmem::find(&lower, term.as_bytes()) else {
-                continue;
-            };
-            *seen = true;
-            if term == first && snippet.is_none() {
-                let start = at.saturating_sub(SNIPPET_CHARS);
-                let end = (at + SNIPPET_CHARS * 2).min(line.len());
-                snippet = Some(
-                    String::from_utf8_lossy(&line[start..end])
-                        .replace("\\n", " ")
-                        .replace("\\\"", "\"")
-                        .replace("\\t", " "),
-                );
+            lower.clear();
+            lower.extend(line.iter().map(u8::to_ascii_lowercase));
+            for (term, seen) in terms.iter().zip(seen.iter_mut()) {
+                if *seen {
+                    continue;
+                }
+                let Some(at) = memchr::memmem::find(&lower, term.as_bytes()) else {
+                    continue;
+                };
+                *seen = true;
+                if term == first && snippet.is_none() {
+                    let start = at.saturating_sub(SNIPPET_CHARS);
+                    let end = (at + SNIPPET_CHARS * 2).min(line.len());
+                    snippet = Some(
+                        String::from_utf8_lossy(&line[start..end])
+                            .replace("\\n", " ")
+                            .replace("\\\"", "\"")
+                            .replace("\\t", " "),
+                    );
+                }
+            }
+            if seen.iter().all(|seen| *seen) {
+                return snippet;
             }
         }
-        if seen.iter().all(|seen| *seen) {
-            return snippet;
-        }
+        back = from + u64::try_from(start).ok()?;
+        size = PART;
     }
+    None
 }
 
 /// Whether a transcript line holds words the user or Claude wrote: a user
