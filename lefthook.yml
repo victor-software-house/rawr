@@ -27,24 +27,56 @@ commit-msg:
 # Hooks are the cheap local tier: no build, test, typecheck or type-aware
 # lint. The pull request's CI is the gate and runs all of them.
 pre-push:
-  # Each job is a script, .lefthook/pre-push/<name>, that runs one mise
-  # task. lefthook skips a pre-push command when `git diff HEAD @{push}` is
-  # empty, so a push of a branch other than the checked-out one ran no
-  # command; a script has no such skip.
-  scripts:
-    # Fails when a mise lockfile no longer matches its config
-    # (mise-tasks/hooks/lockfile.sh). The task checks each committed
-    # mise.<profile>.toml's lock in turn, except the hooks profile's, in a
-    # worktree of each pushed commit, from git's pre-push lines on stdin; the
-    # env here only sets the profiles mise runs the task itself in.
-    lockfile.sh:
-      runner: sh
-      env: { MISE_ENV: "dev" }
-      use_stdin: true
-    # Lints each pushed commit the remote does not have yet. It also scans
-    # those commits for credentials, instead of the whole history. The task,
-    # mise-tasks/hooks/pushed.sh, reads git's pre-push lines on stdin.
-    commits.sh:
-      runner: sh
+  parallel: true
+  # Each file check runs a check:repo task on the files the push changes:
+  # lefthook's {push_files}, the files between HEAD and @{push}, as the
+  # working tree holds them. A command's glob narrows them, and a command
+  # whose glob matches no pushed file is skipped. lefthook's default glob
+  # matcher reads * across directories, so *.toml matches at every depth,
+  # and openspec/** needs openspec/* beside it for the files at its top.
+  # The head.sh script below fails the push when the checkout does not hold
+  # the pushed commit, so the files on disk are the files the push sends.
+  commands:
+    markdown:
+      glob: "*.{md,markdown,mkd,mkdn,mdown,mdwn,mdx,qmd,rmd}"
       env: *hookenv
+      run: mise run lint:md {push_files}
+    toml:
+      glob: "*.toml"
+      env: *hookenv
+      run: mise run format:toml {push_files}
+    # typos and Vale pick their own files from the push: .typos.toml and the
+    # ProseStyle settings choose, code included.
+    typos:
+      env: *hookenv
+      run: mise run lint:typos {push_files}
+    specs:
+      glob: ["openspec/*", "openspec/**/*"]
+      env: *hookenv
+      # Quoted: ":::" holds ": ", which YAML reads as a mapping.
+      run: "mise run specs ::: specs:budget"
+    workflows:
+      glob: [".github/*", ".github/**/*"]
+      env: *hookenv
+      run: "mise run lint:workflows ::: lint:workflow-policy"
+  # The checks that read git's pre-push lines run from one script,
+  # .lefthook/pre-push/refs.sh, so each checks every pushed ref, not only
+  # HEAD. lefthook 2.2.2 shares one stdin reader between parallel use_stdin
+  # jobs, so two such jobs would race for the lines; refs.sh reads them once
+  # and runs each check on them in turn:
+  # - lockfile.sh fails when a mise lockfile no longer matches its config
+  #   (mise-tasks/hooks/lockfile.sh). The task checks each committed
+  #   mise.<profile>.toml's lock in turn, except the hooks profile's, in a
+  #   worktree of each pushed commit. LOCK_MISE_ENV sets the profiles mise
+  #   runs that task in.
+  # - commits.sh lints each pushed commit the remote does not have yet, and
+  #   scans those commits for credentials instead of the whole history
+  #   (mise-tasks/hooks/pushed.sh).
+  # - head.sh fails a push that sends new commits other than HEAD, or whose
+  #   tracked files differ from HEAD on disk, where the file checks above
+  #   read them (mise-tasks/hooks/head.sh).
+  scripts:
+    refs.sh:
+      runner: sh
+      env: { MISE_ENV: "dev,hooks", LOCK_MISE_ENV: "dev" }
       use_stdin: true

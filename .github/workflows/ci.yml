@@ -3,8 +3,11 @@ name: CI
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
-  push:
-    branches: [main]
+  merge_group:
+  # Refresh the default branch's build cache without repeating every push.
+  schedule:
+    - cron: "37 8 * * *"
+  workflow_dispatch:
 
 # The shared Verify job reads this run and the runs that replaced it.
 permissions:
@@ -13,15 +16,39 @@ permissions:
   pull-requests: read
 
 concurrency:
-  # A draft run gets a group of its own, so it never cancels the ready run.
+  # Every merge queue entry shares one group, so a newer entry's run cancels the
+  # runs of the entries ahead of it: the queue merges on the newest entry's
+  # result, whose merge-group commit holds every entry ahead of it. That holds
+  # only while the queue groups HEADGREEN; under ALLGREEN a cancelled entry
+  # fails. Outside the queue, a draft run gets a group of its own, so it never
+  # cancels the ready run.
   group: >-
-    ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number ||
-    github.ref_name }}${{ github.event.pull_request.draft && '-draft' || '' }}
+    ci-${{ github.workflow }}-${{ github.event_name == 'merge_group' && format('queue-{0}',
+    github.event.merge_group.base_ref) || format('{0}-{1}{2}', github.event_name,
+    github.event.pull_request.number || github.ref_name, github.event.pull_request.draft && '-draft'
+    || '') }}
   cancel-in-progress: true
 
 jobs:
+  refresh:
+    if: github.event_name == 'schedule'
+    # One API call on the runner chosen when this repository was rendered.
+    runs-on: ubuntu-26.04
+    timeout-minutes: 2
+    permissions:
+      actions: write
+    steps:
+      - name: Dispatch CI on the default branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          WORKFLOW: ${{ github.workflow_ref }}
+        run: |
+          workflow=${WORKFLOW%@*}
+          gh workflow run "${workflow##*/}" --repo "$REPOSITORY" --ref main
+
   verify:
-    if: ${{ !github.event.pull_request.draft }}
+    if: ${{ !github.event.pull_request.draft && github.event_name != 'schedule' }}
     # The shared jobs that install tools download through the release mirror:
     # they exchange the job's OIDC token for a session token, with the
     # organization's mirror key, so the caller grants id-token: write.
@@ -30,7 +57,7 @@ jobs:
       contents: read
       id-token: write
       pull-requests: read
-    uses: victor-software-house/actions/.github/workflows/rust-ci.yml@bead5c01b61e14ecf1e923a5bcff97e8c421f151 # main, 2026-11-11
+    uses: victor-software-house/actions/.github/workflows/rust-ci.yml@e044bc0a41a1544d2c6a0b368c086392d6d184c9 # main, 2026-11-17
     with:
       mise-version: 2026.11.6
       advisories: true
