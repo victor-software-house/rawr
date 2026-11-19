@@ -117,6 +117,15 @@ A file gone since the session touched it SHALL be named in the status line inste
 - **WHEN** the session wrote 12 files under the system's temporary folder
 - **THEN** they fold into one line, `+ 12 files in temporary folders`, which a click opens
 
+### Requirement: Titles are drawn safe
+
+The app SHALL drop control characters from a session's title, and turn its tabs and line breaks into spaces, before drawing it.
+
+#### Scenario: A title holds an escape sequence
+
+- **WHEN** a transcript's title is `fix\u{1b}[2Jbuild`
+- **THEN** the app draws `fix[2Jbuild` and the screen is not cleared
+
 ### Requirement: The startup line offers only what can be resumed
 
 `rawr --startup` SHALL open the app on the current pane's sessions only when one of them can be resumed, and otherwise SHALL print nothing and exit 0.
