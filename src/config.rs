@@ -4,8 +4,6 @@
 //! ```yaml
 //! history:
 //!   per_pane: 5
-//! picker:
-//!   rows: 3
 //! restart:
 //!   wait: 5m
 //! drain:
@@ -17,9 +15,9 @@
 //! `input` loader reads the file, so a bad value is reported with the file's
 //! name and the line it sits on.
 
-// The restart and drain keys, and the picker's rows, are read by later
-// slices of the supervisor change. Once every key is read, the compiler
-// reports this expectation as unfulfilled, which is the cue to remove it.
+// The restart and drain keys are read by later slices of the supervisor
+// change. Once every key is read, the compiler reports this expectation as
+// unfulfilled, which is the cue to remove it.
 #![cfg_attr(
     not(test),
     expect(dead_code, reason = "a later slice of the supervisor reads these keys")
@@ -44,8 +42,6 @@ const UNITS: [(char, u64); 3] = [('s', 1), ('m', 60), ('h', 3600)];
 pub(crate) struct Config {
     #[garde(dive)]
     pub(crate) history: History,
-    #[garde(dive)]
-    pub(crate) picker: Picker,
     #[garde(skip)]
     pub(crate) restart: Restart,
     #[garde(skip)]
@@ -59,15 +55,6 @@ pub(crate) struct History {
     /// The most sessions one pane's index holds.
     #[garde(custom(at_least_one))]
     pub(crate) per_pane: usize,
-}
-
-/// How the picker shows the sessions.
-#[derive(Debug, Clone, Deserialize, Validate)]
-#[serde(default, deny_unknown_fields)]
-pub(crate) struct Picker {
-    /// The most sessions the picker shows before `ctrl+o` expands the list.
-    #[garde(custom(at_least_one))]
-    pub(crate) rows: usize,
 }
 
 /// How long a restart waits.
@@ -95,12 +82,6 @@ pub(crate) struct Drain {
 impl Default for History {
     fn default() -> Self {
         Self { per_pane: 5 }
-    }
-}
-
-impl Default for Picker {
-    fn default() -> Self {
-        Self { rows: 3 }
     }
 }
 
@@ -223,7 +204,6 @@ mod tests {
         let dir = env::temp_dir().join(format!("rawr-config-absent-{}", process::id()));
         let config = Config::load_from(&dir.join("config.yaml")).unwrap();
         assert_eq!(config.history.per_pane, 5);
-        assert_eq!(config.picker.rows, 3);
         assert_eq!(config.restart.wait, seconds(300));
         assert_eq!(config.drain.interrupt, seconds(120));
         assert_eq!(config.drain.grace, seconds(60));
@@ -242,7 +222,6 @@ mod tests {
         )
         .unwrap();
         assert_eq!(config.history.per_pane, 8);
-        assert_eq!(config.picker.rows, 3);
         assert_eq!(config.restart.wait, seconds(300));
         assert_eq!(config.drain.interrupt, seconds(120));
         assert_eq!(config.drain.grace, seconds(90));
@@ -293,18 +272,6 @@ mod tests {
         .to_string();
         assert!(error.contains("config.yaml:2:"), "{error}");
         assert!(error.contains("history.per_pane"), "{error}");
-
-        let error = load(
-            "zero-rows",
-            indoc! {"
-                picker:
-                  rows: 0
-            "},
-        )
-        .unwrap_err()
-        .to_string();
-        assert!(error.contains("config.yaml:2:"), "{error}");
-        assert!(error.contains("picker.rows"), "{error}");
     }
 
     #[test]

@@ -279,23 +279,6 @@ pub(crate) fn sanitize(text: &str) -> String {
         .collect()
 }
 
-/// How long ago, in the largest whole unit.
-pub(crate) fn ago(idle: Option<Duration>) -> String {
-    let Some(idle) = idle else {
-        return "time unknown".to_owned();
-    };
-    let minutes = idle.as_secs() / 60;
-    match minutes {
-        0 => "just now".to_owned(),
-        1..60 => format!("{minutes} min ago"),
-        60..1440 => format!("{} h ago", minutes / 60),
-        _ => match minutes / 1440 {
-            1 => "1 day ago".to_owned(),
-            days => format!("{days} days ago"),
-        },
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::process;
@@ -434,15 +417,5 @@ mod tests {
     fn sanitize_drops_escape_sequences() {
         assert_eq!(sanitize("fix\u{1b}[2Jbuild"), "fix[2Jbuild");
         assert_eq!(sanitize("two\nlines\tand a tab"), "two lines and a tab");
-    }
-
-    #[test]
-    fn ago_uses_the_largest_unit() {
-        assert_eq!(ago(Some(Duration::from_secs(30))), "just now");
-        assert_eq!(ago(Some(Duration::from_mins(5))), "5 min ago");
-        assert_eq!(ago(Some(Duration::from_hours(3))), "3 h ago");
-        assert_eq!(ago(Some(Duration::from_hours(24))), "1 day ago");
-        assert_eq!(ago(Some(Duration::from_hours(72))), "3 days ago");
-        assert_eq!(ago(None), "time unknown");
     }
 }
