@@ -5,6 +5,7 @@ use std::fs::{self, OpenOptions, Permissions};
 use std::io::{ErrorKind, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+use std::process;
 
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
@@ -115,7 +116,7 @@ fn write(path: &Path, settings: &Value) -> Result<()> {
     let mut text = serde_json::to_string_pretty(settings).context("encode the settings")?;
     text.push('\n');
     let mode = fs::metadata(&target).map_or(0o600, |meta| meta.permissions().mode() & 0o7777);
-    let staged = target.with_extension(format!("json.rawr-{}", std::process::id()));
+    let staged = target.with_extension(format!("json.rawr-{}", process::id()));
     let written = stage(&staged, &text, mode).and_then(|()| {
         fs::rename(&staged, &target).with_context(|| format!("replace {}", target.display()))
     });
@@ -155,12 +156,15 @@ fn stage(staged: &Path, text: &str, mode: u32) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::env;
+    use std::os::unix::fs::symlink;
+
     use indoc::indoc;
 
     use super::*;
 
     fn fixture(name: &str, text: Option<&str>) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("rawr-setup-{name}-{}", std::process::id()));
+        let dir = env::temp_dir().join(format!("rawr-setup-{name}-{}", process::id()));
         fs::create_dir_all(&dir).unwrap();
         let path = settings_path(&dir);
         if let Some(text) = text {
@@ -227,7 +231,7 @@ mod tests {
         let path = fixture("link", None);
         let real = path.with_file_name("real.json");
         fs::write(&real, SETTINGS).unwrap();
-        std::os::unix::fs::symlink(&real, &path).unwrap();
+        symlink(&real, &path).unwrap();
         assert_eq!(claude(&path, Mode::Write).unwrap(), Change::Added);
         assert!(
             fs::symlink_metadata(&path)
@@ -243,7 +247,7 @@ mod tests {
     fn a_dangling_symlink_stays_a_symlink() {
         let path = fixture("dangling", None);
         let real = path.with_file_name("not-yet.json");
-        std::os::unix::fs::symlink("not-yet.json", &path).unwrap();
+        symlink("not-yet.json", &path).unwrap();
         assert_eq!(claude(&path, Mode::Write).unwrap(), Change::Added);
         assert!(
             fs::symlink_metadata(&path)
