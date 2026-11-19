@@ -18,7 +18,7 @@ use ratatui::widgets::{
     Block, BorderType, Clear, Padding, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
 };
 
-use crate::app::facts::{Facts, Kind, Pr, Said};
+use crate::app::facts::{Facts, Kind, Outcome, Pr, Said};
 use crate::app::feed::Pane;
 use crate::app::state::{
     self, App, Arrangement, Button, FULL, Focus, Grip, Link, RAIL, Scroll, Tab, Target, Under,
@@ -1370,7 +1370,13 @@ fn said(lines: &mut Vec<Line<'static>>, rows: &mut Rows, app: &App, items: &[Sai
         let age = item.at.as_deref().map(when).unwrap_or_default();
         let age = format!("{:>7} ", age.trim_end_matches(" ago"));
         let hovered = app.hover == Some(Target::Entry(key));
-        let (lead, close, style) = marks(&item.kind);
+        let (mut lead, close, style) = marks(&item.kind);
+        // A call whose tool reported an error shows its name in red.
+        if item.result.as_ref().is_some_and(|outcome| outcome.error)
+            && let Some(name) = lead.first_mut()
+        {
+            name.style = name.style.fg(theme::ERROR);
+        }
         let lead_width = lead.iter().map(Span::width).sum::<usize>();
         // Open, a message's text starts under its mark rather than after
         // its sender, so it keeps the width of the tab.
@@ -1393,7 +1399,7 @@ fn said(lines: &mut Vec<Line<'static>>, rows: &mut Rows, app: &App, items: &[Sai
             body_lines(item, style, room)
         };
         let most = match item.kind {
-            Kind::Prompt => 3,
+            Kind::Prompt | Kind::Reply => 3,
             Kind::Ended { .. } => 2,
             Kind::Message { .. }
             | Kind::Idle { .. }
@@ -1409,13 +1415,18 @@ fn said(lines: &mut Vec<Line<'static>>, rows: &mut Rows, app: &App, items: &[Sai
             .as_deref()
             .map(|more| markup::markdown(more, width.saturating_sub(indent)))
             .unwrap_or_default();
+        let mut result = item
+            .result
+            .as_ref()
+            .map(|outcome| result_lines(outcome, width.saturating_sub(indent + 3)))
+            .unwrap_or_default();
         let left = if open {
             0
         } else {
             // Folded, blank lines between paragraphs take no row, and a
             // one-line entry runs its lines together.
             body.retain(|line| line.width() > 0);
-            let left = body.len().saturating_sub(most) + more.len();
+            let left = body.len().saturating_sub(most) + more.len() + result.len();
             if most == 1 && body.len() > 1 {
                 let mut joined: Vec<Span<'static>> = Vec::new();
                 for (index, line) in body.drain(..).enumerate() {
@@ -1428,6 +1439,7 @@ fn said(lines: &mut Vec<Line<'static>>, rows: &mut Rows, app: &App, items: &[Sai
             }
             body.truncate(most);
             more.clear();
+            result.clear();
             left
         };
         // What a folded entry leaves out shows at its end, never cut off.
@@ -1485,10 +1497,44 @@ fn said(lines: &mut Vec<Line<'static>>, rows: &mut Rows, app: &App, items: &[Sai
             spans.extend(part.spans);
             lines.push(Line::from(spans));
         }
+        // What the tool gave back, under Claude Code's `⎿`.
+        for (index, part) in result.into_iter().enumerate() {
+            let mut spans = gutter(hovered);
+            spans.push(Span::styled(
+                if index == 0 { "⎿  " } else { "   " },
+                theme::dim(),
+            ));
+            spans.extend(part.spans);
+            lines.push(Line::from(spans));
+        }
         if folds {
             rows.extend((start..lines.len()).map(|at| (at, None, Target::Entry(key))));
         }
     }
+}
+
+/// How many lines of a tool's result an open call shows.
+const RESULT_LINES: usize = 12;
+
+/// A tool's result as an open call shows it: its first lines, dim, or
+/// red for an error, and how many it leaves out.
+fn result_lines(outcome: &Outcome, width: usize) -> Vec<Line<'static>> {
+    let style = if outcome.error {
+        Style::new().fg(theme::ERROR)
+    } else {
+        Style::new().fg(theme::QUIET)
+    };
+    let all: Vec<Line<'static>> = outcome
+        .text
+        .lines()
+        .flat_map(|line| markup::wrap(&[Span::styled(line.to_owned(), style)], width))
+        .collect();
+    let left = all.len().saturating_sub(RESULT_LINES);
+    let mut shown: Vec<Line<'static>> = all.into_iter().take(RESULT_LINES).collect();
+    if left > 0 {
+        shown.push(Line::styled(format!("… +{left} lines"), theme::dim()));
+    }
+    shown
 }
 
 /// Which line of a tab, and which of its columns when not all of them,
@@ -1518,6 +1564,7 @@ fn body_lines(item: &Said, style: Style, room: usize) -> Vec<Line<'static>> {
         Kind::Tool { name } if name == "Bash" || name == "PowerShell" => code(&item.text),
         Kind::Shell => code(&item.text),
         Kind::Prompt
+        | Kind::Reply
         | Kind::Message { .. }
         | Kind::Idle { .. }
         | Kind::Relayed { .. }
@@ -1591,6 +1638,7 @@ fn marks(kind: &Kind) -> (Vec<Span<'static>>, &'static str, Style) {
             Style::new(),
         ),
         Kind::Interrupted => (Vec::new(), "", theme::dim()),
+        Kind::Reply => (vec![Span::raw("⏺ ")], "", Style::new()),
         Kind::Tool { name } => (
             vec![
                 Span::styled(name.clone(), Style::new().add_modifier(Modifier::BOLD)),

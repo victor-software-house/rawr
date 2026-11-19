@@ -75,7 +75,7 @@ impl Tab {
     pub(crate) const fn name(self) -> &'static str {
         match self {
             Self::Overview => "Overview",
-            Self::Prompts => "Prompts",
+            Self::Prompts => "Conversation",
             Self::Activity => "Activity",
             Self::Files => "Files",
         }

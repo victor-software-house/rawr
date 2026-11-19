@@ -39,7 +39,8 @@ pub(crate) struct Facts {
     /// The files it read, the most recent last, with how often.
     #[serde(default)]
     pub(crate) read: Vec<(String, usize)>,
-    /// What the user typed, oldest first, the last [`KEEP`] of it.
+    /// The conversation, oldest first, the last [`KEEP`] of it: what the
+    /// user typed, what the session was sent, and Claude's replies.
     pub(crate) log: Vec<Said>,
     /// The tools Claude called, oldest first, the last [`KEEP`] of them.
     pub(crate) activity: Vec<Said>,
@@ -75,7 +76,25 @@ pub(crate) struct Said {
     /// body, a sub-agent's prompt.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) more: Option<String>,
+    /// A tool call's ID, which its result names.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) call: Option<String>,
+    /// What a tool call gave back, once its result is read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) result: Option<Outcome>,
 }
+
+/// What a tool call gave back: its text, cut to [`RESULT_CHARS`], and
+/// whether the tool reported an error.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, Deserialize)]
+pub(crate) struct Outcome {
+    pub(crate) text: String,
+    #[serde(default)]
+    pub(crate) error: bool,
+}
+
+/// How many characters of a tool's result the facts keep.
+const RESULT_CHARS: usize = 2000;
 
 /// What an entry is, which sets the mark Claude Code draws before it.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, Deserialize)]
@@ -100,6 +119,8 @@ pub(crate) enum Kind {
     Relayed { from: String },
     /// The user stopped Claude mid-turn.
     Interrupted,
+    /// What Claude wrote back: `⏺ text`.
+    Reply,
     /// A tool call: `Name(text)`, the name as Claude Code shows it.
     Tool { name: String },
 }
@@ -127,7 +148,8 @@ impl Said {
             | Kind::Shell
             | Kind::Memory
             | Kind::Ended { .. }
-            | Kind::Interrupted => Cow::Borrowed(&self.text),
+            | Kind::Interrupted
+            | Kind::Reply => Cow::Borrowed(&self.text),
         }
     }
 }
@@ -197,6 +219,15 @@ struct Part<'line> {
     name: Option<Cow<'line, str>>,
     #[serde(borrow, default)]
     input: Option<&'line RawValue>,
+    /// A tool call's ID, which its result names.
+    #[serde(borrow, default)]
+    id: Option<Cow<'line, str>>,
+    #[serde(borrow, default)]
+    tool_use_id: Option<Cow<'line, str>>,
+    #[serde(borrow, default)]
+    content: Option<&'line RawValue>,
+    #[serde(default)]
+    is_error: bool,
 }
 
 /// The fields of a tool call's input that the facts read; every tool
@@ -402,6 +433,8 @@ pub(crate) fn stored_tasks(transcript: &Path) -> Option<Vec<Task>> {
 struct Stretch {
     facts: Facts,
     ops: Vec<TaskOp>,
+    /// Results whose calls are in an older stretch, by call ID.
+    results: Vec<(String, Outcome)>,
 }
 
 #[derive(Debug, Clone)]
@@ -442,6 +475,18 @@ impl Stretch {
         }
         facts.log.extend(newer.log);
         trim(&mut facts.log);
+        // Results that reached this stretch's calls from the newer one.
+        for (call, outcome) in later.results {
+            match facts
+                .activity
+                .iter_mut()
+                .rev()
+                .find(|said| said.call.as_deref() == Some(call.as_str()))
+            {
+                Some(said) => said.result = Some(outcome),
+                None => self.results.push((call, outcome)),
+            }
+        }
         facts.activity.extend(newer.activity);
         trim(&mut facts.activity);
         self.ops.extend(later.ops);
@@ -610,12 +655,36 @@ fn add(stretch: &mut Stretch, record: Record<'_>) {
                 .and_then(|content| serde_json::from_str::<Vec<Part<'_>>>(content.get()).ok())
             {
                 let cwd = record.cwd.as_deref();
-                for part in parts.iter().filter(|part| part.kind == "tool_use") {
-                    call(stretch, at, cwd, part);
+                for part in &parts {
+                    match part.kind.as_ref() {
+                        "tool_use" => call(stretch, at, cwd, part),
+                        // Claude's own words, as its reply rows show them.
+                        "text" => {
+                            let text = clean(part.text.as_deref().unwrap_or_default());
+                            if !text.is_empty() && text != "(no content)" {
+                                keep(
+                                    &mut stretch.facts.log,
+                                    Said {
+                                        at: at.map(str::to_owned),
+                                        text,
+                                        kind: Kind::Reply,
+                                        more: None,
+                                        call: None,
+                                        result: None,
+                                    },
+                                );
+                            }
+                        }
+                        _ => {}
+                    }
                 }
             }
         }
         "user" if !record.is_meta && !record.summary => {
+            if let Some(content) = record.message.as_ref().and_then(|message| message.content) {
+                results(stretch, content);
+            }
+            let facts = &mut stretch.facts;
             if let Some((kind, text, more)) = record
                 .message
                 .and_then(|message| message.content)
@@ -632,6 +701,8 @@ fn add(stretch: &mut Stretch, record: Record<'_>) {
                         text,
                         kind,
                         more,
+                        call: None,
+                        result: None,
                     },
                 );
             }
@@ -693,6 +764,58 @@ fn clean(text: &str) -> String {
         out.push('…');
     }
     out
+}
+
+/// Puts each tool result in `content` with its call, or keeps it for a
+/// call an older stretch holds.
+fn results(stretch: &mut Stretch, content: &RawValue) {
+    let Ok(parts) = serde_json::from_str::<Vec<Part<'_>>>(content.get()) else {
+        return;
+    };
+    for part in parts.iter().filter(|part| part.kind == "tool_result") {
+        let Some(call) = part.tool_use_id.as_deref() else {
+            continue;
+        };
+        let text = part.content.map(result_text).unwrap_or_default();
+        let mut text: String = clean(&text).chars().take(RESULT_CHARS).collect();
+        if text.is_empty() {
+            text = "(No output)".to_owned();
+        }
+        let outcome = Outcome {
+            text,
+            error: part.is_error,
+        };
+        match stretch
+            .facts
+            .activity
+            .iter_mut()
+            .rev()
+            .find(|said| said.call.as_deref() == Some(call))
+        {
+            Some(said) => said.result = Some(outcome),
+            None => stretch.results.push((call.to_owned(), outcome)),
+        }
+    }
+}
+
+/// A tool result's text: a string, or its text parts one after another,
+/// a picture as `[Image]`.
+fn result_text(content: &RawValue) -> String {
+    if let Ok(text) = serde_json::from_str::<Cow<'_, str>>(content.get()) {
+        return text.into_owned();
+    }
+    serde_json::from_str::<Vec<Part<'_>>>(content.get())
+        .map(|parts| {
+            parts
+                .iter()
+                .map(|part| match part.kind.as_ref() {
+                    "image" => "[Image]".to_owned(),
+                    _ => part.text.as_deref().unwrap_or_default().to_owned(),
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default()
 }
 
 /// The lead Claude Code writes before a message from another session.
@@ -1014,6 +1137,8 @@ fn call(stretch: &mut Stretch, at: Option<&str>, cwd: Option<&str>, part: &Part<
                 more: more
                     .map(|more| clean(&more))
                     .filter(|more| !more.is_empty()),
+                call: part.id.as_deref().map(str::to_owned),
+                result: None,
             },
         );
     }
@@ -1159,7 +1284,7 @@ mod tests {
     use std::io::Write as _;
     use std::path::PathBuf;
 
-    use super::{Facts, Reading, read_forward, tasks};
+    use super::{Facts, KEEP, Reading, read_forward, tasks};
 
     /// A transcript of `turns` turns: a prompt, then a reply that creates
     /// a task, edits a file and, every fifth turn, carries a long text, so
@@ -1168,6 +1293,15 @@ mod tests {
         let mut text = String::new();
         for turn in 0..turns {
             let at = format!("2026-01-01T00:{:02}:{:02}Z", turn / 60 % 60, turn % 60);
+            // The last turn's edit gets its result at the start of this one.
+            if turn > 0 {
+                text.push_str(&format!(
+                    r#"{{"type":"user","timestamp":"{at}","message":{{"content":[{{"type":"tool_result","tool_use_id":"e{}","content":"edited {}"}}]}}}}"#,
+                    turn - 1,
+                    turn - 1
+                ));
+                text.push('\n');
+            }
             text.push_str(&format!(
                 r#"{{"type":"user","timestamp":"{at}","gitBranch":"b{}","message":{{"content":"prompt {turn}"}}}}"#,
                 turn / 100
@@ -1179,7 +1313,7 @@ mod tests {
                 String::new()
             };
             text.push_str(&format!(
-                r#"{{"type":"assistant","timestamp":"{at}","message":{{"model":"m{}","usage":{{"output_tokens":{turn}}},"content":[{{"type":"text","text":"{long}"}},{{"type":"tool_use","name":"TaskCreate","input":{{"subject":"task {turn}"}}}},{{"type":"tool_use","name":"TaskUpdate","input":{{"taskId":"{}","status":"completed"}}}},{{"type":"tool_use","name":"Edit","input":{{"file_path":"f{}"}}}}]}}}}"#,
+                r#"{{"type":"assistant","timestamp":"{at}","message":{{"model":"m{}","usage":{{"output_tokens":{turn}}},"content":[{{"type":"text","text":"{long}"}},{{"type":"tool_use","name":"TaskCreate","input":{{"subject":"task {turn}"}}}},{{"type":"tool_use","name":"TaskUpdate","input":{{"taskId":"{}","status":"completed"}}}},{{"type":"tool_use","id":"e{turn}","name":"Edit","input":{{"file_path":"f{}"}}}}]}}}}"#,
                 turn / 50,
                 turn / 2 + 1,
                 turn % 7
@@ -1218,6 +1352,14 @@ mod tests {
         }
         assert!(steps > 1, "the transcript took {steps} parts");
         assert_eq!(reading.facts(), forward(&path));
+        // Each edit but the last has its result, though parts split them.
+        let results = reading
+            .facts()
+            .activity
+            .iter()
+            .filter(|said| said.result.is_some())
+            .count();
+        assert_eq!(results, KEEP - 1);
         let _ = std::fs::remove_file(path);
     }
 
