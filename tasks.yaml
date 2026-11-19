@@ -144,22 +144,6 @@ queue:
       - Every task in the app-daemon change is checked off with evidence.
     plan: openspec/changes/app-daemon/proposal.md
 
-  - id: RAWR-015
-    title: Draw each transcript entry as Claude Code draws it
-    scope: app
-    outcome: >-
-      A session's prompts and tool calls read as Claude Code's own transcript rows,
-      not raw tags and JSON.
-    blocked_by:
-      - RAWR-013
-    acceptance:
-      - Teammate messages, peer messages, task notifications, shell input and output, slash commands, command output and plain prompts each show as Claude Code's collapsed row shows them.
-      - Tool calls show Claude Code's tool name and argument summary, such as Update(path) for Edit.
-      - Entries Claude Code draws nothing for, such as ticks and command caveats, are left out.
-    notes:
-      - 'Source of truth: the recovered Claude Code source, product/src/tui/repl/messages/user-text-message.tsx and the views it calls.'
-      - '2026-11-13, prompts and tool rows follow Claude Code: names, brackets, marks and the user-line kinds; assistant replies and tool results are not shown yet.'
-
   - id: RAWR-016
     title: Stream a session's facts from its newest line backwards
     scope: app
@@ -224,6 +208,20 @@ queue:
     notes:
       - 2026-11-13, overlaps RAWR-006 and RAWR-008, whose install-and-shells change predates the daemon; one of the two changes should absorb the other.
 archive:
+  - id: RAWR-015
+    title: Draw each transcript entry as Claude Code draws it
+    scope: app
+    outcome: >-
+      A session's prompts and tool calls read as Claude Code's own transcript rows,
+      not raw tags and JSON.
+    notes:
+      - 'Source of truth: the recovered Claude Code source, product/src/tui/repl/messages/user-text-message.tsx and the views it calls.'
+      - '2026-11-13, prompts and tool rows follow Claude Code: names, brackets, marks and the user-line kinds; assistant replies and tool results are not shown yet.'
+    completed: 2026-11-19T00:57:13
+    evidence:
+      - 'User lines, tool rows, replies and results follow Claude Code: 4b6af16, de88e00, 61f8f93 and the replies-and-results commit; the facts test proves results attach across parts.'
+    disposition: completed
+
   - id: RAWR-018
     title: Read a session's task list as Claude Code keeps it
     scope: app
