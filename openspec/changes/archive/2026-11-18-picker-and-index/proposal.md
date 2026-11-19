@@ -37,4 +37,4 @@ The daemon's pruning against Rex's listing stays there.
 1. Modules: `src/config.rs` (new), `src/index.rs`, `src/picker/*`, `src/main.rs`.
 2. Dependencies: YAML config through ctl-core's `input` feature, and `garde` for its validation derive.
 
-[supervisor]: ../rex-supervisor/proposal.md
+[supervisor]: ../../rex-supervisor/proposal.md

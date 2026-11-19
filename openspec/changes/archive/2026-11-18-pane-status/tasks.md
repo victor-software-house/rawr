@@ -1,5 +1,7 @@
 # Tasks
 
+The open tasks below ask for a maintainer preview of the picker, which shipped in v0.0.1 to v0.0.3 and was replaced by the rawr app before a preview was recorded. The change is archived as shipped with them open (operator, 2026-11-18).
+
 ## 1. Status report
 
 - [x] 1.1 `Screen::enter` writes the blocked record and `leave` clears it; proved by a unit test of both sequences in CI.

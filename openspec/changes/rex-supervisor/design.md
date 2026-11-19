@@ -103,7 +103,7 @@ rawr keeps a short history per pane, and that history is the reason it exists.
 1. Whether Rex's program status records come back empty after a server restart; a user on the Rex feedback forum reports that they do.
 2. Which Rex call or event marks a server whose sessions are restored, as decision 4 needs.
 
-[picker-and-index]: ../picker-and-index/design.md
+[picker-and-index]: ../archive/2026-11-18-picker-and-index/design.md
 [pps]: https://www.superlogical.com/rex/docs/build/program-status
 [rex-events]: https://www.superlogical.com/rex/docs/reference/events#terminal-events
 [cc-terminal]: https://code.claude.com/docs/en/terminal-config

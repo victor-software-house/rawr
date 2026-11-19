@@ -30,5 +30,5 @@ Claude Code deletes a transcript with no message after `cleanupPeriodDays`, 30 d
 4. **`AGENTS.md` rule 3 changes.**
    After a dismissal, `pick` prints the one hint line on stderr.
 
-[supervisor]: ../rex-supervisor/design.md
+[supervisor]: ../../rex-supervisor/design.md
 [cc-settings]: https://code.claude.com/docs/en/settings
