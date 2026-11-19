@@ -144,20 +144,6 @@ queue:
       - Every task in the app-daemon change is checked off with evidence.
     plan: openspec/changes/app-daemon/proposal.md
 
-  - id: RAWR-017
-    title: List sessions whose pane was closed
-    scope: app
-    outcome: >-
-      A session whose Rex pane was closed stays in the list, under Closed, and
-      resumes from it.
-    blocked_by:
-      - RAWR-013
-    acceptance:
-      - Sessions written in the last day that no open pane holds show under Closed.
-      - Going to a closed session resumes it.
-    notes:
-      - 2026-11-13, implemented on feat/tui (f8b33a1); not yet in the rawr-app change.
-
   - id: RAWR-021
     title: Draw the picker search box at the bottom
     scope: picker
@@ -193,6 +179,19 @@ queue:
     notes:
       - 2026-11-13, overlaps RAWR-006 and RAWR-008, whose install-and-shells change predates the daemon; one of the two changes should absorb the other.
 archive:
+  - id: RAWR-017
+    title: List sessions whose pane was closed
+    scope: app
+    outcome: >-
+      A session whose Rex pane was closed stays in the list, under Closed, and
+      resumes from it.
+    notes:
+      - 2026-11-13, implemented on feat/tui (f8b33a1); not yet in the rawr-app change.
+    completed: 2026-11-19T01:00:45
+    evidence:
+      - 'f8b33a1 and c0df12b: the last day of sessions no open pane holds show under Closed, read on their own thread, and going to one resumes it.'
+    disposition: completed
+
   - id: RAWR-016
     title: Stream a session's facts from its newest line backwards
     scope: app
