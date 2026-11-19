@@ -303,6 +303,7 @@ pub(crate) fn draw(frame: &mut Frame<'_>, agents: &[Agent], state: &State, offse
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
     use std::time::Duration;
 
     use ratatui::Terminal;
@@ -323,7 +324,7 @@ mod tests {
             cwd: "/srv/code/shop".to_owned(),
             title: title.to_owned(),
             idle: Some(Duration::from_hours(2)),
-            transcript: std::path::PathBuf::new(),
+            transcript: PathBuf::new(),
         }
     }
 

@@ -2,6 +2,10 @@
 //! floating window over to a copy in another tab, and resuming a session in
 //! a tab of its own. The window only asks; nothing here runs in it.
 
+use std::path::Path;
+use std::time::Duration;
+use std::{env, thread};
+
 use anyhow::{Context, Result};
 
 use super::Here;
@@ -13,9 +17,9 @@ use crate::session::Agent;
 pub(super) enum Went {
     /// The pane shows; nothing more to do.
     Shown,
-    /// A copy starts over the pane; once it has drawn, it takes over from
-    /// `old` (see [`take_over`]).
-    Handed { old: Here, target: String },
+    /// A copy starts over the pane; once it has drawn, it takes over (see
+    /// [`take_over`]).
+    Handed,
 }
 
 fn connect() -> Result<Client> {
@@ -35,13 +39,13 @@ pub(super) fn go_to(
     let window_id = client
         .view(session_id)?
         .find(block_id)
-        .map(|(_, window, _)| window.window_id.clone())
+        .map(|(_, window, _)| window.id.clone())
         .context("the pane is no longer in its session")?;
     let floating = match here {
         Some(here) => client
             .view(&here.session)?
             .find(&here.block)
-            .filter(|(_, own, layer)| layer.floats() && own.window_id != window_id)
+            .filter(|(_, own, layer)| layer.floats() && own.id != window_id)
             .map(|(_, _, layer)| layer.bounds),
         None => None,
     };
@@ -56,7 +60,7 @@ pub(super) fn go_to(
         return Ok(Went::Shown);
     };
     let size = client.terminal_size(&here.session, &here.block)?;
-    let exe = std::env::current_exe().context("find the rawr binary")?;
+    let exe = env::current_exe().context("find the rawr binary")?;
     client.float_command(
         session_id,
         &window_id,
@@ -68,10 +72,7 @@ pub(super) fn go_to(
         ],
         &size,
     )?;
-    Ok(Went::Handed {
-        old: here.clone(),
-        target: block_id.to_owned(),
-    })
+    Ok(Went::Handed)
 }
 
 /// Once the copy `new` has drawn: brings `target` into view, focuses the
@@ -84,7 +85,7 @@ pub(super) fn take_over(new: &Here, target: &str, old: &Here) -> Result<()> {
     let window_id = client
         .view(&new.session)?
         .find(&new.block)
-        .map(|(_, window, _)| window.window_id.clone())
+        .map(|(_, window, _)| window.id.clone())
         .context("the new window is no longer in its session")?;
     client.show(&old.session, &new.session, &window_id)?;
     shown(&mut client, &new.session, &new.block, &window_id)?;
@@ -103,7 +104,7 @@ pub(super) fn floats(here: &Here) -> Result<bool> {
 /// named by its title, and shows that tab.
 pub(super) fn resume_in_tab(here: &Here, agent: &Agent, session_id: Option<&str>) -> Result<()> {
     anyhow::ensure!(
-        std::path::Path::new(&agent.cwd).is_dir(),
+        Path::new(&agent.cwd).is_dir(),
         "{} no longer exists",
         agent.cwd
     );
@@ -124,7 +125,7 @@ pub(super) fn resume_in_tab(here: &Here, agent: &Agent, session_id: Option<&str>
     // a request to show a tab it has not heard of yet does nothing; asking
     // once more after that moment lands either way.
     client.show(&here.session, session, &window)?;
-    std::thread::sleep(std::time::Duration::from_millis(200));
+    thread::sleep(Duration::from_millis(200));
     client.show(&here.session, session, &window)
 }
 
@@ -143,7 +144,7 @@ fn reveal(client: &mut Client, session_id: &str, block_id: &str) -> Result<()> {
         client.unzoom(session_id, block_id)?;
     }
     if layer.minimized() {
-        client.restore_layer(session_id, &layer.layer_id)?;
+        client.restore_layer(session_id, &layer.id)?;
     }
     client.focus_block(session_id, block_id)
 }

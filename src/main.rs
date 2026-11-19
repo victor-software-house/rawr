@@ -273,7 +273,7 @@ fn find(words: &[String]) -> Result<Outcome> {
 
 /// Opens the app, and resumes the session the user chooses.
 fn open_app(view: Option<u64>) -> Result<Outcome> {
-    if !std::io::stderr().is_terminal() {
+    if !io::stderr().is_terminal() {
         eprintln!("rawr needs a terminal; rawr status --format json lists the panes");
         return Ok(Outcome::Nothing);
     }

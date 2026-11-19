@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use std::convert::Infallible;
 use std::env;
 use std::fs::{self, File};
-use std::io::{ErrorKind, Read, Seek, SeekFrom};
+use std::io::{BufRead, BufReader, ErrorKind, Read, Seek, SeekFrom};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -194,7 +194,7 @@ pub(crate) fn transcript_cwd(path: &Path) -> Option<String> {
         cwd: Option<String>,
     }
     let file = File::open(path).ok()?;
-    std::io::BufRead::lines(std::io::BufReader::new(file))
+    BufRead::lines(BufReader::new(file))
         .take(50)
         .map_while(Result::ok)
         .find_map(|line| serde_json::from_str::<Row>(&line).ok()?.cwd)

@@ -5,9 +5,11 @@
 //! cells, and records where each thing that takes a click landed, so a
 //! click never disagrees with the screen.
 
-use std::hash::{Hash, Hasher};
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::num::NonZeroU16;
-use std::time::Duration;
+use std::ops::Range;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::{env, mem};
 
 use ratatui::Frame;
 use ratatui::buffer::{Buffer, Cell, CellDiffOption};
@@ -24,6 +26,7 @@ use crate::app::state::{
     self, App, Arrangement, Button, FULL, Focus, Grip, Link, RAIL, Scroll, Tab, Target, Under,
 };
 use crate::app::{markup, theme};
+use crate::catalog;
 use crate::session::Agent;
 use crate::status::Status;
 
@@ -184,7 +187,12 @@ fn rails(frame: &mut Frame<'_>, app: &App, area: Rect, shown: Shown<'_>, hits: &
         .filter(|(column, _)| *column == Focus::Panes && a < FULL);
     if let Some((column, out)) = drawn {
         let full = app.drawer_full(column).max(a);
-        #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        #[expect(
+            clippy::as_conversions,
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "the value is rounded and floored at zero, and lies between two u16 values"
+        )]
         let wide = (f32::from(a) + (f32::from(full) - f32::from(a)) * out)
             .round()
             .max(0.0) as u16;
@@ -201,7 +209,7 @@ fn rails(frame: &mut Frame<'_>, app: &App, area: Rect, shown: Shown<'_>, hits: &
     let rects = [first, second];
     // The edge moves while the panes are drawn in full; the pane takes
     // what is left.
-    let grip = (first.width >= FULL).then(|| Grip {
+    let grip = (first.width >= FULL).then_some(Grip {
         column: Focus::Panes,
         anchor: first.x,
         rightward: true,
@@ -352,6 +360,10 @@ fn rail(
 /// A folded column's face: its key, then a glyph per row, or the
 /// session's tabs. A click on a row selects it; anywhere else focuses the
 /// column.
+#[expect(
+    clippy::too_many_lines,
+    reason = "draws a folded column's face for each of the three columns in one pass"
+)]
 fn rail_view(
     frame: &mut Frame<'_>,
     app: &App,
@@ -507,7 +519,11 @@ fn single(frame: &mut Frame<'_>, app: &App, area: Rect, shown: Shown<'_>, hits: 
         } else {
             -1.0
         };
-        #[expect(clippy::cast_possible_truncation)]
+        #[expect(
+            clippy::as_conversions,
+            clippy::cast_possible_truncation,
+            reason = "the value is rounded and lies within the slide, a few columns"
+        )]
         let by = ((1.0 - app.progress()) * SLIDE * sign).round() as i32;
         shift(frame.buffer_mut(), body, by);
     }
@@ -854,6 +870,10 @@ fn session_glyph(app: &App, agent: &Agent, held: bool) -> (&'static str, Style) 
 /// its Claude says, its sessions when it has more than one, then the
 /// session's title, the actions, and a tab of its tasks and pull requests,
 /// its prompts, its tool calls, or the files it touched.
+#[expect(
+    clippy::too_many_lines,
+    reason = "draws the pane's header, sessions and tabs in one pass over the area"
+)]
 fn pane_view(frame: &mut Frame<'_>, app: &App, area: Rect, shown: Shown<'_>, hits: &mut Hits) {
     let inner = pad(area, 1, 0);
     let width = usize::from(inner.width);
@@ -877,8 +897,7 @@ fn pane_view(frame: &mut Frame<'_>, app: &App, area: Rect, shown: Shown<'_>, hit
             pill(pane.status, app.frame),
             Span::styled(
                 pane.progress
-                    .map(|percent| format!(" {percent}%"))
-                    .unwrap_or_default(),
+                    .map_or_default(|percent| format!(" {percent}%")),
                 theme::status(pane.status),
             ),
         ];
@@ -1059,6 +1078,10 @@ fn pane_view(frame: &mut Frame<'_>, app: &App, area: Rect, shown: Shown<'_>, hit
 
 /// The pane's sessions, one line each, under a header; at most a third of
 /// `area`, scrolled to the selection. Returns the rows it took.
+#[expect(
+    clippy::too_many_lines,
+    reason = "draws the sessions header and every row under it in one pass"
+)]
 fn session_list(frame: &mut Frame<'_>, app: &App, area: Rect, pane: &Pane, hits: &mut Hits) -> u16 {
     let focused = app.focus == Focus::Sessions;
     let visible = app.visible_sessions();
@@ -1281,7 +1304,7 @@ fn tab_lines(
             let mut line = String::new();
             for part in first {
                 if !line.is_empty() && line.chars().count() + 3 + part.chars().count() > width {
-                    lines.push(Line::raw(std::mem::take(&mut line)));
+                    lines.push(Line::raw(mem::take(&mut line)));
                 }
                 if !line.is_empty() {
                     line.push_str(" · ");
@@ -1358,6 +1381,10 @@ const AGE: usize = 10;
 /// The entries of the prompts or the activity, newest first, as Claude
 /// Code draws them. A folded entry shows its first lines with how many it
 /// leaves out; a click opens it.
+#[expect(
+    clippy::too_many_lines,
+    reason = "draws every entry of a prompts or activity tab in one pass"
+)]
 fn said(lines: &mut Vec<Line<'static>>, rows: &mut Rows, app: &App, items: &[Said], width: usize) {
     let filter = app.filter(Focus::Session);
     for item in items
@@ -1367,7 +1394,7 @@ fn said(lines: &mut Vec<Line<'static>>, rows: &mut Rows, app: &App, items: &[Sai
     {
         let key = entry_key(item);
         let open = app.open.contains(&key);
-        let age = item.at.as_deref().map(when).unwrap_or_default();
+        let age = item.at.as_deref().map_or_default(when);
         let age = format!("{:>7} ", age.trim_end_matches(" ago"));
         let hovered = app.hover == Some(Target::Entry(key));
         let (mut lead, close, style) = marks(&item.kind);
@@ -1413,13 +1440,11 @@ fn said(lines: &mut Vec<Line<'static>>, rows: &mut Rows, app: &App, items: &[Sai
         let mut more = item
             .more
             .as_deref()
-            .map(|more| markup::markdown(more, width.saturating_sub(indent)))
-            .unwrap_or_default();
+            .map_or_default(|more| markup::markdown(more, width.saturating_sub(indent)));
         let mut result = item
             .result
             .as_ref()
-            .map(|outcome| result_lines(outcome, width.saturating_sub(indent + 3)))
-            .unwrap_or_default();
+            .map_or_default(|outcome| result_lines(outcome, width.saturating_sub(indent + 3)));
         let left = if open {
             0
         } else {
@@ -1453,9 +1478,7 @@ fn said(lines: &mut Vec<Line<'static>>, rows: &mut Rows, app: &App, items: &[Sai
         // open one under the pointer, and a bar down the rest of its rows.
         let marker = match (folds, open, hovered) {
             (true, false, false) => Span::styled("▸ ", theme::dim()),
-            (true, false, true) | (true, true, true) => {
-                Span::raw(if open { "▾ " } else { "▸ " })
-            }
+            (true, false | true, true) => Span::raw(if open { "▾ " } else { "▸ " }),
             _ => Span::raw("  "),
         };
         let gutter = |hovered: bool| {
@@ -1541,10 +1564,13 @@ fn result_lines(outcome: &Outcome, width: usize) -> Vec<Line<'static>> {
 /// stands for what a click there reaches.
 type Rows = Vec<(usize, Option<(usize, usize)>, Target)>;
 
+/// A file list's rows, each with its place in the full list.
+type Listed<'files> = Vec<(usize, &'files (String, usize))>;
+
 /// The key an entry is opened by: the same entry gives the same key on
 /// every frame.
 fn entry_key(item: &Said) -> u64 {
-    let mut hasher = std::hash::DefaultHasher::new();
+    let mut hasher = DefaultHasher::new();
     item.at.hash(&mut hasher);
     item.text.hash(&mut hasher);
     hasher.finish()
@@ -1655,6 +1681,10 @@ fn marks(kind: &Kind) -> (Vec<Span<'static>>, &'static str, Style) {
 /// shortened to fit, dim. A row of chips above narrows the lists to the
 /// changed or the read files and to one file type; a click on a file
 /// opens it, and on its folder narrows the tab to that folder.
+#[expect(
+    clippy::too_many_lines,
+    reason = "draws the files tab's chips and both file lists in one pass"
+)]
 fn files(
     lines: &mut Vec<Line<'static>>,
     rows: &mut Rows,
@@ -1843,10 +1873,10 @@ fn files(
 /// The files of `list` that pass `filter`, without the ones in temporary
 /// folders unless `scratch` asks for them, and how many are in those.
 fn scratch_split<'files>(
-    list: Vec<(usize, &'files (String, usize))>,
+    list: Listed<'files>,
     filter: &str,
     scratch: bool,
-) -> (Vec<(usize, &'files (String, usize))>, usize) {
+) -> (Listed<'files>, usize) {
     let list: Vec<_> = list
         .into_iter()
         .filter(|(_, (path, _))| state::passes(filter, path))
@@ -1876,7 +1906,7 @@ fn file_type(path: &str) -> String {
 
 /// The key a file type's chip is chosen by.
 pub(crate) fn type_key(kind: &str) -> u64 {
-    let mut hasher = std::hash::DefaultHasher::new();
+    let mut hasher = DefaultHasher::new();
     kind.hash(&mut hasher);
     hasher.finish()
 }
@@ -1885,7 +1915,7 @@ pub(crate) fn type_key(kind: &str) -> u64 {
 /// there, under the home folder from `~`; then its middle folders cut to
 /// their first letter, from the left, and last its start dropped.
 fn short_folder(folder: &str, cwd: &str, room: usize) -> String {
-    let home = std::env::var("HOME").unwrap_or_default();
+    let home = env::var("HOME").unwrap_or_default();
     let shown = if folder == cwd {
         ".".to_owned()
     } else if let Some(inside) = folder
@@ -1914,11 +1944,8 @@ fn short_folder(folder: &str, cwd: &str, room: usize) -> String {
             break;
         };
         let short: String = match part.strip_prefix('.') {
-            Some(rest) => format!(
-                ".{}",
-                rest.chars().next().map(String::from).unwrap_or_default()
-            ),
-            None => part.chars().next().map(String::from).unwrap_or_default(),
+            Some(rest) => format!(".{}", rest.chars().next().map_or_default(String::from)),
+            None => part.chars().next().map_or_default(String::from),
         };
         *part = short;
     }
@@ -2005,7 +2032,7 @@ fn results(frame: &mut Frame<'_>, app: &App, area: Rect, hits: &mut Hits) {
     }
     put(frame, row_at(area, area.y), Line::from(spans));
     let list = below(area, 2);
-    let term = crate::catalog::terms(&app.query).into_iter().next();
+    let term = catalog::terms(&app.query).into_iter().next();
     let rows: Vec<Row<'_>> = app
         .results
         .iter()
@@ -2229,8 +2256,7 @@ fn hyperlink(buf: &mut Buffer, (x, y): (u16, u16), text: &str, url: &str, style:
 /// How long ago `stamp`, a UTC time such as `2026-11-13T13:40:12.000Z`,
 /// was: `5m ago`. Relative, so no time zone is needed.
 fn when(stamp: &str) -> String {
-    let parse =
-        |range: std::ops::Range<usize>| stamp.get(range).and_then(|part| part.parse::<i64>().ok());
+    let parse = |range: Range<usize>| stamp.get(range).and_then(|part| part.parse::<i64>().ok());
     let (Some(year), Some(month), Some(day), Some(hour), Some(minute)) = (
         parse(0..4),
         parse(5..7),
@@ -2252,8 +2278,8 @@ fn when(stamp: &str) -> String {
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     let days = era * 146_097 + doe - 719_468;
     let then = days * 86_400 + hour * 3_600 + minute * 60;
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
         .map_or(0, |since| i64::try_from(since.as_secs()).unwrap_or(0));
     let ago = u64::try_from(now - then).unwrap_or(0);
     let age = short_age(Some(Duration::from_secs(ago)));
@@ -2265,6 +2291,11 @@ fn when(stamp: &str) -> String {
 }
 
 /// `123456` as `123k`.
+#[expect(
+    clippy::as_conversions,
+    clippy::cast_precision_loss,
+    reason = "the count is shown to one decimal of a million, so a lost low bit changes nothing"
+)]
 fn thousands(count: u64) -> String {
     match count {
         0..1_000 => count.to_string(),
@@ -2306,6 +2337,10 @@ fn whereabouts(app: &App, row: &Row<'_>) -> Where {
 /// Session rows: the status glyph, the title and its age; the line that
 /// matched, with the search word lit; then the folder, where it runs, and
 /// how many prompts it holds.
+#[expect(
+    clippy::too_many_lines,
+    reason = "draws every line of a session row in one pass"
+)]
 fn session_rows(
     frame: &mut Frame<'_>,
     app: &App,
@@ -2356,7 +2391,7 @@ fn session_rows(
         let (glyph, glyph_style, said) = match place {
             Where::Pane(pane) => {
                 let status = app.panes.get(pane).map_or(Status::Idle, |pane| pane.status);
-                let name = app.panes.get(pane).map(unique_name).unwrap_or_default();
+                let name = app.panes.get(pane).map_or_default(unique_name);
                 let mine = list == Focus::Sessions && pane == app.pane;
                 (
                     theme::glyph(status, app.frame),

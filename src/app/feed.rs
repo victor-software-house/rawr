@@ -7,12 +7,14 @@
 //! listing already holds changes nothing.
 
 use std::collections::{BTreeMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 use std::time::{Duration, SystemTime};
 
 use anyhow::Result;
 
+use crate::app::state;
+use crate::catalog;
 use crate::index::{self, BlockId, PaneIndex};
 use crate::rex::events::Event;
 use crate::rex::{Block, Client, Endpoint, Session, StatusRecord, session_is_gone};
@@ -165,13 +167,12 @@ fn list_session(
         let tab = view
             .as_ref()
             .and_then(|view| view.find(&block.id))
-            .map(|(index, window, _)| match window.label.as_deref() {
+            .map_or_default(|(index, window, _)| match window.label.as_deref() {
                 Some(label) if !label.is_empty() && !label.starts_with("Window ") => {
                     label.to_owned()
                 }
                 _ => format!("tab {index}"),
-            })
-            .unwrap_or_default();
+            });
         panes.insert(
             block.id.clone(),
             Tracked {
@@ -246,7 +247,7 @@ pub(crate) fn with_closed(open: &[Pane], closed: &[Agent]) -> Vec<Pane> {
 }
 
 /// How far back a session with no open pane is still listed.
-const CLOSED_WITHIN: Duration = Duration::from_secs(24 * 60 * 60);
+const CLOSED_WITHIN: Duration = Duration::from_hours(24);
 
 /// How often the transcripts are looked at again for closed sessions.
 pub(crate) const CLOSED_EVERY: Duration = Duration::from_secs(15);
@@ -259,8 +260,8 @@ const CLOSED_MOST: usize = 40;
 pub(crate) fn recent() -> Result<Vec<Agent>> {
     let claude = session::claude_dir()?;
     let now = SystemTime::now();
-    let mut found: Vec<(Duration, String, std::path::PathBuf)> =
-        crate::catalog::transcripts(&claude.join("projects"))?
+    let mut found: Vec<(Duration, String, PathBuf)> =
+        catalog::transcripts(&claude.join("projects"))?
             .into_iter()
             .filter_map(|(id, transcript)| {
                 let idle = now.duration_since(transcript.modified?).ok()?;
@@ -283,7 +284,7 @@ pub(crate) fn recent() -> Result<Vec<Agent>> {
                 idle: Some(idle),
                 transcript,
             };
-            (!crate::app::state::is_scratch(&agent)).then_some(agent)
+            (!state::is_scratch(&agent)).then_some(agent)
         })
         .take(CLOSED_MOST)
         .collect())

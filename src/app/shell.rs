@@ -4,10 +4,11 @@
 //! glob, is left out rather than guessed.
 
 use std::collections::HashMap;
+use std::{env, mem};
 
 /// The files `command` writes, as absolute paths, when it runs in `cwd`.
 pub(crate) fn writes(command: &str, cwd: Option<&str>) -> Vec<String> {
-    let home = std::env::var("HOME").unwrap_or_default();
+    let home = env::var("HOME").unwrap_or_default();
     let mut dir = cwd.map(str::to_owned);
     let mut values: HashMap<String, String> = HashMap::new();
     let mut found = Vec::new();
@@ -45,7 +46,7 @@ pub(crate) fn writes(command: &str, cwd: Option<&str>) -> Vec<String> {
             assigning = false;
             rest.push(word.text);
         }
-        let program = rest.first().map(String::as_str).unwrap_or_default();
+        let program = rest.first().map_or_default(String::as_str);
         let args: Vec<&str> = rest.iter().skip(1).map(String::as_str).collect();
         match program.rsplit('/').next().unwrap_or(program) {
             "cd" => {
@@ -142,7 +143,7 @@ fn expand(text: &str, values: &HashMap<String, String>) -> Option<String> {
             return None;
         }
         let value = match name.as_str() {
-            "HOME" => std::env::var("HOME").ok()?,
+            "HOME" => env::var("HOME").ok()?,
             _ => values.get(&name)?.clone(),
         };
         out.push_str(&value);
@@ -193,6 +194,10 @@ struct Token {
 /// The simple commands of `command`, each as its words with the quotes
 /// taken off, split at `;`, `&&`, `||`, `|`, `&` and line ends. A here-
 /// document's body is skipped: it is the command's input, not its words.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one pass over the command's characters, with an arm for each shell operator"
+)]
 fn commands(command: &str) -> Vec<Vec<Token>> {
     let mut out = Vec::new();
     let mut words = Vec::new();
@@ -204,7 +209,7 @@ fn commands(command: &str) -> Vec<Vec<Token>> {
         if *started {
             words.push(Token {
                 kind: Word::Text,
-                text: std::mem::take(word),
+                text: mem::take(word),
             });
             *started = false;
         }
@@ -324,12 +329,12 @@ fn commands(command: &str) -> Vec<Vec<Token>> {
             ';' | '|' | '&' | '\n' | '(' | ')' => {
                 end_word(&mut word, &mut started, &mut words);
                 if !words.is_empty() {
-                    out.push(std::mem::take(&mut words));
+                    out.push(mem::take(&mut words));
                 }
                 if c == '\n' {
                     // Each here-document's body follows the line that
                     // opened it, up to its delimiter on a line alone.
-                    for delimiter in std::mem::take(&mut heredocs) {
+                    for delimiter in mem::take(&mut heredocs) {
                         let mut line = String::new();
                         for next in chars.by_ref() {
                             if next == '\n' {

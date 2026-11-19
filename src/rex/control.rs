@@ -20,7 +20,8 @@ pub(crate) struct View {
 
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct Window {
-    pub(crate) window_id: String,
+    #[serde(rename = "window_id")]
+    pub(crate) id: String,
     #[serde(default)]
     pub(crate) label: Option<String>,
     #[serde(default)]
@@ -39,7 +40,8 @@ pub(crate) struct Layer {
     /// `minimized` for a floating layer that is not drawn.
     #[serde(default)]
     pub(crate) state: Option<String>,
-    pub(crate) layer_id: String,
+    #[serde(rename = "layer_id")]
+    pub(crate) id: String,
     #[serde(default)]
     pub(crate) blocks: Vec<LayerBlock>,
 }

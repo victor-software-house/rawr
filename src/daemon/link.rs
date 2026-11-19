@@ -1,14 +1,15 @@
 //! A window's side: connecting to the daemon, starting it when none
 //! answers or when it runs another binary, and reconnecting when it goes.
 
-use std::fs::File;
-use std::io::{BufRead, BufReader, Write};
+use std::fs::{self, File};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
 use std::process::{Command, Stdio};
-use std::sync::Mutex;
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::thread;
+use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
+use std::{env, thread};
 
 use anyhow::{Context, Result, bail};
 
@@ -106,17 +107,13 @@ fn pump(
     };
     // Requests queued while the link was down are stale.
     {
-        let held = outbox
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let held = outbox.lock().unwrap_or_else(PoisonError::into_inner);
         while held.try_recv().is_ok() {}
     }
     let (done, ended) = mpsc::channel::<()>();
     thread::scope(|scope| {
         scope.spawn(move || {
-            let outbox = outbox
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let outbox = outbox.lock().unwrap_or_else(PoisonError::into_inner);
             loop {
                 match outbox.recv_timeout(Duration::from_millis(200)) {
                     Ok(request) => {
@@ -149,7 +146,7 @@ fn pump(
             }
         };
         let _ = done.send(());
-        let _ = lines.get_ref().shutdown(std::net::Shutdown::Both);
+        let _ = lines.get_ref().shutdown(Shutdown::Both);
         why
     })
 }
@@ -188,7 +185,7 @@ fn connect(build: &Build, view: Option<u64>) -> Result<Welcomed> {
         }
     }
     let dir = folder()?;
-    std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
+    fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
     let lock = File::create(dir.join("start.lock")).context("open start.lock")?;
     lock.lock().context("wait for start.lock")?;
     // Another window may have started one while this one waited.
@@ -234,7 +231,7 @@ fn hello(mut stream: UnixStream, build: &Build, view: Option<u64>) -> Result<Hel
     let mut line = Vec::new();
     let mut byte = [0_u8];
     while byte[0] != b'\n' {
-        let read = std::io::Read::read(&mut stream, &mut byte).context("read the welcome")?;
+        let read = Read::read(&mut stream, &mut byte).context("read the welcome")?;
         if read == 0 {
             bail!("the rawr daemon closed the connection");
         }
@@ -250,13 +247,18 @@ fn hello(mut stream: UnixStream, build: &Build, view: Option<u64>) -> Result<Hel
             carry,
         })),
         FromDaemon::Refused { build } => Ok(Hello::Refused(stream, build)),
-        _ => bail!("the rawr daemon did not answer the hello"),
+        FromDaemon::Exec { .. }
+        | FromDaemon::Notice { .. }
+        | FromDaemon::Panes { .. }
+        | FromDaemon::Link { .. }
+        | FromDaemon::Facts { .. }
+        | FromDaemon::Hits { .. } => bail!("the rawr daemon did not answer the hello"),
     }
 }
 
 /// Starts `rawr daemon` and waits for its `ready` line.
 fn spawn() -> Result<()> {
-    let exe = std::env::current_exe().context("find the rawr binary")?;
+    let exe = env::current_exe().context("find the rawr binary")?;
     let mut child = Command::new(exe)
         .arg("daemon")
         .current_dir("/")

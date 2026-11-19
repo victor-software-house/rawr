@@ -14,10 +14,11 @@ mod theme;
 mod view;
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::mpsc;
-use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+use std::{env, io, thread};
 
 use anyhow::{Context, Result};
 use ratatui::crossterm::cursor::SetCursorStyle;
@@ -32,6 +33,7 @@ use crate::daemon::link::{self, Incoming};
 use crate::daemon::{FromDaemon, Reach, ToDaemon};
 use crate::picker::terminal::{Pointer, Screen};
 use crate::session::Agent;
+use crate::status::Status;
 
 /// How often the spinner turns while a pane works; the loop waits on
 /// input with no timer otherwise.
@@ -42,7 +44,7 @@ const FRAME: Duration = Duration::from_millis(16);
 
 enum Msg {
     Input(Event),
-    Daemon(Incoming),
+    Daemon(Box<Incoming>),
 }
 
 /// Opens the app and returns the session the user chose to resume, or
@@ -52,8 +54,8 @@ enum Msg {
 ///
 /// Fails when the terminal cannot be taken, drawn on or read.
 #[expect(
-    clippy::wildcard_enum_match_arm,
-    reason = "focus and paste events change nothing"
+    clippy::too_many_lines,
+    reason = "one loop that draws, waits and handles every message the window gets"
 )]
 pub(crate) fn run(view: Option<u64>) -> Result<Option<Agent>> {
     let (send, receive) = mpsc::channel();
@@ -68,11 +70,11 @@ pub(crate) fn run(view: Option<u64>) -> Result<Option<Agent>> {
     // The daemon holds the panes, the facts and the search, and acts in Rex;
     // this window holds only its view, and draws.
     let daemon = link::start(view, move |incoming| {
-        send.send(Msg::Daemon(incoming)).is_ok()
+        send.send(Msg::Daemon(Box::new(incoming))).is_ok()
     })?;
 
     markup::load();
-    let mut app = App::new(std::env::var("REX_BLOCK").ok());
+    let mut app = App::new(env::var("REX_BLOCK").ok());
     // Whether this window replaces another once it has drawn the panes.
     let mut replacing = false;
     // Whether the daemon's panes have arrived since this window connected.
@@ -82,13 +84,13 @@ pub(crate) fn run(view: Option<u64>) -> Result<Option<Agent>> {
     let mut facts: HashMap<PathBuf, Facts> = HashMap::new();
     let mut asked: Option<PathBuf> = None;
     let mut screen = Screen::enter_with(false)?;
-    execute!(std::io::stderr(), SetCursorStyle::BlinkingBar).context("set the cursor shape")?;
+    execute!(io::stderr(), SetCursorStyle::BlinkingBar).context("set the cursor shape")?;
     let mut reporter = Reporter::default();
-    let started = std::time::Instant::now();
+    let started = Instant::now();
     loop {
         // Frames come on a fixed beat while the columns move, however long
         // one takes to draw.
-        let beat = std::time::Instant::now();
+        let beat = Instant::now();
         reporter.send(own_status(&app))?;
         app.frame = usize::try_from(started.elapsed().as_millis() / SPIN.as_millis()).unwrap_or(0);
         let mut hits = view::Hits::default();
@@ -131,7 +133,7 @@ pub(crate) fn run(view: Option<u64>) -> Result<Option<Agent>> {
         app.tick();
         let away = app
             .wake_at()
-            .map(|at| at.saturating_duration_since(std::time::Instant::now()));
+            .map(|at| at.saturating_duration_since(Instant::now()));
         let wait = if app.moving() {
             // A moving focus draws at the screen's rate; a spinner at its own.
             Some(FRAME.saturating_sub(beat.elapsed()))
@@ -169,65 +171,68 @@ pub(crate) fn run(view: Option<u64>) -> Result<Option<Agent>> {
                     Action::None
                 }
                 Msg::Input(_) => Action::None,
-                Msg::Daemon(Incoming::Connected { carry }) => {
-                    // What this window asked before the link went.
-                    asked = None;
-                    panes_in = false;
-                    if let Some(carry) = carry {
-                        replacing = true;
-                        app.restore(carry);
+                Msg::Daemon(incoming) => match *incoming {
+                    Incoming::Connected { carry } => {
+                        // What this window asked before the link went.
+                        asked = None;
+                        panes_in = false;
+                        if let Some(carry) = carry {
+                            replacing = true;
+                            app.restore(carry);
+                        }
+                        if app.focus == state::Focus::Search && !app.query.trim().is_empty() {
+                            Action::Search
+                        } else {
+                            Action::None
+                        }
                     }
-                    if app.focus == state::Focus::Search && !app.query.trim().is_empty() {
-                        Action::Search
-                    } else {
+                    Incoming::Lost(why) => {
+                        app.link = Link::Stale(why);
                         Action::None
                     }
-                }
-                Msg::Daemon(Incoming::Lost(why)) => {
-                    app.link = Link::Stale(why);
-                    Action::None
-                }
-                Msg::Daemon(Incoming::Message(message)) => {
-                    match message {
-                        FromDaemon::Panes { panes } => {
-                            panes_in = true;
-                            app.set_panes(panes);
-                            // A pane's activity may have moved its transcript.
-                            asked = None;
-                        }
-                        FromDaemon::Link { state, reason } => {
-                            let why = reason.unwrap_or_default();
-                            app.link = match state {
-                                Reach::Live => Link::Live,
-                                Reach::Offline => Link::Offline(why),
-                                Reach::Stale => Link::Stale(why),
-                            };
-                        }
-                        FromDaemon::Facts { path, facts: read } => {
-                            facts.insert(path, read);
-                        }
-                        FromDaemon::Hits {
-                            id,
-                            hits,
-                            read,
-                            total,
-                        } if id == generation => {
-                            if read == 0 {
-                                app.set_results(hits);
-                                app.deep = total > 0;
-                                app.read = (0, total);
-                            } else {
-                                app.add_results(hits, (read, total));
+                    Incoming::Message(message) => {
+                        match message {
+                            FromDaemon::Panes { panes } => {
+                                panes_in = true;
+                                app.set_panes(panes);
+                                // A pane's activity may have moved its
+                                // transcript.
+                                asked = None;
                             }
+                            FromDaemon::Link { state, reason } => {
+                                let why = reason.unwrap_or_default();
+                                app.link = match state {
+                                    Reach::Live => Link::Live,
+                                    Reach::Offline => Link::Offline(why),
+                                    Reach::Stale => Link::Stale(why),
+                                };
+                            }
+                            FromDaemon::Facts { path, facts: read } => {
+                                facts.insert(path, read);
+                            }
+                            FromDaemon::Hits {
+                                id,
+                                hits,
+                                read,
+                                total,
+                            } if id == generation => {
+                                if read == 0 {
+                                    app.set_results(hits);
+                                    app.deep = total > 0;
+                                    app.read = (0, total);
+                                } else {
+                                    app.add_results(hits, (read, total));
+                                }
+                            }
+                            FromDaemon::Exec { agent } => return Ok(Some(agent)),
+                            FromDaemon::Notice { text } => app.notice = Some(text),
+                            FromDaemon::Hits { .. }
+                            | FromDaemon::Welcome { .. }
+                            | FromDaemon::Refused { .. } => {}
                         }
-                        FromDaemon::Exec { agent } => return Ok(Some(agent)),
-                        FromDaemon::Notice { text } => app.notice = Some(text),
-                        FromDaemon::Hits { .. }
-                        | FromDaemon::Welcome { .. }
-                        | FromDaemon::Refused { .. } => {}
+                        Action::None
                     }
-                    Action::None
-                }
+                },
             };
             match action {
                 Action::None => {}
@@ -245,12 +250,11 @@ pub(crate) fn run(view: Option<u64>) -> Result<Option<Agent>> {
                         })
                         .map(|(path, _)| PathBuf::from(path));
                     match (action, file) {
-                        (Action::OpenFile(_), Some(file)) => open_file(file, &mut app),
+                        (Action::OpenFile(_), Some(file)) => open_file(&file, &mut app),
                         (_, Some(file)) => {
                             let folder = file.parent().map(|folder| folder.display().to_string());
-                            app.filters[state::Focus::Session.index()] = folder
-                                .map(|folder| format!("{folder}/"))
-                                .unwrap_or_default();
+                            app.filters[state::Focus::Session.index()] =
+                                folder.map_or_default(|folder| format!("{folder}/"));
                         }
                         (_, None) => {}
                     }
@@ -293,15 +297,12 @@ pub(crate) fn run(view: Option<u64>) -> Result<Option<Agent>> {
 
 /// Opens `file` in its default app, as a click on a `file://` link would;
 /// a file gone since the session touched it says so in the search box.
-fn open_file(file: PathBuf, app: &mut App) {
+fn open_file(file: &Path, app: &mut App) {
     if !file.exists() {
         app.notice = Some(format!("{} is gone", file.display()));
         return;
     }
-    match std::process::Command::new("/usr/bin/open")
-        .arg(&file)
-        .spawn()
-    {
+    match Command::new("/usr/bin/open").arg(file).spawn() {
         Ok(mut child) => {
             // The opener ends at once; its exit is collected off the loop.
             thread::spawn(move || child.wait());
@@ -327,7 +328,7 @@ fn own_status(app: &App) -> Report {
                 .iter()
                 .filter(|pane| pane.status.needs_user())
                 .count();
-            let working = count(crate::status::Status::Working);
+            let working = count(Status::Working);
             let mut parts = vec![format!("{} panes", app.panes.len())];
             if waiting > 0 {
                 parts.push(format!("{waiting} need input"));
