@@ -18,8 +18,11 @@
 - [x] 2.3 A dismissal prints the hint line on stderr; proved by a unit test of the outcome in CI.
   - 2026-11-13: [CI run 43413195925][ci-32] on [pull request 32][pr-32] passed `mise run verify`, with the dismissal test for this task.
 - [ ] 2.4 The maintainer's preview in a Rex pane shows the new layout; the go-ahead is recorded here.
+  - 2026-11-18 (UTC): The layout shipped in [pull request 32][pr-32] and is in [v0.0.3][tag-v003]. Left unchecked: no commit message, task note or ledger row in [tasks.yaml][tasks-yaml] records the maintainer's preview or go-ahead. Not verified: whether the maintainer saw the layout in a Rex pane without recording it.
 
 [pr-27]: https://github.com/victor-software-house/rawr/pull/27
 [ci-27]: https://github.com/victor-software-house/rawr/actions/runs/43412237486
 [pr-32]: https://github.com/victor-software-house/rawr/pull/32
 [ci-32]: https://github.com/victor-software-house/rawr/actions/runs/43413195925
+[tag-v003]: https://github.com/victor-software-house/rawr/releases/tag/v0.0.3
+[tasks-yaml]: https://github.com/victor-software-house/rawr/blob/b86160589fca4451e5fdead89e0596fd4a3f44dc/tasks.yaml
