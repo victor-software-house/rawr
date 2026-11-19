@@ -144,21 +144,6 @@ queue:
       - Every task in the app-daemon change is checked off with evidence.
     plan: openspec/changes/app-daemon/proposal.md
 
-  - id: RAWR-016
-    title: Stream a session's facts from its newest line backwards
-    scope: app
-    outcome: >-
-      A selected session shows its newest prompts, tool calls and tasks at once and
-      fills in older ones as they are read.
-    blocked_by:
-      - RAWR-014
-    acceptance:
-      - The first facts of a session appear before its whole transcript is read, newest first.
-      - Selecting another session stops reading the first and reads the new one next.
-      - Search, facts and the closed list each stream in parts and yield to the newest request.
-    notes:
-      - 2026-11-13, facts stream from the newest line back in 256 KiB parts; search and the closed list still read forward.
-
   - id: RAWR-017
     title: List sessions whose pane was closed
     scope: app
@@ -208,6 +193,19 @@ queue:
     notes:
       - 2026-11-13, overlaps RAWR-006 and RAWR-008, whose install-and-shells change predates the daemon; one of the two changes should absorb the other.
 archive:
+  - id: RAWR-016
+    title: Stream a session's facts from its newest line backwards
+    scope: app
+    outcome: >-
+      A selected session shows its newest prompts, tool calls and tasks at once and
+      fills in older ones as they are read.
+    notes:
+      - 2026-11-13, facts stream from the newest line back in 256 KiB parts; search and the closed list still read forward.
+    completed: 2026-11-19T01:00:25
+    evidence:
+      - Facts stream from the newest line back (3bfe631), search scans each transcript backwards in parts and yields between them, and the closed list reads on its own thread; all 112 tests pass.
+    disposition: completed
+
   - id: RAWR-015
     title: Draw each transcript entry as Claude Code draws it
     scope: app
