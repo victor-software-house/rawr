@@ -6,6 +6,9 @@
 - [ ] 1.2 The daemon refuses a different build and shuts down on `shutdown`; proved by handshake tests in CI.
 - [ ] 1.3 `facts` and `search` run in the daemon, a newer search ends an older one, and the caches go with the last client; proved by tests in CI.
 - [ ] 1.4 A connection with 64 queued messages is closed; proved by a test in CI.
+- [ ] 1.5 A transcript is read from its newest line back and gives the same facts as a read forward; a newer `facts` ask stops the older read; proved by the `facts` tests in CI and by a daemon test for the stop.
+- [ ] 1.6 Sessions no open pane holds join `panes` within 15 seconds, without holding back a Rex event; proved by a test of `feed::with_closed` in CI.
+- [ ] 1.7 `go_to` and `resume` run in the daemon and answer `notice` or `exec`; proved by a `rex::fake` test in CI.
 
 ## 2. Client
 
