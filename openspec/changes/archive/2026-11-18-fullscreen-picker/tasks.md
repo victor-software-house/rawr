@@ -1,5 +1,7 @@
 # Tasks
 
+Task 1.1 stays open because no test covers `prune`. The other open tasks ask for a maintainer preview of the picker, which shipped in v0.0.1 to v0.0.3 and was replaced by the rawr app before a preview was recorded. The change is archived as shipped with them open (operator, 2026-11-18).
+
 ## 1. Pane index
 
 - [ ] 1.1 `record` adds the hook's session to the pane's index, keeps five, and prunes only after a full Rex listing; proved by the unit tests in `src/index.rs` passing in CI.

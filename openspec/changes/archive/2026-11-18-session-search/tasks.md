@@ -1,5 +1,7 @@
 # Tasks
 
+The open tasks below ask for a maintainer preview of the picker, which shipped in v0.0.1 to v0.0.3 and was replaced by the rawr app before a preview was recorded. The change is archived as shipped with them open (operator, 2026-11-18).
+
 ## 1. Catalog
 
 - [x] 1.1 `src/catalog.rs` reads the prompt history and one projects listing into resumable sessions with their prompts, folder, title and latest time, the title read from the transcript's ends and its `custom-title.json`, else the first prompt; proved by unit tests over fixture files in CI.

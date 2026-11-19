@@ -1,5 +1,7 @@
 # Tasks
 
+The open tasks below ask for a maintainer preview of the picker, which shipped in v0.0.1 to v0.0.3 and was replaced by the rawr app before a preview was recorded. The change is archived as shipped with them open (operator, 2026-11-18).
+
 ## 1. Config and index cleanup
 
 - [x] 1.1 `src/config.rs` reads `$XDG_CONFIG_HOME/rawr/config.yaml` through ctl-core's `input` feature, with the defaults in the config spec; proved by its unit tests in CI, including a bad value naming its file and line.

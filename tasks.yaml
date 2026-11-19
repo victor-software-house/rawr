@@ -1,33 +1,21 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/victor-software-house/qctl/main/schema/tasks.schema.json
 schema_version: 6
 prefix: RAWR
-active: RAWR-001
+active: RAWR-013
 queue:
-  - id: RAWR-001
-    title: Offer a restored pane its sessions in a full-screen picker
-    scope: picker
+  - id: RAWR-013
+    title: Open every pane and its sessions in one rawr app
+    scope: app
     outcome: >-
-      A restored Rex pane offers its Claude Code sessions in a full-screen picker
-      that takes keys and the mouse.
+      Bare rawr opens one app that lists every pane, its sessions and a search, and
+      goes to or resumes any of them.
     blocked_by: []
     acceptance:
-      - Every task in the fullscreen-picker change is checked off with evidence.
-      - The maintainer's preview in a Rex pane resumes a session by key and by click.
-    plan: openspec/changes/fullscreen-picker/proposal.md
-
-  - id: RAWR-003
-    title: Find any local Claude Code session from the picker
-    scope: picker
-    outcome: >-
-      Typing in the picker searches every resumable local Claude Code session, not
-      only the pane's own.
-    blocked_by: []
-    acceptance:
-      - Typing filters the list on each key press, matching titles, folders, prompts and session IDs.
-      - Search reads one prompt-history file, one projects listing, and the first and last 64 KiB and the custom-title.json of each listed transcript, once per load.
+      - Every task in the rawr-app change is checked off with evidence.
+      - The maintainer approves the preview before the pull request opens.
+    plan: openspec/changes/rawr-app/proposal.md
     notes:
-      - Local sessions only; older sessions are a horizon row.
-    plan: openspec/changes/session-search/proposal.md
+      - '2026-11-13, before the pull request: the rawr-app change still describes three layouts and ctrl+l, while the app now has two columns and a drawer; AGENTS.md rules 3 and 4 still name pick and say the binary starts nothing else, but the app opens files with /usr/bin/open; clippy and the test suite are not yet clean on feat/tui; the branch is one commit behind main.'
 
   - id: RAWR-006
     title: Print shell integration and add the Claude hook on request
@@ -94,18 +82,6 @@ queue:
       - In zsh with the script loaded, rawr <Tab> offers every verb
     plan: openspec/changes/shell-completion/proposal.md
 
-  - id: RAWR-011
-    title: Mark a waiting picker's pane as needing attention in Rex
-    scope: src/picker/terminal.rs
-    outcome: >-
-      While the picker is open, its Rex tab shows a needs-attention dot, cleared when
-      the picker closes
-    blocked_by: []
-    acceptance:
-      - Both OSC 7501 sequences match the protocol, proved by the unit test in CI
-      - A background tab running rawr pick shows the dot, and the dot is gone after Esc
-    plan: openspec/changes/pane-status/proposal.md
-
   - id: RAWR-012
     title: "Supervise Claude Code agents in Rex: status, drain, restart and install"
     scope: supervisor
@@ -119,20 +95,6 @@ queue:
       - Each decision in the design maps to a row with its own OpenSpec change
     plan: openspec/changes/rex-supervisor/proposal.md
 
-  - id: RAWR-013
-    title: Open every pane and its sessions in one rawr app
-    scope: app
-    outcome: >-
-      Bare rawr opens one app that lists every pane, its sessions and a search, and
-      goes to or resumes any of them.
-    blocked_by: []
-    acceptance:
-      - Every task in the rawr-app change is checked off with evidence.
-      - The maintainer approves the preview before the pull request opens.
-    plan: openspec/changes/rawr-app/proposal.md
-    notes:
-      - '2026-11-13, before the pull request: the rawr-app change still describes three layouts and ctrl+l, while the app now has two columns and a drawer; AGENTS.md rules 3 and 4 still name pick and say the binary starts nothing else, but the app opens files with /usr/bin/open; clippy and the test suite are not yet clean on feat/tui; the branch is one commit behind main.'
-
   - id: RAWR-014
     title: Serve every rawr window from one daemon
     scope: app
@@ -143,17 +105,6 @@ queue:
     acceptance:
       - Every task in the app-daemon change is checked off with evidence.
     plan: openspec/changes/app-daemon/proposal.md
-
-  - id: RAWR-021
-    title: Draw the picker search box at the bottom
-    scope: picker
-    outcome: The picker keeps its search box at the bottom with a hint of how to come back.
-    blocked_by: []
-    acceptance:
-      - Every task in the picker-and-index change is checked off with evidence.
-    plan: openspec/changes/picker-and-index/proposal.md
-    notes:
-      - '2026-11-13, shipped in #32; only the preview go-ahead, task 2.4, is open, and RAWR-013 removes pick.'
 
   - id: RAWR-022
     title: Drain Rex before a restart without cutting agents
@@ -179,6 +130,60 @@ queue:
     notes:
       - 2026-11-13, overlaps RAWR-006 and RAWR-008, whose install-and-shells change predates the daemon; one of the two changes should absorb the other.
 archive:
+  - id: RAWR-021
+    title: Draw the picker search box at the bottom
+    scope: picker
+    outcome: The picker keeps its search box at the bottom with a hint of how to come back.
+    plan: openspec/changes/archive/2026-11-18-picker-and-index/proposal.md
+    notes:
+      - '2026-11-13, shipped in #32; only the preview go-ahead, task 2.4, is open, and RAWR-013 removes pick.'
+    completed: 2026-11-19T01:25:58
+    evidence:
+      - openspec/changes/archive/2026-11-18-picker-and-index/
+      - Shipped in v0.0.1 to v0.0.3 and replaced by the rawr app (RAWR-013); archived as shipped with the preview tasks open (operator, 2026-11-18).
+    disposition: completed
+
+  - id: RAWR-011
+    title: Mark a waiting picker's pane as needing attention in Rex
+    scope: src/picker/terminal.rs
+    outcome: >-
+      While the picker is open, its Rex tab shows a needs-attention dot, cleared when
+      the picker closes
+    plan: openspec/changes/archive/2026-11-18-pane-status/proposal.md
+    completed: 2026-11-19T01:25:58
+    evidence:
+      - openspec/changes/archive/2026-11-18-pane-status/
+      - Shipped in v0.0.1 to v0.0.3 and replaced by the rawr app (RAWR-013); archived as shipped with the preview tasks open (operator, 2026-11-18).
+    disposition: completed
+
+  - id: RAWR-003
+    title: Find any local Claude Code session from the picker
+    scope: picker
+    outcome: >-
+      Typing in the picker searches every resumable local Claude Code session, not
+      only the pane's own.
+    notes:
+      - Local sessions only; older sessions are a horizon row.
+    plan: openspec/changes/archive/2026-11-18-session-search/proposal.md
+    completed: 2026-11-19T01:25:58
+    evidence:
+      - openspec/changes/archive/2026-11-18-session-search/
+      - Shipped in v0.0.1 to v0.0.3 and replaced by the rawr app (RAWR-013); archived as shipped with the preview tasks open (operator, 2026-11-18).
+    disposition: completed
+
+  - id: RAWR-001
+    title: Offer a restored pane its sessions in a full-screen picker
+    scope: picker
+    outcome: >-
+      A restored Rex pane offers its Claude Code sessions in a full-screen picker
+      that takes keys and the mouse.
+    plan: openspec/changes/archive/2026-11-18-fullscreen-picker/proposal.md
+    completed: 2026-11-19T01:25:58
+    evidence:
+      - openspec/changes/archive/2026-11-18-fullscreen-picker/
+      - Shipped in v0.0.1 to v0.0.3 and replaced by the rawr app (RAWR-013); archived as shipped with the preview tasks open (operator, 2026-11-18).
+    disposition: completed
+
   - id: RAWR-017
     title: List sessions whose pane was closed
     scope: app

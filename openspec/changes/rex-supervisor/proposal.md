@@ -40,6 +40,6 @@ The user gains:
 2. New files: `.claude-plugin/marketplace.json` and `plugin/` with the mod's TypeScript and tests.
 3. Dependencies: a WebSocket client for Rex's control protocol (design decision 6).
 
-[picker-and-index]: ../picker-and-index/proposal.md
+[picker-and-index]: ../archive/2026-11-18-picker-and-index/proposal.md
 [setup-and-tap]: ../setup-and-tap/proposal.md
 [drain-and-restart]: ../drain-and-restart/proposal.md
