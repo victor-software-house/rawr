@@ -14,7 +14,7 @@ The open tasks below ask for a maintainer preview of the picker, which shipped i
 - [x] 2.1 `picker/state.rs` opens, edits and closes the search line and keeps the selection inside the filtered rows; proved by unit tests in CI.
   - 2026-11-18 (UTC): In [src/picker/state.rs][state-rs], `slash_opens_the_search_line_and_letters_type_into_it` (open, type, backspace, clear), `escape_closes_the_search_line_then_the_picker` (close) and `a_new_list_selects_its_first_row_and_enter_needs_a_row` (a new filtered list resets the selection to the first row, and zero rows leave nothing to choose) passed in the [CI run on the merge of the stack][ci-40abc93] and in the [CI run for v0.0.1][ci-v001]. This is the `/` search line as shipped in v0.0.1; the picker redesign in a later change replaced it.
 - [x] 2.2 `picker/view.rs` draws the search line and the key line for it; proved by `TestBackend` tests in CI.
-  - 2026-11-18 (UTC): `the_search_line_replaces_the_header` in [src/picker/view.rs][view-rs] draws a search on a `TestBackend`, expects the first row to read ` / login▏  1 match` and the last row to contain `close search`. `no_match_says_so_and_offers_no_row` covers an empty result. Both passed in the [CI run on the merge of the stack][ci-40abc93] and in the [CI run for v0.0.1][ci-v001].
+  - 2026-11-18 (UTC): `the_search_line_replaces_the_header` in [src/picker/view.rs][view-rs] draws a search on a `TestBackend`, expects the first row to read `/ login▏  1 match` and the last row to contain `close search`. `no_match_says_so_and_offers_no_row` covers an empty result. Both passed in the [CI run on the merge of the stack][ci-40abc93] and in the [CI run for v0.0.1][ci-v001].
 
 ## 3. Commands and shell
 

@@ -17,5 +17,6 @@
 ## 3. One entrypoint
 
 - [ ] 3.1 Bare `rawr` opens the app, `--startup` serves the shell line, `pick` and `find` are gone; proved by CLI parse tests in CI.
-- [ ] 3.2 The `fullscreen-picker` and `session-search` changes no longer name `rawr pick` or `rawr find`; proved by `rg -n 'rawr (pick|find)' openspec/changes` matching only this change.
+- [x] 3.2 The shipped picker changes are archived, and this change's deltas remove the picker's requirements from `session-picker`, `picker-layout`, `session-search` and `config`; proved by `openspec validate --all --strict`.
+  - 2026-11-19 (UTC): the four changes were archived in ee47622, and `openspec validate --all --strict` passed with 13 of 13.
 - [ ] 3.3 `AGENTS.md` rules 1, 3 and 4 and the README name `rawr`, `rawr --startup` and the programs rawr starts; proved by review.

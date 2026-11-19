@@ -19,4 +19,3 @@
 **Reason**: The picker is gone, and with it `rawr pick` and `rawr find`, which the hint named.
 
 **Migration**: None; quitting the app prints nothing.
-
