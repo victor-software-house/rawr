@@ -3,17 +3,19 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, Write};
+use std::net::Shutdown;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::thread;
 use std::time::{Duration, Instant};
+use std::{process, thread};
 
 use anyhow::{Context, Result, bail};
+use rustix::process::setsid;
 
 use super::{Build, FromDaemon, Here, Reach, ToDaemon, actions, folder, socket};
 use crate::app::facts::{self, Reading};
@@ -37,7 +39,7 @@ struct Hub {
     state: Mutex<State>,
     /// Each transcript a window showed, as far as it is read.
     facts: Mutex<HashMap<PathBuf, Reading>>,
-    catalog: Mutex<Option<Arc<Vec<Found>>>>,
+    catalog: Mutex<Option<Arc<[Found]>>>,
 }
 
 struct State {
@@ -85,7 +87,7 @@ fn hold<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 pub(crate) fn run() -> Result<()> {
     // Out of the terminal's session, so closing the pane that started it
     // does not end it.
-    let _ = rustix::process::setsid();
+    let _ = setsid();
     let dir = folder()?;
     fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
     fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))
@@ -125,7 +127,7 @@ pub(crate) fn run() -> Result<()> {
         let hub = Arc::clone(&hub);
         thread::spawn(move || watch_closed(&hub));
     }
-    let mut out = std::io::stdout();
+    let mut out = io::stdout();
     writeln!(out, "ready").context("say ready")?;
     out.flush().context("say ready")?;
     for stream in listener.incoming() {
@@ -219,6 +221,10 @@ fn broadcast(state: &mut State, message: &FromDaemon) {
 }
 
 /// One client: the handshake, then its requests until it goes.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one loop over every request a client sends, with an arm for each"
+)]
 fn serve(hub: &Arc<Hub>, stream: UnixStream, socket: &Path) {
     let Ok(writer) = stream.try_clone() else {
         return;
@@ -341,7 +347,7 @@ fn serve(hub: &Arc<Hub>, stream: UnixStream, socket: &Path) {
                     let went = actions::go_to(here.as_ref(), &session, &block, view);
                     // A copy that started keeps the hand-off and the go-to
                     // until it takes over; anything else ends both here.
-                    if !matches!(went, Ok(actions::Went::Handed { .. })) {
+                    if !matches!(went, Ok(actions::Went::Handed)) {
                         let mut state = hold(&hub.state);
                         state.handoffs.remove(&view);
                         state.going.remove(&id);
@@ -404,12 +410,12 @@ fn write_all(mut writer: UnixStream, queue: &Receiver<FromDaemon>) {
     }
     // The queue closed: the client was dropped or left. Closing the socket
     // ends its reader too.
-    let _ = writer.shutdown(std::net::Shutdown::Both);
+    let _ = writer.shutdown(Shutdown::Both);
 }
 
 fn shut_down(socket: &Path) -> ! {
     let _ = fs::remove_file(socket);
-    std::process::exit(0);
+    process::exit(0);
 }
 
 /// A thread that runs `work` on the newest job only: jobs that a newer one
@@ -449,7 +455,7 @@ fn read_facts(
     }
     // The task list Claude Code keeps wins over the one the calls give.
     let tasks = facts::stored_tasks(&path);
-    let mut sent: Option<Instant> = None;
+    let mut sent_at: Option<Instant> = None;
     loop {
         let whole = reading.whole();
         let facts = || FromDaemon::Facts {
@@ -464,9 +470,9 @@ fn read_facts(
         };
         if whole {
             let _ = send.send(facts());
-        } else if reading.begun() && sent.is_none_or(|at| at.elapsed() >= SEND_EVERY) {
+        } else if reading.begun() && sent_at.is_none_or(|at| at.elapsed() >= SEND_EVERY) {
             let _ = send.try_send(facts());
-            sent = Some(Instant::now());
+            sent_at = Some(Instant::now());
         }
         if whole || stale() || reading.step_back(&path).is_none() {
             break;
@@ -493,7 +499,7 @@ fn search(
             else {
                 return;
             };
-            let found = Arc::new(found);
+            let found: Arc<[Found]> = Arc::from(found);
             *held = Some(Arc::clone(&found));
             found
         }

@@ -17,27 +17,21 @@ pub(crate) enum Report {
     Idle(String),
     /// Busy, with no percentage: reading Rex or every local session.
     Working(String),
-    /// Waiting for the user to choose, as the startup line's app does.
-    Question(String),
 }
 
 impl Report {
     fn sequence(&self) -> Vec<u8> {
-        let (state, kind, msg) = match self {
-            Self::Idle(msg) => ("idle", None, msg),
-            Self::Working(msg) => ("working", None, msg),
-            Self::Question(msg) => ("blocked", Some("question"), msg),
+        let (state, msg) = match self {
+            Self::Idle(msg) => ("idle", msg),
+            Self::Working(msg) => ("working", msg),
         };
-        let mut pairs = vec![
+        let pairs = [
             format!("state={state}"),
             "id=rawr".to_owned(),
             "app=rawr".to_owned(),
             format!("title={}", base64("rawr")),
             format!("msg={}", base64(&one_line(msg))),
         ];
-        if let Some(kind) = kind {
-            pairs.push(format!("kind={kind}"));
-        }
         format!("\x1b]7501;{}\x1b\\", pairs.join(":")).into_bytes()
     }
 }
@@ -91,7 +85,12 @@ fn base64(text: &str) -> String {
         let digits = chunk.len() + 1;
         for i in 0..4 {
             if i < digits {
-                out.push(char::from(ALPHABET[(n >> (18 - 6 * i) & 63) as usize]));
+                #[expect(
+                    clippy::as_conversions,
+                    reason = "the index is masked to six bits, so it fits a usize"
+                )]
+                let index = (n >> (18 - 6 * i) & 63) as usize;
+                out.push(char::from(ALPHABET[index]));
             } else {
                 out.push('=');
             }
@@ -113,17 +112,5 @@ mod tests {
         );
         assert_eq!(base64("ab"), "YWI=");
         assert_eq!(base64("abc"), "YWJj");
-    }
-
-    #[test]
-    fn a_question_is_blocked_with_its_kind() {
-        let seq = String::from_utf8(
-            Report::Question("Resume a Claude Code session".to_owned()).sequence(),
-        )
-        .expect("the report is ASCII");
-        assert_eq!(
-            seq,
-            "\x1b]7501;state=blocked:id=rawr:app=rawr:title=cmF3cg==:msg=UmVzdW1lIGEgQ2xhdWRlIENvZGUgc2Vzc2lvbg==:kind=question\x1b\\"
-        );
     }
 }

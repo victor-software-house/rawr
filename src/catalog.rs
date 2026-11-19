@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use anyhow::{Context, Result};
+use memchr::memmem;
 use serde::Deserialize;
 
 use crate::session::{Agent, sanitize, transcript_title};
@@ -263,7 +264,7 @@ pub(crate) fn hits(pane: &[Agent], catalog: &[Found], terms: &[String]) -> Vec<H
         .iter()
         .map(|found| (found.agent.session_id.as_str(), found))
         .collect();
-    let first = terms.first().map(String::as_str).unwrap_or_default();
+    let first = terms.first().map_or_default(String::as_str);
     search(pane, catalog, terms)
         .into_iter()
         .map(|agent| {
@@ -367,7 +368,7 @@ fn scan(path: &Path, terms: &[String], stale: &impl Fn() -> bool) -> Option<Stri
                 if *seen {
                     continue;
                 }
-                let Some(at) = memchr::memmem::find(&lower, term.as_bytes()) else {
+                let Some(at) = memmem::find(&lower, term.as_bytes()) else {
                     continue;
                 };
                 *seen = true;
@@ -397,7 +398,7 @@ fn scan(path: &Path, terms: &[String], stale: &impl Fn() -> bool) -> Option<Stri
 /// the loaded instructions or a reminder. Claude Code writes these keys in
 /// this case, so the raw line is checked.
 fn spoken(line: &[u8]) -> bool {
-    let has = |needle: &[u8]| memchr::memmem::find(line, needle).is_some();
+    let has = |needle: &[u8]| memmem::find(line, needle).is_some();
     (has(b"\"type\":\"user\"") || has(b"\"type\":\"assistant\""))
         && !has(b"\"isMeta\":true")
         && !has(b"<system-reminder>")

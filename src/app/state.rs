@@ -3,6 +3,8 @@
 //! state.
 
 use std::collections::HashSet;
+use std::env;
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use ratatui::crossterm::event::{
@@ -278,6 +280,10 @@ pub(crate) struct Scroll {
 }
 
 #[derive(Debug)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each flag is its own switch of the view, and each has readers across the app"
+)]
 pub(crate) struct App {
     pub(crate) panes: Vec<Pane>,
     pub(crate) pane: usize,
@@ -484,7 +490,12 @@ impl App {
         let mix = |a: u16, b: u16| -> u16 {
             let at = f32::from(a) + (f32::from(b) - f32::from(a)) * progress;
             // The result lies between two u16 values, so it fits.
-            #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            #[expect(
+                clippy::as_conversions,
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "the value is rounded and floored at zero, and lies between two u16 values"
+            )]
             let at = at.round().max(0.0) as u16;
             at
         };
@@ -500,7 +511,12 @@ impl App {
         // taking the room from the widest of the others.
         if let Some((column, out)) = self.drawn() {
             let full = self.drawer_full(column);
-            #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            #[expect(
+                clippy::as_conversions,
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "the value is rounded and floored at zero, and lies between two u16 values"
+            )]
             let wide = (f32::from(RAIL) + (f32::from(full) - f32::from(RAIL)) * out)
                 .round()
                 .max(0.0) as u16;
@@ -709,7 +725,7 @@ impl App {
         let Some(pane) = self.selected() else {
             return Vec::new();
         };
-        let (scratch, titled): (Vec<(usize, bool)>, Vec<(usize, bool)>) = pane
+        let (scratch, titled): (Listed, Listed) = pane
             .sessions
             .iter()
             .enumerate()
@@ -780,6 +796,10 @@ impl App {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one match over every key the app reads"
+    )]
     pub(crate) fn on_key(&mut self, key: KeyEvent) -> Action {
         if key.kind == KeyEventKind::Release {
             return Action::None;
@@ -836,14 +856,6 @@ impl App {
                 self.filtering = true;
                 Action::None
             }
-            KeyCode::Char('1') => {
-                self.focus_on(Focus::Panes);
-                Action::None
-            }
-            KeyCode::Char('2' | '3') => {
-                self.focus_on(Focus::Session);
-                Action::None
-            }
             KeyCode::Tab | KeyCode::BackTab => {
                 // Through the panes, the pane's sessions when it lists them,
                 // and the session.
@@ -879,11 +891,11 @@ impl App {
                 *self.scroll_mut(Focus::Session) = Scroll::default();
                 Action::None
             }
-            KeyCode::Right | KeyCode::Char('l') => {
+            KeyCode::Char('2' | '3' | 'l') | KeyCode::Right => {
                 self.focus_on(Focus::Session);
                 Action::None
             }
-            KeyCode::Left | KeyCode::Char('h') | KeyCode::Backspace => {
+            KeyCode::Char('1' | 'h') | KeyCode::Left | KeyCode::Backspace => {
                 self.focus_on(Focus::Panes);
                 Action::None
             }
@@ -915,7 +927,24 @@ impl App {
                 }
                 Focus::Session | Focus::Search => self.resume(),
             },
-            _ => Action::None,
+            KeyCode::Home
+            | KeyCode::End
+            | KeyCode::PageUp
+            | KeyCode::PageDown
+            | KeyCode::Delete
+            | KeyCode::Insert
+            | KeyCode::F(_)
+            | KeyCode::Char(_)
+            | KeyCode::Null
+            | KeyCode::CapsLock
+            | KeyCode::ScrollLock
+            | KeyCode::NumLock
+            | KeyCode::PrintScreen
+            | KeyCode::Pause
+            | KeyCode::Menu
+            | KeyCode::KeypadBegin
+            | KeyCode::Media(_)
+            | KeyCode::Modifier(_) => Action::None,
         }
     }
 
@@ -936,7 +965,27 @@ impl App {
                 self.filters[column].pop();
             }
             KeyCode::Char(c) => self.filters[column].push(c),
-            _ => {}
+            KeyCode::Left
+            | KeyCode::Right
+            | KeyCode::Home
+            | KeyCode::End
+            | KeyCode::PageUp
+            | KeyCode::PageDown
+            | KeyCode::Tab
+            | KeyCode::BackTab
+            | KeyCode::Delete
+            | KeyCode::Insert
+            | KeyCode::F(_)
+            | KeyCode::Null
+            | KeyCode::CapsLock
+            | KeyCode::ScrollLock
+            | KeyCode::NumLock
+            | KeyCode::PrintScreen
+            | KeyCode::Pause
+            | KeyCode::Menu
+            | KeyCode::KeypadBegin
+            | KeyCode::Media(_)
+            | KeyCode::Modifier(_) => {}
         }
         self.keep_visible();
         Action::None
@@ -991,7 +1040,27 @@ impl App {
                 self.query.push(c);
                 Action::Search
             }
-            _ => Action::None,
+            KeyCode::Left
+            | KeyCode::Right
+            | KeyCode::Home
+            | KeyCode::End
+            | KeyCode::PageUp
+            | KeyCode::PageDown
+            | KeyCode::Tab
+            | KeyCode::BackTab
+            | KeyCode::Delete
+            | KeyCode::Insert
+            | KeyCode::F(_)
+            | KeyCode::Null
+            | KeyCode::CapsLock
+            | KeyCode::ScrollLock
+            | KeyCode::NumLock
+            | KeyCode::PrintScreen
+            | KeyCode::Pause
+            | KeyCode::Menu
+            | KeyCode::KeypadBegin
+            | KeyCode::Media(_)
+            | KeyCode::Modifier(_) => Action::None,
         }
     }
 
@@ -1058,7 +1127,10 @@ impl App {
                 self.hover = under.target;
                 Action::None
             }
-            _ => Action::None,
+            MouseEventKind::Down(_)
+            | MouseEventKind::Drag(_)
+            | MouseEventKind::ScrollLeft
+            | MouseEventKind::ScrollRight => Action::None,
         }
     }
 
@@ -1248,7 +1320,7 @@ impl App {
 
     /// Adds the transcript matches a deep search found for the current query.
     pub(crate) fn add_results(&mut self, more: Vec<Hit>, (read, total): (usize, usize)) {
-        let known: std::collections::HashSet<String> = self
+        let known: HashSet<String> = self
             .results
             .iter()
             .map(|hit| hit.agent.session_id.clone())
@@ -1312,7 +1384,7 @@ impl App {
         // A pane that lists no sessions leaves the keys to the session.
         let focus = match self.focus {
             Focus::Sessions if !self.lists_sessions() => Focus::Session,
-            other => other,
+            Focus::Panes | Focus::Sessions | Focus::Session | Focus::Search => self.focus,
         };
         match focus {
             Focus::Panes => {
@@ -1355,6 +1427,9 @@ fn moved_in(rows: &[usize], at: usize, by: isize) -> Option<usize> {
     rows.get(next).copied()
 }
 
+/// A pane's session positions, each with whether it is a scratch one.
+type Listed = Vec<(usize, bool)>;
+
 /// A session with no title that started in a temporary folder: a scripted
 /// run, such as `claude -p`.
 pub(crate) fn is_scratch(agent: &Agent) -> bool {
@@ -1366,7 +1441,7 @@ pub(crate) fn in_temp(path: &str) -> bool {
     ["/tmp/", "/private/tmp/", "/var/folders/"]
         .iter()
         .any(|prefix| path.starts_with(prefix))
-        || std::path::Path::new(path).starts_with(std::env::temp_dir())
+        || Path::new(path).starts_with(env::temp_dir())
 }
 
 /// How long ago a pane's newest session was active; a pane with no age
@@ -1440,7 +1515,7 @@ impl App {
         self.focus = carry.focus;
         self.lead = match carry.focus {
             Focus::Search => self.back,
-            other => other,
+            Focus::Panes | Focus::Sessions | Focus::Session => carry.focus,
         };
         self.arrangement = carry.arrangement;
         self.tab = carry.tab;

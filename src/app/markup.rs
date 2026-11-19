@@ -8,6 +8,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::LazyLock;
+use std::{mem, thread};
 
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use ratatui::style::{Color, Modifier, Style};
@@ -17,22 +18,24 @@ use syntect::highlighting::{FontStyle, Theme};
 use syntect::parsing::SyntaxSet;
 use syntect::util::LinesWithEndings;
 use textwrap::core::display_width;
+use two_face::syntax;
+use two_face::theme::{self, EmbeddedThemeName};
 
 /// two-face's syntaxes: syntect's and the ones bat adds.
-static SYNTAXES: LazyLock<SyntaxSet> = LazyLock::new(two_face::syntax::extra_newlines);
+static SYNTAXES: LazyLock<SyntaxSet> = LazyLock::new(syntax::extra_newlines);
 
 /// Claude Code's code theme under a dark colour theme, Monokai Extended
 /// (`syntaxThemeName` in its `color-diff.ts`), from bat's themes.
 static THEME: LazyLock<Theme> = LazyLock::new(|| {
-    two_face::theme::extra()
-        .get(two_face::theme::EmbeddedThemeName::MonokaiExtended)
+    theme::extra()
+        .get(EmbeddedThemeName::MonokaiExtended)
         .clone()
 });
 
 /// Loads the syntaxes on a thread of their own, so the first frame that
 /// draws code does not wait for them.
 pub(crate) fn load() {
-    std::thread::spawn(|| {
+    thread::spawn(|| {
         LazyLock::force(&SYNTAXES);
         LazyLock::force(&THEME);
     });
@@ -80,9 +83,9 @@ pub(crate) fn code(text: &str, language: &str) -> Vec<Line<'static>> {
         let mut lines = HighlightLines::new(syntax, &THEME);
         LinesWithEndings::from(text)
             .map(|line| {
-                let spans = lines
-                    .highlight_line(line, syntaxes)
-                    .map(|runs| {
+                let spans = lines.highlight_line(line, syntaxes).map_or_else(
+                    |_| vec![Span::raw(line.trim_end().to_owned())],
+                    |runs| {
                         runs.into_iter()
                             .map(|(style, run)| {
                                 let run = run.trim_end_matches(['\n', '\r']).to_owned();
@@ -108,8 +111,8 @@ pub(crate) fn code(text: &str, language: &str) -> Vec<Line<'static>> {
                                 Span::styled(run, shown)
                             })
                             .collect()
-                    })
-                    .unwrap_or_else(|_| vec![Span::raw(line.trim_end().to_owned())]);
+                    },
+                );
                 Line::from(spans)
             })
             .collect()
@@ -192,7 +195,7 @@ impl Markdown {
         let mark = self.mark.take().unwrap_or_default();
         let first = format!("{indent}{mark}");
         let rest = format!("{indent}{}", " ".repeat(display_width(&mark)));
-        let runs = std::mem::take(&mut self.runs);
+        let runs = mem::take(&mut self.runs);
         let quoted = self.quotes > 0;
         for (index, mut line) in wrap(&runs, self.width.saturating_sub(display_width(&first)))
             .into_iter()
@@ -224,7 +227,18 @@ impl Markdown {
                     }
                     self.gap = true;
                 }
-                _ => {}
+                Event::Start(_)
+                | Event::End(_)
+                | Event::Code(_)
+                | Event::InlineMath(_)
+                | Event::DisplayMath(_)
+                | Event::Html(_)
+                | Event::InlineHtml(_)
+                | Event::FootnoteReference(_)
+                | Event::SoftBreak
+                | Event::HardBreak
+                | Event::Rule
+                | Event::TaskListMarker(_) => {}
             }
             return;
         }
@@ -253,24 +267,28 @@ impl Markdown {
                 self.gap = true;
             }
             Event::TaskListMarker(done) => {
-                self.mark = Some(if done { "☒ " } else { "☐ " }.to_owned())
+                self.mark = Some(if done { "☒ " } else { "☐ " }.to_owned());
             }
             Event::FootnoteReference(name) => {
-                self.runs.push(Span::styled(format!("[{name}]"), dim()))
+                self.runs.push(Span::styled(format!("[{name}]"), dim()));
             }
         }
     }
 
     fn start(&mut self, tag: Tag<'_>) {
         match tag {
-            Tag::Paragraph => self.start_block(),
+            Tag::Paragraph | Tag::Table(_) => self.start_block(),
             Tag::Heading { level, .. } => {
                 self.start_block();
                 self.push(|style| match level {
                     HeadingLevel::H1 => {
                         style.add_modifier(Modifier::BOLD | Modifier::ITALIC | Modifier::UNDERLINED)
                     }
-                    _ => style.add_modifier(Modifier::BOLD),
+                    HeadingLevel::H2
+                    | HeadingLevel::H3
+                    | HeadingLevel::H4
+                    | HeadingLevel::H5
+                    | HeadingLevel::H6 => style.add_modifier(Modifier::BOLD),
                 });
             }
             Tag::BlockQuote(_) => {
@@ -312,23 +330,27 @@ impl Markdown {
             Tag::Strong => self.push(|style| style.add_modifier(Modifier::BOLD)),
             Tag::Strikethrough => self.push(|style| style.add_modifier(Modifier::CROSSED_OUT)),
             Tag::Link { .. } => self.push(|style| style.add_modifier(Modifier::UNDERLINED)),
-            Tag::Table(_) => self.start_block(),
             Tag::TableCell => {
                 if !self.runs.is_empty() {
                     self.runs.push(Span::styled(" │ ", dim()));
                 }
             }
             Tag::TableHead => self.push(|style| style.add_modifier(Modifier::BOLD)),
-            _ => {}
+            Tag::HtmlBlock
+            | Tag::FootnoteDefinition(_)
+            | Tag::DefinitionList
+            | Tag::DefinitionListTitle
+            | Tag::DefinitionListDefinition
+            | Tag::TableRow
+            | Tag::Superscript
+            | Tag::Subscript
+            | Tag::Image { .. }
+            | Tag::MetadataBlock(_) => {}
         }
     }
 
     fn end(&mut self, tag: TagEnd) {
         match tag {
-            TagEnd::Paragraph => {
-                self.flush();
-                self.gap = true;
-            }
             TagEnd::Heading(_) | TagEnd::BlockQuote(_) => {
                 self.flush();
                 self.styles.pop();
@@ -342,7 +364,7 @@ impl Markdown {
                 self.lists.pop();
                 self.gap = true;
             }
-            TagEnd::Item => self.flush(),
+            TagEnd::Item | TagEnd::TableRow => self.flush(),
             TagEnd::Emphasis | TagEnd::Strong | TagEnd::Strikethrough | TagEnd::Link => {
                 self.styles.pop();
             }
@@ -350,12 +372,21 @@ impl Markdown {
                 self.flush();
                 self.styles.pop();
             }
-            TagEnd::TableRow => self.flush(),
-            TagEnd::Table => {
+            TagEnd::Paragraph | TagEnd::Table => {
                 self.flush();
                 self.gap = true;
             }
-            _ => {}
+            TagEnd::CodeBlock
+            | TagEnd::HtmlBlock
+            | TagEnd::FootnoteDefinition
+            | TagEnd::DefinitionList
+            | TagEnd::DefinitionListTitle
+            | TagEnd::DefinitionListDefinition
+            | TagEnd::TableCell
+            | TagEnd::Superscript
+            | TagEnd::Subscript
+            | TagEnd::Image
+            | TagEnd::MetadataBlock(_) => {}
         }
     }
 }
@@ -389,7 +420,7 @@ pub(crate) fn wrap(runs: &[Span<'static>], width: usize) -> Vec<Line<'static>> {
                     break;
                 }
                 if used > 0 && display_width(piece.trim_start()) <= width {
-                    lines.push(Line::from(std::mem::take(&mut line)));
+                    lines.push(Line::from(mem::take(&mut line)));
                     used = 0;
                     piece = piece.trim_start();
                     continue;
@@ -406,12 +437,12 @@ pub(crate) fn wrap(runs: &[Span<'static>], width: usize) -> Vec<Line<'static>> {
                     cut = at + ch.len_utf8();
                 }
                 if cut == 0 {
-                    lines.push(Line::from(std::mem::take(&mut line)));
+                    lines.push(Line::from(mem::take(&mut line)));
                     used = 0;
                     continue;
                 }
                 line.push(Span::styled(piece[..cut].to_owned(), run.style));
-                lines.push(Line::from(std::mem::take(&mut line)));
+                lines.push(Line::from(mem::take(&mut line)));
                 used = 0;
                 piece = &piece[cut..];
             }

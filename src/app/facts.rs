@@ -8,12 +8,15 @@
 //! selection back goes on where the reading stopped.
 
 use std::borrow::Cow;
-use std::fs;
+use std::fmt::Write as _;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
+use std::{env, fs, mem};
 
 use serde::Deserialize;
 use serde_json::value::RawValue;
+
+use crate::session;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, Deserialize)]
 pub(crate) struct Facts {
@@ -352,7 +355,7 @@ impl Reading {
                 continue;
             };
             let mut older = read_lines(bytes.get(start..).unwrap_or_default());
-            older.then(std::mem::take(&mut self.stretch));
+            older.then(mem::take(&mut self.stretch));
             self.stretch = older;
             self.back = from + u64::try_from(start).ok()?;
             return Some(());
@@ -386,7 +389,7 @@ impl Reading {
 /// session keeps no list there, and its transcript's calls tell instead.
 pub(crate) fn stored_tasks(transcript: &Path) -> Option<Vec<Task>> {
     let id = transcript.file_stem()?.to_str()?;
-    let root = crate::session::claude_dir().ok()?.join("tasks");
+    let root = session::claude_dir().ok()?.join("tasks");
     let mut folders = vec![
         root.join(format!("session-{}", id.get(..8)?)),
         root.join(id),
@@ -776,10 +779,10 @@ fn results(stretch: &mut Stretch, content: &RawValue) {
         let Some(call) = part.tool_use_id.as_deref() else {
             continue;
         };
-        let text = part.content.map(result_text).unwrap_or_default();
+        let text = part.content.map_or_default(result_text);
         let mut text: String = clean(&text).chars().take(RESULT_CHARS).collect();
         if text.is_empty() {
-            text = "(No output)".to_owned();
+            "(No output)".clone_into(&mut text);
         }
         let outcome = Outcome {
             text,
@@ -804,18 +807,16 @@ fn result_text(content: &RawValue) -> String {
     if let Ok(text) = serde_json::from_str::<Cow<'_, str>>(content.get()) {
         return text.into_owned();
     }
-    serde_json::from_str::<Vec<Part<'_>>>(content.get())
-        .map(|parts| {
-            parts
-                .iter()
-                .map(|part| match part.kind.as_ref() {
-                    "image" => "[Image]".to_owned(),
-                    _ => part.text.as_deref().unwrap_or_default().to_owned(),
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
-        })
-        .unwrap_or_default()
+    serde_json::from_str::<Vec<Part<'_>>>(content.get()).map_or_default(|parts| {
+        parts
+            .iter()
+            .map(|part| match part.kind.as_ref() {
+                "image" => "[Image]".to_owned(),
+                _ => part.text.as_deref().unwrap_or_default().to_owned(),
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    })
 }
 
 /// The lead Claude Code writes before a message from another session.
@@ -962,11 +963,8 @@ fn teammate_note(from: String, json: &str) -> Option<Shown> {
         "task_completed" => {
             let id = note
                 .get("taskId")
-                .map(|id| id.as_str().map_or_else(|| id.to_string(), str::to_owned))
-                .unwrap_or_default();
-            let subject = field("taskSubject")
-                .map(|subject| format!(" ({subject})"))
-                .unwrap_or_default();
+                .map_or_default(|id| id.as_str().map_or_else(|| id.to_string(), str::to_owned));
+            let subject = field("taskSubject").map_or_default(|subject| format!(" ({subject})"));
             (
                 Kind::Message { from },
                 format!("Completed task #{id}{subject}"),
@@ -978,9 +976,7 @@ fn teammate_note(from: String, json: &str) -> Option<Shown> {
             Kind::Message { from },
             format!(
                 "Shutdown request{}",
-                field("reason")
-                    .map(|reason| format!(": {reason}"))
-                    .unwrap_or_default()
+                field("reason").map_or_default(|reason| format!(": {reason}"))
             ),
             None,
         ),
@@ -988,9 +984,7 @@ fn teammate_note(from: String, json: &str) -> Option<Shown> {
             Kind::Message { from },
             format!(
                 "Shutdown rejected{}",
-                field("reason")
-                    .map(|reason| format!(": {reason}"))
-                    .unwrap_or_default()
+                field("reason").map_or_default(|reason| format!(": {reason}"))
             ),
             None,
         ),
@@ -1156,8 +1150,7 @@ fn tool_line(
     raw: Option<&RawValue>,
     cwd: Option<&str>,
 ) -> Option<Shown3> {
-    let path =
-        |path: Option<&Cow<'_, str>>| path.map(|path| shown_path(path, cwd)).unwrap_or_default();
+    let path = |path: Option<&Cow<'_, str>>| path.map_or_default(|path| shown_path(path, cwd));
     let (shown, what) = match name {
         "TodoWrite" | "TaskCreate" | "TaskUpdate" | "TaskList" | "TaskGet" => return None,
         "Bash" | "PowerShell" => (
@@ -1167,7 +1160,7 @@ fn tool_line(
         "Read" => {
             let mut what = path(input.file_path.as_ref());
             if let Some(pages) = input.pages.as_deref() {
-                what.push_str(&format!(" · pages {pages}"));
+                let _ = write!(what, " · pages {pages}");
             }
             ("Read".to_owned(), what)
         }
@@ -1187,7 +1180,7 @@ fn tool_line(
                 input.pattern.as_deref().unwrap_or_default()
             );
             if let Some(dir) = input.path.as_ref() {
-                what.push_str(&format!(", path: \"{}\"", shown_path(dir, cwd)));
+                let _ = write!(what, ", path: \"{}\"", shown_path(dir, cwd));
             }
             ("Search".to_owned(), what)
         }
@@ -1251,13 +1244,12 @@ fn fields(raw: Option<&RawValue>) -> String {
     raw.and_then(|raw| {
         serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(raw.get()).ok()
     })
-    .map(|map| {
+    .map_or_default(|map| {
         map.iter()
             .map(|(key, value)| format!("{key}: {value}"))
             .collect::<Vec<_>>()
             .join(", ")
     })
-    .unwrap_or_default()
 }
 
 /// `path` as Claude Code shows it: inside the session's folder relative to
@@ -1270,7 +1262,7 @@ fn shown_path(path: &str, cwd: Option<&str>) -> String {
     {
         return inside.to_owned();
     }
-    if let Some(home) = std::env::var_os("HOME").and_then(|home| home.into_string().ok())
+    if let Some(home) = env::var_os("HOME").and_then(|home| home.into_string().ok())
         && let Some(rest) = path.strip_prefix(&home)
         && (rest.is_empty() || rest.starts_with('/'))
     {
@@ -1281,8 +1273,11 @@ fn shown_path(path: &str, cwd: Option<&str>) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::fmt::Write as _;
+    use std::fs::{self, File, OpenOptions};
     use std::io::Write as _;
     use std::path::PathBuf;
+    use std::{env, process};
 
     use super::{Facts, KEEP, Reading, read_forward, tasks};
 
@@ -1295,44 +1290,46 @@ mod tests {
             let at = format!("2026-01-01T00:{:02}:{:02}Z", turn / 60 % 60, turn % 60);
             // The last turn's edit gets its result at the start of this one.
             if turn > 0 {
-                text.push_str(&format!(
+                let _ = write!(
+                    text,
                     r#"{{"type":"user","timestamp":"{at}","message":{{"content":[{{"type":"tool_result","tool_use_id":"e{}","content":"edited {}"}}]}}}}"#,
                     turn - 1,
                     turn - 1
-                ));
+                );
                 text.push('\n');
             }
-            text.push_str(&format!(
+            let _ = write!(
+                text,
                 r#"{{"type":"user","timestamp":"{at}","gitBranch":"b{}","message":{{"content":"prompt {turn}"}}}}"#,
                 turn / 100
-            ));
+            );
             text.push('\n');
             let long = if turn % 5 == 0 {
                 "x".repeat(300_000)
             } else {
                 String::new()
             };
-            text.push_str(&format!(
+            let _ = write!(
+                text,
                 r#"{{"type":"assistant","timestamp":"{at}","message":{{"model":"m{}","usage":{{"output_tokens":{turn}}},"content":[{{"type":"text","text":"{long}"}},{{"type":"tool_use","name":"TaskCreate","input":{{"subject":"task {turn}"}}}},{{"type":"tool_use","name":"TaskUpdate","input":{{"taskId":"{}","status":"completed"}}}},{{"type":"tool_use","id":"e{turn}","name":"Edit","input":{{"file_path":"f{}"}}}}]}}}}"#,
                 turn / 50,
                 turn / 2 + 1,
                 turn % 7
-            ));
+            );
             text.push('\n');
         }
         text
     }
 
     fn file(name: &str, text: &str) -> PathBuf {
-        let path =
-            std::env::temp_dir().join(format!("rawr-facts-{name}-{}.jsonl", std::process::id()));
-        std::fs::write(&path, text).expect("write the transcript");
+        let path = env::temp_dir().join(format!("rawr-facts-{name}-{}.jsonl", process::id()));
+        fs::write(&path, text).expect("write the transcript");
         path
     }
 
     /// The facts of the whole file, read from its first line on.
     fn forward(path: &PathBuf) -> Facts {
-        let mut opened = std::fs::File::open(path).expect("open the transcript");
+        let mut opened = File::open(path).expect("open the transcript");
         let (stretch, _) = read_forward(&mut opened, 0).expect("read the transcript");
         let mut facts = stretch.facts;
         facts.tasks = tasks(&stretch.ops);
@@ -1360,7 +1357,7 @@ mod tests {
             .filter(|said| said.result.is_some())
             .count();
         assert_eq!(results, KEEP - 1);
-        let _ = std::fs::remove_file(path);
+        let _ = fs::remove_file(path);
     }
 
     #[test]
@@ -1373,7 +1370,7 @@ mod tests {
         assert!(!facts.whole);
         assert_eq!(facts.last_prompt.as_deref(), Some("prompt 399"));
         assert_eq!(facts.model.as_deref(), Some("m7"));
-        let _ = std::fs::remove_file(path);
+        let _ = fs::remove_file(path);
     }
 
     #[test]
@@ -1385,7 +1382,7 @@ mod tests {
         let mut reading = Reading::default();
         reading.catch_up(&path).expect("catch up");
         reading.step_back(&path).expect("step back");
-        let mut more = std::fs::OpenOptions::new()
+        let mut more = OpenOptions::new()
             .append(true)
             .open(&path)
             .expect("open to append");
@@ -1396,7 +1393,7 @@ mod tests {
         }
         assert_eq!(reading.facts(), forward(&path));
         assert_eq!(reading.catch_up(&path), Some(false));
-        let _ = std::fs::remove_file(path);
+        let _ = fs::remove_file(path);
     }
 }
 

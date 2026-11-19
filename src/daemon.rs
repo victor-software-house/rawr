@@ -12,6 +12,7 @@ mod server;
 
 use std::path::PathBuf;
 use std::time::SystemTime;
+use std::{env, fs};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -21,6 +22,7 @@ use crate::app::facts::Facts;
 use crate::app::feed::Pane;
 use crate::app::state::Carry;
 use crate::catalog::Hit;
+use crate::index;
 use crate::session::Agent;
 
 /// What a client sends.
@@ -120,8 +122,8 @@ impl Here {
     /// The pane this process runs in, from Rex's environment.
     pub(crate) fn current() -> Option<Self> {
         Some(Self {
-            session: std::env::var("REX_SESSION").ok()?,
-            block: std::env::var("REX_BLOCK").ok()?,
+            session: env::var("REX_SESSION").ok()?,
+            block: env::var("REX_BLOCK").ok()?,
         })
     }
 }
@@ -148,8 +150,8 @@ impl Build {
     ///
     /// Fails when the running binary cannot be found or read.
     pub(crate) fn current() -> Result<Self> {
-        let path = std::env::current_exe().context("find the rawr binary")?;
-        let meta = std::fs::metadata(&path).context("read the rawr binary")?;
+        let path = env::current_exe().context("find the rawr binary")?;
+        let meta = fs::metadata(&path).context("read the rawr binary")?;
         Ok(Self {
             path,
             size: meta.len(),
@@ -160,7 +162,7 @@ impl Build {
 
 /// The folder that holds the socket and the locks.
 fn folder() -> Result<PathBuf> {
-    crate::index::state_dir()
+    index::state_dir()
 }
 
 fn socket() -> Result<PathBuf> {
