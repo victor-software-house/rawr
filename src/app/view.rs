@@ -767,7 +767,9 @@ fn empty_text(app: &App) -> &'static str {
     match app.link {
         Link::Connecting => "Reading Rex…",
         Link::Offline(_) => "Rex is not running here",
-        Link::Live | Link::Stale(_) => "No pane has a Claude session yet",
+        Link::Live | Link::Stale(_) => {
+            "No pane has a Claude session yet; rawr setup claude records them"
+        }
     }
 }
 

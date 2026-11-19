@@ -10,6 +10,7 @@ mod markup;
 mod report;
 mod shell;
 pub(crate) mod state;
+mod terminal;
 mod theme;
 mod view;
 
@@ -26,12 +27,12 @@ use ratatui::crossterm::event::{self, Event};
 use ratatui::crossterm::execute;
 use report::{Report, Reporter};
 use state::{Action, App, Link};
+use terminal::{Pointer, Screen};
 
 use crate::app::facts::Facts;
 use crate::catalog;
 use crate::daemon::link::{self, Incoming};
 use crate::daemon::{FromDaemon, Reach, ToDaemon};
-use crate::picker::terminal::{Pointer, Screen};
 use crate::session::Agent;
 use crate::status::Status;
 
@@ -48,7 +49,8 @@ enum Msg {
 }
 
 /// Opens the app and returns the session the user chose to resume, or
-/// `None` when the user quit.
+/// `None` when the user quit. `select` names the pane, by block ID, to
+/// select once the daemon lists it.
 ///
 /// # Errors
 ///
@@ -57,7 +59,7 @@ enum Msg {
     clippy::too_many_lines,
     reason = "one loop that draws, waits and handles every message the window gets"
 )]
-pub(crate) fn run(view: Option<u64>) -> Result<Option<Agent>> {
+pub(crate) fn run(view: Option<u64>, select: Option<String>) -> Result<Option<Agent>> {
     let (send, receive) = mpsc::channel();
     let input = send.clone();
     thread::spawn(move || {
@@ -75,6 +77,7 @@ pub(crate) fn run(view: Option<u64>) -> Result<Option<Agent>> {
 
     markup::load();
     let mut app = App::new(env::var("REX_BLOCK").ok());
+    app.want = select;
     // Whether this window replaces another once it has drawn the panes.
     let mut replacing = false;
     // Whether the daemon's panes have arrived since this window connected.
@@ -83,7 +86,7 @@ pub(crate) fn run(view: Option<u64>) -> Result<Option<Agent>> {
     let mut generation: u64 = 0;
     let mut facts: HashMap<PathBuf, Facts> = HashMap::new();
     let mut asked: Option<PathBuf> = None;
-    let mut screen = Screen::enter_with(false)?;
+    let mut screen = Screen::enter()?;
     execute!(io::stderr(), SetCursorStyle::BlinkingBar).context("set the cursor shape")?;
     let mut reporter = Reporter::default();
     let started = Instant::now();
