@@ -101,7 +101,7 @@ Going to a pane switches the Rex app to it, which needs Remote Control turned on
 
 ### Shell startup
 
-These lines open rawr once in each restored pane, before the first prompt.
+These lines open rawr at startup in each restored pane.
 For zsh, in `~/.zshrc`:
 
 ```zsh
