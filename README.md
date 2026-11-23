@@ -49,8 +49,8 @@ Like `less` or `vim`, rawr takes over the terminal and puts back what was on scr
 
 ### Panes
 
-rawr lists every pane with a Claude session and shows what Claude is doing there, live.
-Panes are sorted by status, and sessions from the past day whose pane is gone come last.
+rawr lists every pane with a Claude session, grouped by what Claude is doing there.
+The list updates live.
 
 | Mark | Status | Meaning |
 | :-: | --- | --- |
@@ -60,6 +60,7 @@ Panes are sorted by status, and sessions from the past day whose pane is gone co
 | `⠋` | **Working** | Claude, or one of its background tasks, is running |
 | `○` | **Idle** | Claude is open and waiting for a prompt |
 | `·` | **Stopped** | No Claude runs in the pane; its sessions can be resumed |
+| `·` | **Closed** | The pane is gone; its sessions from the past day can still be resumed |
 
 ### Sessions
 
