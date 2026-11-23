@@ -1,5 +1,8 @@
 # rawr
 
+![rawr: Rex Agents, wake and resume](assets/rawr-banner-light.svg#gh-light-mode-only)
+![rawr: Rex Agents, wake and resume](assets/rawr-banner-dark.svg#gh-dark-mode-only)
+
 Rex Agents: Wake and Resume.
 Bring Claude Code agents back into their panes after a [Rex] server restart.
 
