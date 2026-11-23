@@ -15,6 +15,10 @@ Pick one to resume it, or quit for a plain shell.
 
 rawr works with Claude Code for now; support for other coding agents is planned.
 
+![rawr lists Claude sessions by status, opens one session's conversation and activity, then searches every session](assets/rawr-demo.svg)
+
+The sessions in this demo are made up.
+
 ## Get started
 
 1. Install rawr from the [releases], for macOS on Apple silicon or Linux on x64:
