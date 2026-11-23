@@ -3,17 +3,10 @@
 ![rawr: Rex Agents, wake and resume](assets/rawr-banner-light.svg#gh-light-mode-only)
 ![rawr: Rex Agents, wake and resume](assets/rawr-banner-dark.svg#gh-dark-mode-only)
 
-<p align="center">
-  <b>Rex Agents: Wake and Resume.</b><br>
-  Bring Claude Code agents back into their panes after a <a href="https://www.superlogical.com/rex">Rex</a> server restart.
-</p>
+**Rex Agents: Wake and Resume.**
+Bring Claude Code agents back into their panes after a [Rex] server restart.
 
-<p align="center">
-  <a href="#get-started">Get started</a> ·
-  <a href="#the-app">The app</a> ·
-  <a href="#how-it-works">How it works</a> ·
-  <a href="#shell-integration">Shell integration</a>
-</p>
+[Get started](#get-started) · [The app](#the-app) · [How it works](#how-it-works) · [Shell integration](#shell-integration)
 
 Rex restores sessions, tabs and panes after a restart, but each pane comes back as a fresh shell.
 `rawr` remembers which Claude Code sessions ran in each pane, and offers them again in a full-screen app.
@@ -134,11 +127,5 @@ Load completion at shell start: `source <(rawr completion zsh)` in `~/.zshrc` af
 
 MIT
 
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/rawr-icon-dark.svg">
-    <img src="assets/rawr-icon-light.svg" alt="The rawr icon: a small dinosaur asleep in a terminal window" width="96">
-  </picture>
-</p>
-
 [releases]: https://github.com/victor-software-house/rawr/releases
+[Rex]: https://www.superlogical.com/rex
