@@ -47,8 +47,10 @@ Then type `rawr` in any pane.
 
 Like `less` or `vim`, rawr takes over the terminal and puts back what was on screen when you quit.
 
-The app lists every pane with a Claude session and shows what Claude is doing there, live.
-Panes are grouped by status, in this order:
+### Panes
+
+rawr lists every pane with a Claude session and shows what Claude is doing there, live.
+Panes are sorted by status, and sessions from the past day whose pane is gone come last.
 
 | Mark | Status | Meaning |
 | :-: | --- | --- |
@@ -59,21 +61,23 @@ Panes are grouped by status, in this order:
 | `○` | **Idle** | Claude is open and waiting for a prompt |
 | `·` | **Stopped** | No Claude runs in the pane; its sessions can be resumed |
 
-Sessions from the past day whose pane is gone come last.
+### Sessions
 
 Select a pane to see the sessions that ran there.
-Each session has four tabs:
+Entries show a few lines and a `+N` count of the rest; click one to expand it, with Markdown rendered and code highlighted.
 
 | Tab | Shows |
 | --- | --- |
-| Overview | Model, branch, prompt and reply counts, tokens out, sub-agents, start and last activity, task list |
+| Overview | Model, branch, prompts and replies, tokens out, sub-agents, times, tasks |
 | Conversation | What you typed and what Claude answered, newest first |
 | Activity | Every entry, tool calls and results included |
 | Files | Files the session changed and read. Click a file to open it, or a folder to filter the list |
 
-Each entry shows a few lines and a `+N` count of the rest.
-Click an entry to expand it.
-Expanded entries render Markdown and highlight code.
+Going to a pane needs Remote Control turned on in the Rex app.
+A resume runs `claude --resume` in the pane, or in a new tab when rawr runs in a floating window.
+Search matches all the words you type, in any case, against each session's prompts, title, folder and ID.
+
+### Keys
 
 | Action | Keys | Mouse |
 | --- | --- | --- |
@@ -87,13 +91,6 @@ Expanded entries render Markdown and highlight code.
 | One column or two | `Ctrl+L` | |
 | Show the keys | `?` | |
 | Back, or quit from the pane list | `Esc`, `q`, `Ctrl+C` | |
-
-Going to a pane needs Remote Control turned on in the Rex app.
-In a tiled pane, a resume runs `claude --resume` right there.
-From a floating window, the session resumes in a new tab.
-
-Search matches all the words you type, in any case.
-It looks at each session's prompts, title, folder and ID.
 
 ## Commands
 
