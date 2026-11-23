@@ -43,8 +43,7 @@ Then type `rawr` in any pane.
 
 ## The app
 
-`rawr` opens the app full screen.
-When you quit, the pane's output is still there.
+Like `less` or `vim`, rawr takes over the terminal and puts back what was on screen when you quit.
 
 The app lists every pane with a Claude session and shows what Claude is doing there, live.
 Panes that need you come first, then Failed, Done, Working, Idle and Stopped.
