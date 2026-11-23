@@ -6,11 +6,11 @@
 **Rex Agents: Wake and Resume.**
 Bring Claude Code agents back into their panes after a [Rex] server restart.
 
-[Get started](#get-started) · [The app](#the-app) · [How it works](#how-it-works) · [Shell integration](#shell-integration)
+[Get started](#get-started) · [The app](#the-app) · [Commands](#commands) · [Shell integration](#shell-integration)
 
 Rex restores sessions, tabs and panes after a restart, but each pane comes back as a fresh shell.
 `rawr` remembers which Claude Code sessions ran in each pane, and offers them again in a full-screen app.
-Choosing one resumes it in that pane; quitting the app leaves a plain shell.
+Pick one and it resumes in that pane; quit the app and you get a plain shell.
 
 ## Get started
 
@@ -22,20 +22,21 @@ Choosing one resumes it in that pane; quitting the app leaves a plain shell.
 
    Or build it with Cargo: `cargo install --git https://github.com/victor-software-house/rawr --locked`.
 
-2. Record each Claude Code session under its pane, once:
+2. Add the Claude Code hook that records each session under its pane:
 
    ```sh
    rawr setup claude
    ```
 
-3. Offer a restored pane its sessions when its shell starts, with the line in [Shell integration](#shell-integration).
+3. Add the shell line from [Shell integration](#shell-integration), so a restored pane offers its sessions when its shell starts.
 
 Then type `rawr` in any pane.
 
 ## The app
 
 Bare `rawr` opens the app on the alternate screen, so the pane's output is back unchanged when it closes.
-It lists every Rex pane that has a Claude session and what its Claude is doing, kept current from Rex's events.
+It lists every Rex pane that has a Claude session and what its Claude is doing, and updates as Rex reports changes.
+
 Panes that need you come first, then Failed, Done, Working, Idle and Stopped, then the sessions of the last day whose pane is gone.
 
 The selected pane shows its sessions, and the session shown has four tabs:
@@ -47,7 +48,8 @@ The selected pane shows its sessions, and the session shown has four tabs:
 | Activity | Everything, with each tool call and its result |
 | Files | The files the session changed and read; a click opens a file in its default app, and a click on its folder narrows the list |
 
-Each entry is folded to a few lines with a `+N` count of the rest; a click opens it, with its Markdown drawn and its code highlighted.
+The app folds each entry to a few lines, with a `+N` count of the lines left out.
+A click opens the entry and draws its Markdown, with code highlighted.
 
 | Action | Keys | Mouse |
 | --- | --- | --- |
@@ -63,11 +65,12 @@ Each entry is folded to a few lines with a `+N` count of the rest; a click opens
 | Back to the panes; quit from there | `Esc`, `q`, `Ctrl+C` | |
 
 Going to a pane asks the Rex app to show it, which needs Remote Control turned on in the app.
-A resume in a pane tiled in its tab becomes `claude --resume` there; from a floating window it opens in a new tab of the pane's session.
+A resume from a pane tiled in its tab runs `claude --resume` in that pane.
+From a floating window, the resume opens in a new tab of the pane's session.
 
 Search matches every word typed, ignoring case, against the prompts typed in a session, its title, its folder and its ID.
 
-## How it works
+## Commands
 
 Rex keeps a pane's block ID across a server restart, so the block ID is the pane's identity.
 
@@ -75,7 +78,7 @@ Rex keeps a pane's block ID across a server restart, so the block ID is the pane
 | --- | --- | --- |
 | `rawr` | You, from any shell | Opens the app |
 | `rawr --startup` | The shell, when it starts in a Rex pane | Opens the app on the pane's sessions when one can be resumed; otherwise prints nothing and exits 0 |
-| `rawr record` | A Claude Code `SessionStart` hook | Adds the session to the pane's index, then deletes the indexes of panes the Rex server no longer lists |
+| `rawr record` | A Claude Code `SessionStart` hook | Adds the session to the pane's index, then deletes the index of each pane the Rex server does not list |
 | `rawr daemon` | The first `rawr` window | Follows Rex and reads transcripts and the search catalog for every window |
 | `rawr status [--format json]` | You, from any shell | Lists each Rex pane that has a session with its newest session's title and folder, and what its Claude is doing |
 | `rawr setup claude [--dry-run]` | You, once | Adds the `SessionStart` hook that runs `rawr record` to Claude Code's user settings |
