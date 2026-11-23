@@ -46,8 +46,18 @@ Then type `rawr` in any pane.
 Like `less` or `vim`, rawr takes over the terminal and puts back what was on screen when you quit.
 
 The app lists every pane with a Claude session and shows what Claude is doing there, live.
-Panes that need you come first, then Failed, Done, Working, Idle and Stopped.
-Last come sessions from the past day whose pane is gone.
+Panes are grouped by status, in this order:
+
+| Mark | Status | Meaning |
+| :-: | --- | --- |
+| ▲ ? ◆ | **Needs you** | Claude waits for a permission, an answer, input or a login |
+| ✘ | **Failed** | Claude stopped on an error |
+| ✔ | **Done** | Claude finished its turn |
+| ⠋ | **Working** | Claude, or one of its background tasks, is running |
+| ○ | **Idle** | Claude is open and waiting for a prompt |
+| · | **Stopped** | No Claude runs in the pane; its sessions can be resumed |
+
+Sessions from the past day whose pane is gone come last.
 
 Select a pane to see the sessions that ran there.
 Each session has four tabs:
