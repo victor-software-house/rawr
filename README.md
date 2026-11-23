@@ -76,7 +76,7 @@ Rex keeps a pane's block ID across a server restart, so the block ID is the pane
 | `rawr` | You, from any shell | Opens the app |
 | `rawr --startup` | The shell, when it starts in a Rex pane | Opens the app on the pane's sessions when one can be resumed; otherwise prints nothing and exits 0 |
 | `rawr record` | A Claude Code `SessionStart` hook | Adds the session to the pane's index, then deletes the indexes of panes the Rex server no longer lists |
-| `rawr daemon` | The first `rawr` window, or `brew services` | Follows Rex and reads transcripts and the search catalog for every window |
+| `rawr daemon` | The first `rawr` window | Follows Rex and reads transcripts and the search catalog for every window |
 | `rawr status [--format json]` | You, from any shell | Lists each Rex pane that has a session with its newest session's title and folder, and what its Claude is doing |
 | `rawr setup claude [--dry-run]` | You, once | Adds the `SessionStart` hook that runs `rawr record` to Claude Code's user settings |
 | `rawr completion bash\|zsh\|fish` | Your shell, at start | Prints the shell's completion script; Tab then completes from the installed binary |
