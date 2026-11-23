@@ -25,3 +25,8 @@ extend-enable = ["MD051", "MD052", "MD057"]
 ".changeset/*.md" = ["MD041"]
 # OpenSpec delta specs start with their operation heading instead of a title.
 "openspec/changes/*/specs/**/spec.md" = ["MD041"]
+
+# The README folds alternative and reference blocks, which only <details>
+# with a <summary> can do on GitHub.
+[MD033]
+allowed-elements = ["details", "summary"]

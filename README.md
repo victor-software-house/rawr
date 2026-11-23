@@ -20,7 +20,14 @@ Pick a session to resume it in that pane, or quit the app for a plain shell.
    mise use -g github:victor-software-house/rawr
    ```
 
-   Or build rawr with Cargo: `cargo install --git https://github.com/victor-software-house/rawr --locked`.
+   <details>
+   <summary>Build with Cargo instead</summary>
+
+   ```sh
+   cargo install --git https://github.com/victor-software-house/rawr --locked
+   ```
+
+   </details>
 
 2. Add the Claude Code hook that records which pane each session runs in:
 
@@ -95,7 +102,7 @@ The daemon reads each transcript backwards from the newest line, so the latest e
 On a resume, `rawr` restores the terminal and becomes `claude --resume` in the session's folder; when Claude Code exits, the pane's shell prompt is back.
 It needs no wrapper.
 To open rawr once in each restored pane, before the first prompt, add the lines for your shell.
-In zsh, in `~/.zshrc`:
+For zsh, in `~/.zshrc`:
 
 ```zsh
 if [[ -n $REX_BLOCK ]] && (( $+commands[rawr] )); then
@@ -108,7 +115,8 @@ if [[ -n $REX_BLOCK ]] && (( $+commands[rawr] )); then
 fi
 ```
 
-In bash, in `~/.bashrc`:
+<details>
+<summary>bash, in ~/.bashrc</summary>
 
 ```bash
 if [[ -n $REX_BLOCK ]] && command -v rawr >/dev/null; then
@@ -121,7 +129,10 @@ if [[ -n $REX_BLOCK ]] && command -v rawr >/dev/null; then
 fi
 ```
 
-In fish, in `~/.config/fish/config.fish`:
+</details>
+
+<details>
+<summary>fish, in ~/.config/fish/config.fish</summary>
 
 ```fish
 if set -q REX_BLOCK; and type -q rawr
@@ -132,12 +143,16 @@ if set -q REX_BLOCK; and type -q rawr
 end
 ```
 
+</details>
+
 `record` runs from a Claude Code `SessionStart` hook.
 `rawr setup claude` adds the hook to `~/.claude/settings.json`, or to `$CLAUDE_CONFIG_DIR/settings.json`, and leaves every other setting in place and in order.
 `--dry-run` reports what the command would change and changes nothing.
 A second run reports the hook is there and changes nothing.
 No other rawr command edits that file.
-The hook `rawr setup claude` adds:
+
+<details>
+<summary>The hook rawr setup claude adds</summary>
 
 ```json
 {
@@ -152,6 +167,8 @@ The hook `rawr setup claude` adds:
   }
 }
 ```
+
+</details>
 
 Load completion at shell start: `source <(rawr completion zsh)` in `~/.zshrc` after `compinit`, `source <(rawr completion bash)` in `~/.bashrc`, or `rawr completion fish | source` in `~/.config/fish/config.fish`.
 
