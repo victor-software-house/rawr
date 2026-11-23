@@ -3,6 +3,8 @@
 ![rawr: Rex Agents, wake and resume](assets/rawr-banner-light.svg#gh-light-mode-only)
 ![rawr: Rex Agents, wake and resume](assets/rawr-banner-dark.svg#gh-dark-mode-only)
 
+[![Release][release-badge]][releases] [![CI][ci-badge]][ci] [![License: MIT][license-badge]](LICENSE)
+
 **Rex Agents: Wake and Resume.**
 Bring Claude Code agents back into their panes after a [Rex] server restart.
 
@@ -178,3 +180,7 @@ MIT
 
 [releases]: https://github.com/victor-software-house/rawr/releases
 [Rex]: https://www.superlogical.com/rex
+[release-badge]: https://img.shields.io/github/v/release/victor-software-house/rawr
+[ci-badge]: https://github.com/victor-software-house/rawr/actions/workflows/ci.yml/badge.svg?branch=main
+[ci]: https://github.com/victor-software-house/rawr/actions/workflows/ci.yml
+[license-badge]: https://img.shields.io/github/license/victor-software-house/rawr
