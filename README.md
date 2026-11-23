@@ -1,9 +1,7 @@
-<h1 align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/rawr-banner-dark.svg">
-    <img src="assets/rawr-banner-light.svg" alt="rawr: Rex Agents, wake and resume" width="887">
-  </picture>
-</h1>
+# rawr
+
+![rawr: Rex Agents, wake and resume](assets/rawr-banner-light.svg#gh-light-mode-only)
+![rawr: Rex Agents, wake and resume](assets/rawr-banner-dark.svg#gh-dark-mode-only)
 
 <p align="center">
   <b>Rex Agents: Wake and Resume.</b><br>
