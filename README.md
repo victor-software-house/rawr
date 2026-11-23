@@ -181,7 +181,7 @@ rawr completion fish | source    # ~/.config/fish/config.fish
 ## Commands
 
 | Command | Run by | Does |
-| --- | --- | --- |
+| --- | :-: | --- |
 | `rawr` | You | Opens the app |
 | `rawr --startup` | Your shell, at start | Opens the app if the pane has a session to resume; otherwise exits quietly |
 | `rawr record` | A Claude Code `SessionStart` hook | Adds the session to the pane's index and removes the indexes of closed panes |
