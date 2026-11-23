@@ -140,6 +140,27 @@ queue:
     notes:
       - 2026-11-23, rawr status at about 80 columns showed the Title column as a single ellipsis while Folder wrapped.
       - Check first whether the ctl-core Table pinned in Cargo.toml (=0.7.4) can wrap cells; the local ctl-core checkout is at 0.6.13, so this is unverified.
+
+  - id: RAWR-028
+    title: Enter on a search hit opens the session instead of resuming it
+    scope: app
+    outcome: Choosing a search hit never starts Claude by surprise.
+    blocked_by: []
+    acceptance:
+      - Enter on a search hit closes the search and shows that session in the session detail, and r resumes it from there.
+      - A test covers Enter on a hit whose session has no pane.
+    notes:
+      - 2026-11-23, open_hit in src/app/state.rs resumes a hit with no running pane at once; the maintainer asked for no immediate resume.
+
+  - id: RAWR-029
+    title: Show readable text for search hits inside tool calls
+    scope: app
+    outcome: Every search snippet reads as text a person wrote or Claude printed.
+    blocked_by: []
+    acceptance:
+      - A hit inside a tool call input or result shows that text, never transcript JSON.
+    notes:
+      - 2026-11-23, searching rate showed a snippet with raw JSON keys such as usage and input_tokens for a hit in a Bash tool call.
 archive:
   - id: RAWR-021
     title: Draw the picker search box at the bottom
