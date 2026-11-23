@@ -13,6 +13,8 @@ Rex restores your panes after a restart, but each one comes back as a fresh shel
 `rawr` remembers which Claude Code sessions ran in each pane.
 Pick one to resume it, or quit for a plain shell.
 
+rawr works with Claude Code for now; support for other coding agents is planned.
+
 ## Get started
 
 1. Install rawr from the [releases], for macOS on Apple silicon or Linux on x64:
