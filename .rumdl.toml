@@ -26,7 +26,8 @@ extend-enable = ["MD051", "MD052", "MD057"]
 # OpenSpec delta specs start with their operation heading instead of a title.
 "openspec/changes/*/specs/**/spec.md" = ["MD041"]
 
-# The README's banner switches with GitHub's light and dark themes, which
-# only a <picture> with a prefers-color-scheme <source> can do.
+# The README's banner and icon follow GitHub's light and dark themes, which
+# only a <picture> with a prefers-color-scheme <source> can do. Its centred
+# lines need <p align>, inside which Markdown does not render.
 [MD033]
-allowed-elements = ["h1", "picture", "source", "img"]
+allowed-elements = ["h1", "p", "a", "b", "br", "picture", "source", "img"]

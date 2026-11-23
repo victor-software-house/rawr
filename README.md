@@ -5,12 +5,41 @@
   </picture>
 </h1>
 
-Rex Agents: Wake and Resume.
-Bring Claude Code agents back into their panes after a [Rex] server restart.
+<p align="center">
+  <b>Rex Agents: Wake and Resume.</b><br>
+  Bring Claude Code agents back into their panes after a <a href="https://www.superlogical.com/rex">Rex</a> server restart.
+</p>
+
+<p align="center">
+  <a href="#get-started">Get started</a> ·
+  <a href="#the-app">The app</a> ·
+  <a href="#how-it-works">How it works</a> ·
+  <a href="#shell-integration">Shell integration</a>
+</p>
 
 Rex restores sessions, tabs and panes after a restart, but each pane comes back as a fresh shell.
 `rawr` remembers which Claude Code sessions ran in each pane, and offers them again in a full-screen app.
 Choosing one resumes it in that pane; quitting the app leaves a plain shell.
+
+## Get started
+
+1. Install the binary from the [releases], built for macOS on Apple silicon and Linux on x64:
+
+   ```sh
+   mise use -g github:victor-software-house/rawr
+   ```
+
+   Or build it with Cargo: `cargo install --git https://github.com/victor-software-house/rawr --locked`.
+
+2. Record each Claude Code session under its pane, once:
+
+   ```sh
+   rawr setup claude
+   ```
+
+3. Offer a restored pane its sessions when its shell starts, with the line in [Shell integration](#shell-integration).
+
+Then type `rawr` in any pane.
 
 ## The app
 
@@ -107,4 +136,11 @@ Load completion at shell start: `source <(rawr completion zsh)` in `~/.zshrc` af
 
 MIT
 
-[Rex]: https://www.superlogical.com/rex
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/rawr-icon-dark.svg">
+    <img src="assets/rawr-icon-light.svg" alt="The rawr icon: a small dinosaur asleep in a terminal window" width="96">
+  </picture>
+</p>
+
+[releases]: https://github.com/victor-software-house/rawr/releases
