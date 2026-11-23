@@ -129,6 +129,17 @@ queue:
     plan: openspec/changes/setup-and-tap/proposal.md
     notes:
       - 2026-11-13, overlaps RAWR-006 and RAWR-008, whose install-and-shells change predates the daemon; one of the two changes should absorb the other.
+
+  - id: RAWR-027
+    title: Wrap rawr status cells instead of hiding a column
+    scope: cli
+    outcome: rawr status stays readable in a narrow terminal.
+    blocked_by: []
+    acceptance:
+      - In an 80-column terminal, rawr status shows every column, and long cells wrap inside them.
+    notes:
+      - 2026-11-23, rawr status at about 80 columns showed the Title column as a single ellipsis while Folder wrapped.
+      - Check first whether the ctl-core Table pinned in Cargo.toml (=0.7.4) can wrap cells; the local ctl-core checkout is at 0.6.13, so this is unverified.
 archive:
   - id: RAWR-021
     title: Draw the picker search box at the bottom
