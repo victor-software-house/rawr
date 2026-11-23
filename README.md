@@ -5,7 +5,6 @@
 
 [![Release][release-badge]][releases] [![CI][ci-badge]][ci] [![License: MIT][license-badge]](LICENSE)
 
-**Rex Agents: Wake and Resume.**
 Bring Claude Code agents back into their panes after a [Rex] server restart.
 
 [Get started](#get-started) · [The app](#the-app) · [Commands](#commands) · [Shell integration](#shell-integration)
@@ -92,11 +91,11 @@ rawr identifies each pane by the Rex block ID, which survives a server restart.
 | Command | Run by | Does |
 | --- | --- | --- |
 | `rawr` | You | Opens the app |
-| `rawr --startup` | Your shell, at start in a Rex pane | Opens the app if the pane has a session to resume; otherwise exits quietly |
+| `rawr --startup` | Your shell, at start | Opens the app if the pane has a session to resume; otherwise exits quietly |
 | `rawr record` | A Claude Code `SessionStart` hook | Adds the session to the pane's index and removes the indexes of closed panes |
 | `rawr daemon` | The first `rawr` window | Watches Rex and reads transcripts and search data for every window |
-| `rawr status [--format json]` | You | Lists the panes with sessions: newest title, folder, and what Claude is doing |
-| `rawr setup claude [--dry-run]` | You, once | Adds the hook that runs `rawr record` to Claude Code's settings |
+| `rawr status` | You | Lists the panes with sessions: newest title, folder, and what Claude is doing. `--format json` prints JSON |
+| `rawr setup claude` | You, once | Adds the hook that runs `rawr record` to Claude Code's settings |
 | `rawr completion bash\|zsh\|fish` | Your shell, at start | Prints the completion script for that shell |
 
 Each `rawr` window talks to one `rawr daemon`.
