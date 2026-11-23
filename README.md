@@ -58,7 +58,7 @@ The list updates live.
 
 | Mark | Status | Meaning |
 | :-: | --- | --- |
-| `▲` `?` `◆` | **Needs you** | Claude waits for a permission, an answer, input or a login |
+| `⚑` `?` `◆` | **Needs you** | Claude waits for a permission, an answer, input or a login |
 | `✘` | **Failed** | Claude stopped on an error |
 | `✔` | **Done** | Claude finished its turn |
 | `⠋` | **Working** | Claude, or one of its background tasks, is running |
