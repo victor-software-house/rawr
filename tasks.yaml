@@ -161,6 +161,17 @@ queue:
       - A hit inside a tool call input or result shows that text, never transcript JSON.
     notes:
       - 2026-11-23, searching rate showed a snippet with raw JSON keys such as usage and input_tokens for a hit in a Bash tool call.
+
+  - id: RAWR-030
+    title: Title the pane after its Claude session while rawr runs
+    scope: app
+    outcome: A Rex tab running rawr reads as the work in it, not as rawr.
+    blocked_by: []
+    acceptance:
+      - While rawr runs in a pane, the Rex tab title is the title of the pane's newest Claude session, or the folder when it has none.
+      - When rawr exits, the shell sets the title as before.
+    notes:
+      - 2026-11-23, after rawr --startup, most tabs in the Rex sidebar read rawr plus a folder; the maintainer asked that only the source say rawr, as Claude Code panes say claude.
 archive:
   - id: RAWR-021
     title: Draw the picker search box at the bottom
