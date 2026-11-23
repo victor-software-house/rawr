@@ -101,8 +101,8 @@ Going to a pane switches the Rex app to it, which needs Remote Control turned on
 
 ### Shell startup
 
-In a Rex pane, these lines run `rawr --startup` when the shell starts.
-rawr opens only if the pane has a session to resume.
+In Rex, these lines open rawr when a new shell starts in a pane with a session to resume.
+
 For zsh, in `~/.zshrc`:
 
 ```zsh
