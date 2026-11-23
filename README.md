@@ -155,7 +155,7 @@ end
 
 `rawr setup claude` adds the `SessionStart` hook to `~/.claude/settings.json`, or to `$CLAUDE_CONFIG_DIR/settings.json`.
 Your other settings stay as they are.
-Running it again changes nothing, and `--dry-run` shows what it would change.
+Add `--dry-run` to preview the change first.
 
 <details>
 <summary>The hook added by <code>rawr setup claude</code></summary>
