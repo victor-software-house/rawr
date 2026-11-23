@@ -7,7 +7,7 @@
 
 Bring Claude Code agents back into their panes after a [Rex] server restart.
 
-[Get started](#get-started) · [The app](#the-app) · [Commands](#commands) · [Shell integration](#shell-integration)
+[Get started](#get-started) · [The app](#the-app) · [Setup](#setup) · [Commands](#commands)
 
 Rex restores your panes after a restart, but each one comes back as a fresh shell.
 `rawr` remembers which Claude Code sessions ran in each pane.
@@ -32,13 +32,13 @@ rawr works with Claude Code for now; support for other coding agents is planned.
 
    </details>
 
-2. Let rawr record which pane each Claude Code session runs in:
+2. Let rawr record which pane each Claude Code session runs in, as [Claude Code hook](#claude-code-hook) explains:
 
    ```sh
    rawr setup claude
    ```
 
-3. Add the startup lines for your shell from [Shell integration](#shell-integration).
+3. Add the lines from [Shell startup](#shell-startup) to your shell's startup file.
    After a Rex restart, rawr opens in each pane that had a Claude session.
 
 Then type `rawr` in any pane.
@@ -74,9 +74,13 @@ Entries show a few lines and a `+N` count of the rest; click one to expand it, w
 | Activity | Every entry, tool calls and results included |
 | Files | Files the session changed and read. Click a file to open it, or a folder to filter the list |
 
-Going to a pane needs Remote Control turned on in the Rex app.
-A resume runs `claude --resume` in the pane, or in a new tab when rawr runs in a floating window.
-Search matches all the words you type, in any case, against each session's prompts, title, folder and ID.
+### Resume and go to a pane
+
+Resuming a session restores the terminal and runs `claude --resume` in the session's folder.
+When Claude exits, you are back at the shell prompt.
+From a floating rawr window, the session resumes in a new tab instead.
+
+Going to a pane switches the Rex app to it, which needs Remote Control turned on in the app.
 
 ### Keys
 
@@ -88,36 +92,16 @@ Search matches all the words you type, in any case, against each session's promp
 | Go to the pane in the Rex app | `Enter` on a pane, `g` | Click the selected pane |
 | Resume the session | `Enter` on a session, `r` | Click the selected session |
 | Filter the focused column | `/`; `Esc` clears the filter | |
-| Search every local session | `Ctrl+F`; `Esc` closes the search | |
+| Search all sessions by prompt, title, folder or ID | `Ctrl+F`; `Esc` closes the search | |
 | One column or two | `Ctrl+L` | |
 | Show the keys | `?` | |
 | Back, or quit from the pane list | `Esc`, `q`, `Ctrl+C` | |
 
-## Commands
+## Setup
 
-rawr identifies each pane by the Rex block ID, which survives a server restart.
+### Shell startup
 
-| Command | Run by | Does |
-| --- | --- | --- |
-| `rawr` | You | Opens the app |
-| `rawr --startup` | Your shell, at start | Opens the app if the pane has a session to resume; otherwise exits quietly |
-| `rawr record` | A Claude Code `SessionStart` hook | Adds the session to the pane's index and removes the indexes of closed panes |
-| `rawr daemon` | The first `rawr` window | Watches Rex and reads transcripts and search data for every window |
-| `rawr status` | You | Lists the panes with sessions: newest title, folder, and what Claude is doing. `--format json` prints JSON |
-| `rawr setup claude` | You, once | Adds the hook that runs `rawr record` to Claude Code's settings |
-| `rawr completion <shell>` | Your shell, at start | Prints the completion script for bash, zsh or fish |
-
-Each `rawr` window talks to one `rawr daemon`.
-The first window starts the daemon if none is running.
-The daemon reads transcripts from the newest line back, so long sessions show their latest entries at once.
-
-## Shell integration
-
-On a resume, rawr restores the terminal and runs `claude --resume` in the session's folder.
-When Claude exits, you are back at the shell prompt.
-No wrapper is needed.
-
-To open rawr in each restored pane, add these lines to your shell's startup file.
+These lines open rawr once in each restored pane, before the first prompt.
 For zsh, in `~/.zshrc`:
 
 ```zsh
@@ -161,9 +145,11 @@ end
 
 </details>
 
-`rawr setup claude` adds the `SessionStart` hook to `~/.claude/settings.json`, or to `$CLAUDE_CONFIG_DIR/settings.json`.
-Your other settings stay as they are.
-Add `--dry-run` to preview the change first.
+### Claude Code hook
+
+`rawr setup claude` adds a `SessionStart` hook to `~/.claude/settings.json`, or to `$CLAUDE_CONFIG_DIR/settings.json`.
+The hook runs `rawr record`, which notes the pane each session starts in.
+Your other settings stay as they are, and `--dry-run` previews the change.
 
 <details>
 <summary>The hook added by <code>rawr setup claude</code></summary>
@@ -184,13 +170,29 @@ Add `--dry-run` to preview the change first.
 
 </details>
 
-To load completion, add the line for your shell:
+### Completion
 
 ```sh
 source <(rawr completion zsh)    # ~/.zshrc, after compinit
 source <(rawr completion bash)   # ~/.bashrc
 rawr completion fish | source    # ~/.config/fish/config.fish
 ```
+
+## Commands
+
+| Command | Run by | Does |
+| --- | --- | --- |
+| `rawr` | You | Opens the app |
+| `rawr --startup` | Your shell, at start | Opens the app if the pane has a session to resume; otherwise exits quietly |
+| `rawr record` | A Claude Code `SessionStart` hook | Adds the session to the pane's index and removes the indexes of closed panes |
+| `rawr daemon` | The first `rawr` window | Watches Rex and reads transcripts and search data for every window |
+| `rawr status` | You | Lists the panes with sessions: newest title, folder, and what Claude is doing. `--format json` prints JSON |
+| `rawr setup claude` | You, once | Adds the hook that runs `rawr record` to Claude Code's settings |
+| `rawr completion <shell>` | Your shell, at start | Prints the completion script for bash, zsh or fish |
+
+rawr identifies each pane by its Rex block ID, which survives a server restart.
+Each `rawr` window talks to one `rawr daemon`, which the first window starts.
+The daemon reads transcripts from the newest line back, so long sessions show their latest entries at once.
 
 ## License
 
