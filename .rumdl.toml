@@ -29,4 +29,4 @@ extend-enable = ["MD051", "MD052", "MD057"]
 # The README folds alternative and reference blocks, which only <details>
 # with a <summary> can do on GitHub.
 [MD033]
-allowed-elements = ["details", "summary"]
+allowed-elements = ["details", "summary", "code"]
