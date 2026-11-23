@@ -1,4 +1,9 @@
-# rawr
+<h1 align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/rawr-banner-dark.svg">
+    <img src="assets/rawr-banner-light.svg" alt="rawr: Rex Agents, wake and resume" width="887">
+  </picture>
+</h1>
 
 Rex Agents: Wake and Resume.
 Bring Claude Code agents back into their panes after a [Rex] server restart.
