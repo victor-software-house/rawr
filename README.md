@@ -50,12 +50,12 @@ Panes are grouped by status, in this order:
 
 | Mark | Status | Meaning |
 | :-: | --- | --- |
-| ▲ ? ◆ | **Needs you** | Claude waits for a permission, an answer, input or a login |
-| ✘ | **Failed** | Claude stopped on an error |
-| ✔ | **Done** | Claude finished its turn |
-| ⠋ | **Working** | Claude, or one of its background tasks, is running |
-| ○ | **Idle** | Claude is open and waiting for a prompt |
-| · | **Stopped** | No Claude runs in the pane; its sessions can be resumed |
+| `▲` `?` `◆` | **Needs you** | Claude waits for a permission, an answer, input or a login |
+| `✘` | **Failed** | Claude stopped on an error |
+| `✔` | **Done** | Claude finished its turn |
+| `⠋` | **Working** | Claude, or one of its background tasks, is running |
+| `○` | **Idle** | Claude is open and waiting for a prompt |
+| `·` | **Stopped** | No Claude runs in the pane; its sessions can be resumed |
 
 Sessions from the past day whose pane is gone come last.
 
