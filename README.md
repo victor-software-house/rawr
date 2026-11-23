@@ -28,7 +28,7 @@ Pick one and it resumes in that pane; quit the app and you get a plain shell.
    rawr setup claude
    ```
 
-3. Add the shell line from [Shell integration](#shell-integration), so a restored pane offers its sessions when its shell starts.
+3. Add the lines for your shell from [Shell integration](#shell-integration), so a restored pane offers its sessions when its shell starts.
 
 Then type `rawr` in any pane.
 
@@ -91,7 +91,8 @@ The daemon reads each transcript from its newest line back, so a long session sh
 
 On a resume, `rawr` restores the terminal and becomes `claude --resume` in the session's folder; when Claude Code exits, the pane's shell prompt is back.
 It needs no wrapper.
-In zsh, offer a restored pane its sessions once, before the first prompt:
+To offer a restored pane its sessions once, before the first prompt, add the lines for your shell.
+In zsh, in `~/.zshrc`:
 
 ```zsh
 if [[ -n $REX_BLOCK ]] && (( $+commands[rawr] )); then
@@ -102,6 +103,30 @@ if [[ -n $REX_BLOCK ]] && (( $+commands[rawr] )); then
   }
   add-zsh-hook precmd _rawr_once
 fi
+```
+
+In bash, in `~/.bashrc`:
+
+```bash
+if [[ -n $REX_BLOCK ]] && command -v rawr >/dev/null; then
+  _rawr_once() {
+    PROMPT_COMMAND=${PROMPT_COMMAND#_rawr_once;}
+    unset -f _rawr_once
+    rawr --startup
+  }
+  PROMPT_COMMAND="_rawr_once;${PROMPT_COMMAND}"
+fi
+```
+
+In fish, in `~/.config/fish/config.fish`:
+
+```fish
+if set -q REX_BLOCK; and type -q rawr
+    function _rawr_once --on-event fish_prompt
+        functions -e _rawr_once
+        rawr --startup
+    end
+end
 ```
 
 `record` runs from a Claude Code `SessionStart` hook.
