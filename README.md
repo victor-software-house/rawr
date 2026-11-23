@@ -96,7 +96,7 @@ rawr identifies each pane by the Rex block ID, which survives a server restart.
 | `rawr daemon` | The first `rawr` window | Watches Rex and reads transcripts and search data for every window |
 | `rawr status` | You | Lists the panes with sessions: newest title, folder, and what Claude is doing. `--format json` prints JSON |
 | `rawr setup claude` | You, once | Adds the hook that runs `rawr record` to Claude Code's settings |
-| `rawr completion bash\|zsh\|fish` | Your shell, at start | Prints the completion script for that shell |
+| `rawr completion <shell>` | Your shell, at start | Prints the completion script for bash, zsh or fish |
 
 Each `rawr` window talks to one `rawr daemon`.
 The first window starts the daemon if none is running.
