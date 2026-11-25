@@ -581,11 +581,11 @@ fn older(
 }
 
 fn newer(file: &mut fs::File, len: u64, list: List, after: EntryId, count: usize) -> Option<Page> {
-    newer_from(file, len, list, after.line, |id| id > after, count)
+    newer_from(file, len, list, after.line, |id| id > after, count).map(|(page, _)| page)
 }
 
 /// The first `count` entries of `list` that `keep` takes, read from the line
-/// that starts at byte `start`.
+/// that starts at byte `start`, with the offset after the last line read.
 fn newer_from(
     file: &mut fs::File,
     len: u64,
@@ -593,7 +593,7 @@ fn newer_from(
     start: u64,
     keep: impl Fn(EntryId) -> bool,
     count: usize,
-) -> Option<Page> {
+) -> Option<(Page, u64)> {
     file.seek(SeekFrom::Start(start)).ok()?;
     let mut lines = BufReader::with_capacity(1 << 18, &mut *file);
     let mut line = Vec::new();
@@ -624,10 +624,11 @@ fn newer_from(
     if list == List::Activity {
         results_after(file, end, len, &mut stretch)?;
     }
-    Some(Page {
+    let page = Page {
         entries: mem::take(list_of(&mut stretch, list)),
         more,
-    })
+    };
+    Some((page, end))
 }
 
 /// Some entries of one list around a place in the transcript, oldest first.
@@ -669,7 +670,7 @@ pub(crate) fn around(path: &Path, list: List, at: u64, count: usize) -> io::Resu
     };
     let mut older_page =
         older(&mut file, path, len, list, before, count / 2).ok_or_else(invalid)?;
-    let newer_page = newer_from(
+    let (newer_page, newer_end) = newer_from(
         &mut file,
         len,
         list,
@@ -678,8 +679,15 @@ pub(crate) fn around(path: &Path, list: List, at: u64, count: usize) -> io::Resu
         count - older_page.entries.len(),
     )
     .ok_or_else(invalid)?;
-    // The newer side ended first: the older side takes the rest.
-    if older_page.more && older_page.entries.len() + newer_page.entries.len() < count {
+    // The newer side read every whole line first, and the older read stopped
+    // on its count and not on the cap on the bytes it reads: the older side
+    // takes the rest.
+    let whole = last_line_end(&mut file, len).ok_or_else(invalid)?;
+    if older_page.more
+        && older_page.entries.len() == count / 2
+        && newer_end >= whole
+        && older_page.entries.len() + newer_page.entries.len() < count
+    {
         older_page = older(
             &mut file,
             path,
@@ -711,31 +719,55 @@ pub(crate) fn around(path: &Path, list: List, at: u64, count: usize) -> io::Resu
 /// line is read only once it is whole. Byte 0 when no line is whole.
 fn complete_line_start(file: &mut fs::File, byte: u64, len: u64) -> Option<u64> {
     let byte = byte.min(len.saturating_sub(1));
-    let start = line_start(file, byte)?;
+    let start = match line_start(file, byte).ok()? {
+        Some(start) => start,
+        // The line is longer than the most read back, so its start is not
+        // found: the line after it is the one nearest.
+        None => next_line_start(file, byte).ok()?,
+    };
     if line_at(file, start).is_some() {
         return Some(start);
     }
     // The line is the last and not yet whole: the one before it, if any.
     match start.checked_sub(1) {
-        Some(before) => line_start(file, before),
+        Some(before) => line_start(file, before).ok()?,
         None => Some(0),
     }
 }
 
 /// The start of the line that holds byte `byte`: after the last line break
-/// before it, read back no further than [`LINE_MOST`].
-fn line_start(file: &mut fs::File, byte: u64) -> Option<u64> {
+/// before it, read back no further than [`LINE_MOST`]. `None` when there is
+/// none within that.
+fn line_start(file: &mut fs::File, byte: u64) -> io::Result<Option<u64>> {
     let from = byte.saturating_sub(LINE_MOST);
-    file.seek(SeekFrom::Start(from)).ok()?;
+    file.seek(SeekFrom::Start(from))?;
     let mut head = Vec::new();
-    file.by_ref()
-        .take(byte - from)
-        .read_to_end(&mut head)
-        .ok()?;
-    match head.iter().rposition(|byte| *byte == b'\n') {
-        Some(at) => Some(from + u64::try_from(at).ok()? + 1),
+    file.by_ref().take(byte - from).read_to_end(&mut head)?;
+    Ok(match head.iter().rposition(|byte| *byte == b'\n') {
+        Some(at) => u64::try_from(at).ok().map(|at| from + at + 1),
         None if from == 0 => Some(0),
         None => None,
+    })
+}
+
+/// The start of the line after the one that holds byte `byte`: after the first
+/// line break from it on, or the transcript's end when there is none. It reads
+/// on without keeping what it reads.
+fn next_line_start(file: &mut fs::File, byte: u64) -> io::Result<u64> {
+    file.seek(SeekFrom::Start(byte))?;
+    let mut lines = BufReader::with_capacity(1 << 18, file);
+    let mut at = byte;
+    loop {
+        let chunk = lines.fill_buf()?;
+        let read = chunk.len();
+        if let Some(found) = chunk.iter().position(|byte| *byte == b'\n') {
+            return Ok(at + u64::try_from(found).unwrap_or(0) + 1);
+        }
+        if read == 0 {
+            return Ok(at);
+        }
+        lines.consume(read);
+        at += u64::try_from(read).unwrap_or(0);
     }
 }
 
@@ -2205,6 +2237,25 @@ mod tests {
         assert_eq!(got.place, None);
         let _ = fs::remove_file(path);
         let _ = fs::remove_file(only);
+    }
+
+    #[test]
+    fn a_page_around_a_place_in_a_line_longer_than_the_cap_gives_entries_not_an_error() {
+        let before = turns(100).concat();
+        // A prompt 1 MiB over the most a line is read back, then more turns.
+        let long = prompt(&"x".repeat(usize::try_from(LINE_MOST).expect("a size") + (1 << 20)));
+        let text = [before.as_str(), long.as_str(), turns(100).concat().as_str()].concat();
+        let path = file("around-long", &text);
+        let calls = of(&forward(&path), List::Activity);
+        assert_eq!(calls.len(), 200);
+        // A byte in the line's tail, more than the cap past where it starts.
+        let at = u64::try_from(before.len()).expect("a size") + LINE_MOST + (512 << 10);
+        let got = around(&path, List::Activity, at, 100).expect("a page, not an error");
+        // The line after the long one is the nearest to start at.
+        assert_eq!(got.place, Some(calls[100].id));
+        assert_eq!(got.entries, calls[50..150]);
+        assert!(got.older && got.newer);
+        let _ = fs::remove_file(path);
     }
 
     #[test]
