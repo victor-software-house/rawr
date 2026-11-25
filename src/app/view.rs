@@ -21,7 +21,7 @@ use ratatui::widgets::{
     Block, BorderType, Clear, Padding, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
 };
 
-use crate::app::facts::{EntryId, Facts, Kind, Outcome, Pr, Said};
+use crate::app::facts::{EntryId, Facts, Kind, List, Outcome, Pr, Said};
 use crate::app::feed::Pane;
 use crate::app::layouts::{Laid, Layouts};
 use crate::app::state::{
@@ -1266,21 +1266,29 @@ fn session_list(frame: &mut Frame<'_>, app: &App, area: Rect, pane: &Pane, hits:
     used
 }
 
+/// How many entries `list` has in the whole transcript, or in the part read so
+/// far with a `+` while the rest is still being read.
+fn counted(facts: &Facts, list: List) -> String {
+    let plus = if facts.whole { "" } else { "+" };
+    format!("{}{plus}", facts.total(list))
+}
+
 /// The tab bar: each tab's name and how many rows it holds.
 fn tabs(frame: &mut Frame<'_>, app: &App, area: Rect, facts: Option<&Facts>, hits: &mut Hits) {
     let mut x = area.x;
     for tab in Tab::ALL {
         let count = facts.map(|facts| match tab {
             Tab::Overview => None,
-            Tab::Prompts => Some(facts.log.len()),
-            Tab::Activity => Some(facts.activity.len()),
+            Tab::Prompts => Some(counted(facts, List::Log)),
+            Tab::Activity => Some(counted(facts, List::Activity)),
             Tab::Files => Some(
-                facts.files.len()
+                (facts.files.len()
                     + facts
                         .read
                         .iter()
                         .filter(|(path, _)| !facts.files.iter().any(|(file, _)| file == path))
-                        .count(),
+                        .count())
+                .to_string(),
             ),
         });
         let text = match count.flatten() {
@@ -3002,6 +3010,7 @@ mod tests {
                 activity: (0..count)
                     .map(|place| call(place, &format!("file-{place}.rs")))
                     .collect(),
+                activity_total: count,
                 whole: true,
                 ..Facts::default()
             };
@@ -3055,6 +3064,25 @@ mod tests {
         fn scroll(&mut self, lines: i64) {
             self.app.scroll_lines(Focus::Session, lines);
         }
+    }
+
+    #[test]
+    fn a_tab_counts_the_whole_session_once_it_is_read() {
+        let mut rig = Rig::new(300);
+        rig.facts.activity_total = 2400;
+        let rows = rig.draw();
+        assert!(
+            rows.iter().any(|row| row.contains("Activity 2400 ")),
+            "{rows:?}"
+        );
+        // The newest 300 are read and the start is not.
+        rig.facts.activity_total = 300;
+        rig.facts.whole = false;
+        let rows = rig.draw();
+        assert!(
+            rows.iter().any(|row| row.contains("Activity 300+ ")),
+            "{rows:?}"
+        );
     }
 
     #[test]
