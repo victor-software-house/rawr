@@ -13,6 +13,7 @@ use ratatui::crossterm::event::{
 
 use crate::app::facts::EntryId;
 use crate::app::feed::Pane;
+use crate::app::history::Lead;
 use crate::app::layouts::Layouts;
 use crate::catalog::Hit;
 use crate::session::Agent;
@@ -356,6 +357,9 @@ pub(crate) struct App {
     pub(crate) open: HashMap<PathBuf, HashSet<EntryId>>,
     /// The entries of the transcript shown, laid out.
     pub(crate) layouts: Layouts,
+    /// The lines the session list moved lately, which set how far ahead of the
+    /// view the entries are held.
+    pub(crate) prefetch: Lead,
     /// The pane to select once the feed lists it, by block ID.
     pub(crate) want: Option<String>,
     /// The block of the pane this window stands in for, when it is a
@@ -439,6 +443,7 @@ impl App {
             show_scratch: false,
             open: HashMap::new(),
             layouts: Layouts::default(),
+            prefetch: Lead::default(),
             show_scratch_files: false,
             files_shown: Shown::All,
             file_type: None,
@@ -1420,6 +1425,9 @@ impl App {
     /// Moves `list` by `lines`, leaving its selection where it is. The next
     /// frame clamps it to the list.
     pub(crate) fn scroll_lines(&mut self, list: Focus, lines: i64) {
+        if list == Focus::Session {
+            self.prefetch.scrolled(lines, Instant::now());
+        }
         let scroll = self.scroll_mut(list);
         if let Some(anchor) = &mut scroll.anchor {
             let lines = i32::try_from(lines).unwrap_or(if lines < 0 { i32::MIN } else { i32::MAX });
