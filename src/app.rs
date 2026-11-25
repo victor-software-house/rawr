@@ -590,7 +590,8 @@ fn open_file(file: &Path, files: &Files, app: &mut App) {
         app.notice = Some(format!("{} is gone", file.display()));
         return;
     };
-    let how = match opening(&path, files) {
+    let configured = opening(&path, files);
+    let how = match configured {
         // Only macOS can open a file as text whatever its kind.
         Opening::Text if !cfg!(target_os = "macos") => Opening::Reveal,
         how @ (Opening::Open | Opening::Text | Opening::Reveal) => how,
@@ -600,10 +601,12 @@ fn open_file(file: &Path, files: &Files, app: &mut App) {
             // The opener ends at once; its exit is collected off the loop.
             thread::spawn(move || child.wait());
             if how == Opening::Reveal {
-                app.notice = Some(format!(
-                    "{} opens in its folder, as the files part of the config says",
-                    file.display()
-                ));
+                let why = if configured == Opening::Text {
+                    "only macOS can open any file as text"
+                } else {
+                    "as the files part of the config says"
+                };
+                app.notice = Some(format!("{} opens in its folder: {why}", file.display()));
             }
         }
         Err(error) => app.notice = Some(format!("could not open {}: {error}", file.display())),
