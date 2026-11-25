@@ -11,6 +11,7 @@ use ratatui::crossterm::event::{
     KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 
+use crate::app::facts::EntryId;
 use crate::app::feed::Pane;
 use crate::catalog::Hit;
 use crate::session::Agent;
@@ -153,8 +154,8 @@ pub(crate) enum Target {
     /// The edge of a column, which a drag moves.
     Edge(Grip),
     /// An entry of the prompts or the activity, which a click opens or
-    /// folds, by the key the view gives it.
-    Entry(u64),
+    /// folds, by its id in the transcript.
+    Entry(EntryId),
     /// The line that stands for the files in temporary folders.
     ScratchFiles,
     /// A chip of the files tab that shows all files, the changed or the
@@ -334,8 +335,8 @@ pub(crate) struct App {
     pub(crate) files_shown: Shown,
     /// The one file type the files tab lists, by its chip's key.
     pub(crate) file_type: Option<u64>,
-    /// The entries opened by a click, by the view's key.
-    pub(crate) open: HashSet<u64>,
+    /// The entries opened by a click, by id.
+    pub(crate) open: HashSet<EntryId>,
     /// The pane to select once the feed lists it, by block ID.
     pub(crate) want: Option<String>,
     /// The block of the pane this window stands in for, when it is a
