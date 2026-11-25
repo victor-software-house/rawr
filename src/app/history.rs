@@ -159,6 +159,14 @@ impl Default for Held {
 impl History {
     /// Takes the daemon's facts in. Returns the entries whose layout is stale.
     pub(crate) fn merge(&mut self, mut read: Facts) -> Vec<EntryId> {
+        // A read of the newest part, while the whole transcript is counted,
+        // adds its newest entries and leaves the counts and the whole mark
+        // as they are, until a whole read comes.
+        if !read.whole && self.facts.whole {
+            read.whole = true;
+            read.log_total = read.log_total.max(self.facts.log_total);
+            read.activity_total = read.activity_total.max(self.facts.activity_total);
+        }
         let mut stale = Vec::new();
         for list in List::BOTH {
             let (older, total) = (read.older(list), read.whole.then(|| read.total(list)));
@@ -1181,6 +1189,27 @@ mod tests {
     fn counted(history: &History) -> usize {
         let shape = history.shape(List::Activity);
         held(history) + shape.gaps.values().sum::<usize>() + shape.older
+    }
+
+    #[test]
+    fn a_read_of_the_newest_part_keeps_the_whole_counts() {
+        let all = world(5801);
+        let mut history = History::default();
+        history.merge(facts_of(&all[..5800], 5500..5800));
+        history.merge(Facts {
+            activity: all[5700..].to_vec(),
+            activity_total: 101,
+            whole: false,
+            ..Facts::default()
+        });
+        assert!(history.facts.whole);
+        assert_eq!(history.facts.total(List::Activity), 5800);
+        // The newest entries of the read are held.
+        assert_eq!(held(&history), 301);
+        assert_eq!(history.facts.activity.last(), all.last());
+        // A whole read replaces the counts.
+        history.merge(facts_of(&all, 5501..5801));
+        assert_eq!(history.facts.total(List::Activity), 5801);
     }
 
     #[test]
