@@ -39,8 +39,8 @@
 3. **Each entry is laid out once.**
    - A window keeps each entry's lines for the width they were laid out at and its fold state.
      The hover bar and the fold marker are drawn over them, so hovering lays nothing out again.
-   - A width change lays out the entries in view first, and the rest in the time left before each next tick.
-     Until an entry is laid out, its height counts as the average height of the entries laid out.
+   - A width change lays out every entry held again, once, in the frame that first draws at the new width.
+     Task 1.4 measures that frame beside the scrolling ones.
    - A frame draws only the entries in view.
    - Alternative: lay out every entry on every frame, as now.
      It lost: its cost grows with the history, which load on demand makes unbounded.
