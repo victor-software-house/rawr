@@ -24,7 +24,7 @@ use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 use std::{env, fs, hint, io, thread};
@@ -529,7 +529,7 @@ fn spin_at(started: Instant, now: Instant) -> usize {
 
 /// Extensions of files the system runs, or opens in a program that runs
 /// them, when asked to open them.
-const LAUNCHERS: [&str; 16] = [
+const LAUNCHERS: [&str; 22] = [
     "app",
     "command",
     "tool",
@@ -546,6 +546,12 @@ const LAUNCHERS: [&str; 16] = [
     "fileloc",
     "inetloc",
     "webloc",
+    "url",
+    "dmg",
+    "mobileconfig",
+    "shortcut",
+    "saver",
+    "desktop",
 ];
 
 /// Whether opening `path`, a canonical path, could run it instead of
@@ -568,11 +574,12 @@ fn launches(path: &Path) -> bool {
 }
 
 /// The command that opens `path`, a canonical path, or reveals it when
-/// opening could run it: `open` on macOS, `xdg-open` elsewhere, which can
-/// only show the folder.
-fn opener(path: &Path) -> Command {
-    let reveal = launches(path);
-    if cfg!(target_os = "macos") {
+/// `reveal`: `open` on macOS, `xdg-open` elsewhere, which can only show the
+/// folder. Its output goes nowhere, so it never lands on the drawn screen.
+/// A session could still swap the file between the check and the open; the
+/// canonical path narrows that to the moment between the two.
+fn opener(path: &Path, reveal: bool) -> Command {
+    let mut command = if cfg!(target_os = "macos") {
         let mut command = Command::new("/usr/bin/open");
         if reveal {
             command.arg("-R");
@@ -587,7 +594,12 @@ fn opener(path: &Path) -> Command {
             path
         });
         command
-    }
+    };
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    command
 }
 
 /// Opens `file` in its default app, as a click on a `file://` link would,
@@ -599,10 +611,17 @@ fn open_file(file: &Path, app: &mut App) {
         app.notice = Some(format!("{} is gone", file.display()));
         return;
     };
-    match opener(&path).spawn() {
+    let reveal = launches(&path);
+    match opener(&path, reveal).spawn() {
         Ok(mut child) => {
             // The opener ends at once; its exit is collected off the loop.
             thread::spawn(move || child.wait());
+            if reveal {
+                app.notice = Some(format!(
+                    "{} could run, so its folder opens instead",
+                    file.display()
+                ));
+            }
         }
         Err(error) => app.notice = Some(format!("could not open {}: {error}", file.display())),
     }
@@ -674,6 +693,15 @@ mod tests {
         let path = file_with("kind", "x.COMMAND", 0o644);
         assert!(launches(&path));
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn a_flat_installer_or_location_file_launches() {
+        for name in ["x.dmg", "x.mobileconfig", "x.url", "x.desktop"] {
+            let path = file_with("flat", name, 0o644);
+            assert!(launches(&path), "{name}");
+            let _ = fs::remove_file(path);
+        }
     }
 
     #[test]
