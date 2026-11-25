@@ -358,6 +358,11 @@ pub(crate) fn run(view: Option<u64>, mode: &Mode) -> Result<Option<Agent>> {
                                     } else {
                                         app.drop_jump();
                                     }
+                                } else if current && app.awaits(list, ask) {
+                                    // The numbering changed under the request,
+                                    // as a rewrite of the transcript does: the
+                                    // place is gone.
+                                    app.drop_jump();
                                 }
                             }
                             FromDaemon::Hits {

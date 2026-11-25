@@ -1819,6 +1819,14 @@ impl App {
             .is_some_and(|reaching| reaching.list == list && reaching.ask == Some((ask, epoch)))
     }
 
+    /// Whether the answer `ask` about `list` is to the request the window is
+    /// waiting for, whatever generation of the held entries it was read in.
+    pub(crate) fn awaits(&self, list: List, ask: u64) -> bool {
+        self.reaching.is_some_and(|reaching| {
+            reaching.list == list && reaching.ask.is_some_and(|(sent, _)| sent == ask)
+        })
+    }
+
     /// The entries around the place have arrived: the view stands at `place`,
     /// the entry nearest it, with its first line on top.
     pub(crate) fn arrive(&mut self, place: EntryId) {

@@ -4106,8 +4106,12 @@ mod tests {
         assert_eq!((again.ask, again.share), (2, 0));
         assert!(!rig.app.expects(List::Activity, jump.ask, epoch));
         assert!(rig.app.expects(List::Activity, again.ask, epoch));
-        // An answer read before the connection was lost is dropped.
+        // An answer read before the connection was lost is dropped, and the
+        // place it was for is given up, so no page stays held back for it.
         assert!(!rig.app.expects(List::Activity, again.ask, epoch + 1));
+        assert!(rig.app.awaits(List::Activity, again.ask));
+        assert!(!rig.app.awaits(List::Activity, again.ask + 1));
+        assert!(!rig.app.awaits(List::Log, again.ask));
     }
 
     #[test]
