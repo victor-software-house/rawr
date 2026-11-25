@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 use std::{process, thread};
 
 use anyhow::{Context, Result, bail};
@@ -39,8 +39,14 @@ struct Hub {
     state: Mutex<State>,
     /// Each transcript a window showed, as far as it is read.
     facts: Mutex<HashMap<PathBuf, Reading>>,
-    catalog: Mutex<Option<Arc<[Found]>>>,
+    /// The search catalog, with the modified time of `history.jsonl` it was
+    /// loaded at, so a prompt typed since loads it again.
+    catalog: Mutex<Option<Catalog>>,
 }
+
+/// A search catalog and the modified time of `history.jsonl` it was loaded
+/// at, if the file was there.
+type Catalog = (Option<SystemTime>, Arc<[Found]>);
 
 struct State {
     /// The open panes and then the closed ones, as windows get them.
@@ -654,6 +660,13 @@ fn read_facts(
     hold(&hub.facts).insert(path, reading);
 }
 
+/// Whether a catalog loaded when `history.jsonl` was last modified at
+/// `stored` still serves, with the file last modified at `now`. A missing
+/// file has no time, so a catalog loaded without it serves until it appears.
+fn fresh(stored: Option<SystemTime>, now: Option<SystemTime>) -> bool {
+    stored == now
+}
+
 fn search(
     hub: &Hub,
     send: &SyncSender<FromDaemon>,
@@ -662,19 +675,24 @@ fn search(
 ) {
     let stale = || generation.load(Ordering::Acquire) != id;
     let terms = catalog::terms(&query);
+    let Ok(dir) = session::claude_dir() else {
+        return;
+    };
+    let modified = fs::metadata(dir.join("history.jsonl"))
+        .and_then(|meta| meta.modified())
+        .ok();
     let catalog = {
         let mut held = hold(&hub.catalog);
-        if let Some(catalog) = held.as_ref() {
-            Arc::clone(catalog)
-        } else {
-            let Ok(found) =
-                session::claude_dir().and_then(|dir| catalog::load(&dir, &HashSet::new()))
-            else {
-                return;
-            };
-            let found: Arc<[Found]> = Arc::from(found);
-            *held = Some(Arc::clone(&found));
-            found
+        match held.as_ref() {
+            Some((stored, catalog)) if fresh(*stored, modified) => Arc::clone(catalog),
+            Some(_) | None => {
+                let Ok(found) = catalog::load(&dir, &HashSet::new()) else {
+                    return;
+                };
+                let found: Arc<[Found]> = Arc::from(found);
+                *held = Some((modified, Arc::clone(&found)));
+                found
+            }
         }
     };
     if terms.is_empty() || stale() {
@@ -745,6 +763,7 @@ fn search(
 mod tests {
     use std::env;
     use std::io::Read;
+    use std::time::UNIX_EPOCH;
 
     use super::*;
 
@@ -773,6 +792,18 @@ mod tests {
         // when the daemon shuts the socket.
         let mut buffer = [0_u8; 8];
         assert_eq!(window.read(&mut buffer).expect("the socket reads"), 0);
+    }
+
+    #[test]
+    fn a_catalog_serves_only_while_the_history_keeps_its_modified_time() {
+        let earlier = UNIX_EPOCH + Duration::from_secs(10);
+        let later = UNIX_EPOCH + Duration::from_secs(20);
+        assert!(fresh(Some(earlier), Some(earlier)));
+        assert!(!fresh(Some(earlier), Some(later)));
+        // A history that appeared, or went, since the catalog was loaded.
+        assert!(!fresh(None, Some(earlier)));
+        assert!(!fresh(Some(earlier), None));
+        assert!(fresh(None, None));
     }
 
     #[test]
