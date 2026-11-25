@@ -9,7 +9,7 @@ Each piece was reached through its own verb.
 The maintainer's private herdr plugins, a session board and a file explorer, are the prior art for the screen.
 They keep state in one struct and draw from it with a pure function, feed one channel from producer threads, and draw once after draining it.
 herdr orders agents by attention, blocked first ([model.rs][herdr-model]).
-The maintainer's `a-tui` is the prior art for each entry: folded to one line, opened by a click, with a marker under the pointer instead of a background.
+Each entry is folded to one line and opened by a click, with a marker under the pointer instead of a background.
 Claude Code itself is the prior art for how a prompt, a reply and a tool call read.
 The `gh` CLI is the counter-example: dozens of verbs, each printing once, and no screen that shows the state of everything.
 
@@ -64,7 +64,7 @@ The `gh` CLI is the counter-example: dozens of verbs, each printing once, and no
      Files under the system's temporary folders fold into one line that a click opens.
 6. **Entries read as Claude Code draws them.**
    - Each entry is folded until it is opened: its age, its mark, and as much text as fits in 3 lines for a prompt or a reply, 2 for the note that a task ended, and 1 for anything else, with a `+N` count of the lines left out.
-   - Under the pointer, a folded entry shows `▸` before its mark and an open one `▾`, and the entry's other rows show a `▏` bar, as `a-tui` draws them.
+   - Under the pointer, a folded entry shows `▸` before its mark and an open one `▾`, and the entry's other rows show a `▏` bar.
      No row under the pointer gets a background.
    - A click opens or folds an entry.
      An open entry draws its text as Markdown, with code in fences highlighted, and a tool call's result under `⎿`, at most 12 lines.
