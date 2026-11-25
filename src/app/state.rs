@@ -1589,6 +1589,9 @@ impl App {
                     || mouse.row == 0
                     || mouse.column + 1 >= width
                     || mouse.row + 1 >= height;
+                // Motion with no button held is a release the pointer's report
+                // lost, which would leave the thumb held and paging paused.
+                self.let_go();
                 self.hover_over(if edge { None } else { under.target });
                 // A folded column draws out while the pointer is on it, and
                 // goes back when the pointer leaves it.
@@ -1639,10 +1642,7 @@ impl App {
                 }
             }
             MouseEventKind::Up(_) => {
-                if let Some(Drag::Thumb(held)) = self.dragging {
-                    self.fades[slot(held.list)].touch(self.now);
-                }
-                self.dragging = None;
+                self.let_go();
                 self.hover_over(under.target);
                 Action::None
             }
@@ -1651,6 +1651,15 @@ impl App {
             | MouseEventKind::ScrollLeft
             | MouseEventKind::ScrollRight => Action::None,
         }
+    }
+
+    /// Ends a drag of a thumb or an edge, as a release does: the bar fades
+    /// from now, and a place that waits for its entries is asked.
+    fn let_go(&mut self) {
+        if let Some(Drag::Thumb(held)) = self.dragging {
+            self.fades[slot(held.list)].touch(self.now);
+        }
+        self.dragging = None;
     }
 
     /// The pointer is now over `target`. The bar's last moment of use is the
@@ -3119,6 +3128,25 @@ mod tests {
             "the bar fades from the moment it was let go of"
         );
         assert_eq!(app.take_jump(|_, _| 7), None);
+    }
+
+    #[test]
+    fn motion_with_no_button_lets_go_of_a_held_thumb_and_paging_resumes() {
+        let mut app = shown_app();
+        app.settle(
+            &[(Focus::Session, 0)],
+            None,
+            &[track(Focus::Session, 20, (0, 100))],
+        );
+        app.on_mouse(
+            pointer(MouseEventKind::Down(LEFT), 4),
+            on_bar(Focus::Session),
+        );
+        assert!(app.holds_view());
+        // The release was lost; the next report says no button is held.
+        app.on_mouse(pointer(MouseEventKind::Moved, 9), on_bar(Focus::Session));
+        assert_eq!(app.dragging, None);
+        assert!(!app.holds_view());
     }
 
     /// The transcript of every session the fixtures make.
