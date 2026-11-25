@@ -4562,9 +4562,15 @@ mod tests {
         rig.app.now = at(t0, 130);
         rig.draw();
         let half = thumb(&rig)[0];
-        assert!(half > 0 && half < end, "{half} of {end}");
         assert_eq!(rig.app.bars_wake(), Some(at(t0, 146)));
+        // The header folds over a fixed span, so the row the thumb ends on is
+        // known once both have stopped.
         rig.app.now = at(t0, 180);
+        rig.draw();
+        let end = usize::try_from(rig.track().geometry.thumb().0).expect("a small number");
+        assert!(half > 0 && half < end, "{half} of {end}");
+        // The fold ended after the glide, so the thumb glides on to its row.
+        rig.app.now = at(t0, 300);
         rig.draw();
         assert_eq!(thumb(&rig), [end]);
         // The pointer is on the bar, so it is not fading either.
