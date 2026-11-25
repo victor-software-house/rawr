@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant, SystemTime};
 use std::{process, thread};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use rustix::process::setsid;
 
 use super::{Build, FromDaemon, Here, Reach, ToDaemon, actions, folder, socket};
@@ -29,6 +29,10 @@ const QUEUE: usize = 64;
 
 /// How long the daemon waits before following Rex again after the feed ends.
 const RETRY: Duration = Duration::from_secs(2);
+
+/// How long a go-to waits for the copy it started to take over before the
+/// daemon gives up on the hand-off.
+const HANDOFF_WAIT: Duration = Duration::from_secs(10);
 
 /// How often a transcript being read sends what it has found so far.
 const SEND_EVERY: Duration = Duration::from_millis(50);
@@ -96,6 +100,24 @@ struct Handoff {
     target: String,
     /// The client of the window it replaces.
     from: u64,
+    /// Which go-to made it, so a deadline clears only its own hand-off.
+    ticket: u64,
+}
+
+/// Ends the hand-off of `view` made under `ticket`, and the go-to of client
+/// `id` with it, when the hand-off is still waiting. Returns whether it did.
+/// A hand-off the new copy took, or a newer go-to made, stays.
+fn expire(state: &mut State, view: u64, ticket: u64, id: u64) -> bool {
+    if state
+        .handoffs
+        .get(&view)
+        .is_none_or(|handoff| handoff.ticket != ticket)
+    {
+        return false;
+    }
+    state.handoffs.remove(&view);
+    state.going.remove(&id);
+    true
 }
 
 fn notice(send: &SyncSender<FromDaemon>, error: &anyhow::Error) {
@@ -406,11 +428,13 @@ fn serve(hub: &Arc<Hub>, stream: UnixStream, socket: &Path) {
                 block,
                 carry,
             } => {
-                {
+                let ticket = {
                     let mut state = hold(&hub.state);
                     if !state.going.insert(id) {
                         continue;
                     }
+                    let ticket = state.next;
+                    state.next += 1;
                     // The copy may connect before the go-to returns, so the
                     // hand-off it opens with is known before it starts.
                     if let Some(old) = here.clone() {
@@ -421,22 +445,32 @@ fn serve(hub: &Arc<Hub>, stream: UnixStream, socket: &Path) {
                                 old,
                                 target: block.clone(),
                                 from: id,
+                                ticket,
                             },
                         );
                     }
-                }
+                    ticket
+                };
                 let (hub, send, here) = (Arc::clone(hub), send.clone(), here.clone());
                 thread::spawn(move || {
                     let went = actions::go_to(here.as_ref(), &session, &block, view);
                     // A copy that started keeps the hand-off and the go-to
-                    // until it takes over; anything else ends both here.
-                    if !matches!(went, Ok(actions::Went::Handed)) {
+                    // until it takes over, or the wait ends; anything else
+                    // ends both here.
+                    let handed = matches!(went, Ok(actions::Went::Handed));
+                    if !handed {
                         let mut state = hold(&hub.state);
                         state.handoffs.remove(&view);
                         state.going.remove(&id);
                     }
                     if let Err(error) = went {
                         notice(&send, &error);
+                    }
+                    if handed {
+                        thread::sleep(HANDOFF_WAIT);
+                        if expire(&mut hold(&hub.state), view, ticket, id) {
+                            notice(&send, &anyhow!("the new window did not open"));
+                        }
                     }
                 });
             }
@@ -766,6 +800,7 @@ mod tests {
     use std::time::UNIX_EPOCH;
 
     use super::*;
+    use crate::app::state::App;
 
     #[test]
     fn a_full_queue_drops_the_client_and_closes_its_socket() {
@@ -804,6 +839,37 @@ mod tests {
         assert!(!fresh(None, Some(earlier)));
         assert!(!fresh(Some(earlier), None));
         assert!(fresh(None, None));
+    }
+
+    fn handoff(ticket: u64) -> Handoff {
+        Handoff {
+            carry: App::new(None).carry(),
+            old: Here {
+                session: "session".to_owned(),
+                block: "old".to_owned(),
+            },
+            target: "new".to_owned(),
+            from: 3,
+            ticket,
+        }
+    }
+
+    #[test]
+    fn a_deadline_clears_only_the_hand_off_it_was_made_for() {
+        let mut state = State::new();
+        state.handoffs.insert(5, handoff(10));
+        state.going.insert(3);
+        // A newer go-to's hand-off, and a view with none, stay.
+        assert!(!expire(&mut state, 5, 9, 3));
+        assert!(!expire(&mut state, 6, 10, 3));
+        assert!(state.handoffs.contains_key(&5));
+        assert!(state.going.contains(&3));
+        // Its own hand-off ends, and the go-to with it.
+        assert!(expire(&mut state, 5, 10, 3));
+        assert!(state.handoffs.is_empty());
+        assert!(state.going.is_empty());
+        // A hand-off the new copy took is gone, so nothing is left to end.
+        assert!(!expire(&mut state, 5, 10, 3));
     }
 
     #[test]
