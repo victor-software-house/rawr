@@ -47,6 +47,95 @@ The sessions in this demo are made up.
 
 Then type `rawr` in any pane.
 
+## Open rawr
+
+Press `⌥⌘R` (`cmd+alt+r`) to open rawr.
+It shows the full app floating over the window in view, and hides it on the next press.
+Only one copy runs at a time: opening it in another window closes the copy in the first.
+
+Add this to Rex's `init.lua`:
+
+```lua
+local terminal = "com.superlogical.terminal"
+local rawr_bin = "rawr"
+
+-- Every floating pane that runs rawr, in every session, by its IDs.
+local function rawr_windows()
+  local found = {}
+  -- A view of another session needs the connection attached to it.
+  rex.call("session.attach_all", { event_scope = "session" })
+  local list = rex.call("session.list", {})
+  for _, s in ipairs(list.sessions or {}) do
+    -- A session whose view does not come back, such as one going away,
+    -- holds nothing to show.
+    local view = rex.call("session.view", { session_id = s.session_id }) or {}
+    for _, w in ipairs(view.windows or {}) do
+      for _, l in ipairs(w.layers or {}) do
+        if l.kind == "floating" then
+          for _, b in ipairs(l.blocks or {}) do
+            local p = rex.block.call(terminal, "process", { session_id = s.session_id, block_id = b.block_id })
+            if p ~= nil and p.foreground ~= nil and p.foreground.name == "rawr" then
+              table.insert(found, {
+                session_id = s.session_id,
+                window_id = w.window_id,
+                layer_id = l.layer_id,
+                block_id = b.block_id,
+                minimized = l.state == "minimized",
+              })
+            end
+          end
+        end
+      end
+    end
+  end
+  return found
+end
+
+rex.action{
+  name = "rawr_open",
+  title = "Show or Hide rawr",
+  description = "Show the rawr app over this window, or hide it: every pane, its sessions, and a search over every session.",
+  category = "rawr",
+  keywords = "rawr panes sessions resume search toggle",
+  run = function(ctx)
+    if ctx.session_id == nil then error("no session is in view", 0) end
+    local here = rex.call("session.view", { session_id = ctx.session_id }).active_window_id
+    local mine = nil
+    for _, w in ipairs(rawr_windows()) do
+      if mine == nil and w.session_id == ctx.session_id and w.window_id == here then
+        mine = w
+      else
+        rex.call("block.close", { session_id = w.session_id, block_id = w.block_id, keep_last = true })
+      end
+    end
+    if mine ~= nil then
+      rex.call("session.set_layer_state", {
+        session_id = mine.session_id,
+        layer_id = mine.layer_id,
+        state = mine.minimized and "normal" or "minimized",
+        focus = mine.minimized,
+      })
+      return
+    end
+    rex.call("session.new_layer", {
+      session_id = ctx.session_id,
+      window_id = here,
+      bounds = { 0.1, 0.06, 0.8, 0.88 },
+      focus = true,
+      layout = { block = {
+        flavor = "com.superlogical.terminal.shell",
+        label = "rawr",
+        options = { command = { rawr_bin } },
+      } },
+    })
+  end,
+}
+
+rex.bind("cmd+alt+r", "rawr_open")
+```
+
+After a Rex restart, each pane where Claude ran shows only its own sessions, in a stand-in you can resume from or quit.
+
 ## The app
 
 Like `less` or `vim`, rawr takes over the terminal and puts back what was on screen when you quit.
@@ -100,6 +189,8 @@ Going to a pane switches the Rex app to it, which needs Remote Control turned on
 | One column or two | `Ctrl+L` | |
 | Show the keys | `?` | |
 | Back, or quit from the pane list | `Esc`, `q`, `Ctrl+C` | |
+
+In the stand-in, `1`, `g` and `Ctrl+F` do nothing, and `Esc` quits.
 
 ## Setup
 
