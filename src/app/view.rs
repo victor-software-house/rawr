@@ -818,7 +818,7 @@ fn panes_list(frame: &mut Frame<'_>, app: &App, list: Rect, hits: &mut Hits) {
         match line {
             Line_::Pane(index) => {
                 pane_row(frame, app, *index, cell);
-                hits.add(cell, Target::Pane(*index));
+                pane_hits(app, *index, cell, hits);
             }
             Line_::Header(section, count) => put(
                 frame,
@@ -833,10 +833,33 @@ fn panes_list(frame: &mut Frame<'_>, app: &App, list: Rect, hits: &mut Hits) {
     }
 }
 
-/// The section a pane goes in: by its status, or Closed when its pane is
-/// gone.
+/// What a pane's row takes a click on: its close mark, found before the row
+/// it lies on, when it is an opened pane, then the row.
+fn pane_hits(app: &App, index: usize, cell: Rect, hits: &mut Hits) {
+    if app.panes.get(index).is_some_and(|pane| pane.opened) {
+        hits.add(
+            Rect {
+                x: cell.right().saturating_sub(CLOSE_MARK),
+                width: CLOSE_MARK.min(cell.width),
+                height: 1,
+                ..cell
+            },
+            Target::Close(index),
+        );
+    }
+    hits.add(cell, Target::Pane(index));
+}
+
+/// The columns at the right edge of an opened pane's row that take a click
+/// on its close mark.
+const CLOSE_MARK: u16 = 3;
+
+/// The section a pane goes in: Opened when it was chosen from the search, by
+/// its status, or Closed when its pane is gone.
 fn section_of(pane: &Pane) -> &'static str {
-    if pane.closed {
+    if pane.opened {
+        "Opened"
+    } else if pane.closed {
         "Closed"
     } else {
         theme::section(pane.status)
@@ -920,7 +943,12 @@ fn pane_row(frame: &mut Frame<'_>, app: &App, index: usize, cell: Rect) {
     let hovered = app.hover == Some(Target::Pane(index));
     let age = short_age(pane.sessions.first().and_then(|(agent, _)| agent.idle));
     let width = usize::from(cell.width);
-    let room = width.saturating_sub(4 + age.chars().count() + 2);
+    let mark = if pane.opened {
+        usize::from(CLOSE_MARK) - 1
+    } else {
+        0
+    };
+    let room = width.saturating_sub(4 + age.chars().count() + 2 + mark);
     let title = truncate(pane.title(), room);
     let gap = room.saturating_sub(title.chars().count());
     let bar = Span::styled(
@@ -944,7 +972,7 @@ fn pane_row(frame: &mut Frame<'_>, app: &App, index: usize, cell: Rect) {
         (None, Some(msg)) if !msg.is_empty() => format!("{place} · {msg}"),
         (None, _) => place,
     };
-    let mut lines = vec![Line::from(vec![
+    let mut first = vec![
         bar.clone(),
         Span::raw(" "),
         Span::styled(
@@ -955,7 +983,19 @@ fn pane_row(frame: &mut Frame<'_>, app: &App, index: usize, cell: Rect) {
         Span::styled(title, title_style),
         Span::raw(" ".repeat(gap)),
         Span::styled(format!(" {age} "), theme::dim()),
-    ])];
+    ];
+    if pane.opened {
+        let closing = app.hover == Some(Target::Close(index));
+        first.push(Span::styled(
+            "× ",
+            if closing {
+                Style::new().fg(theme::ACCENT)
+            } else {
+                theme::dim()
+            },
+        ));
+    }
+    let mut lines = vec![Line::from(first)];
     if cell.height > 1 {
         lines.push(Line::from(vec![
             bar,
@@ -1043,10 +1083,13 @@ fn head(
         if bottom.saturating_sub(y) < 3 {
             return None;
         }
-        let mut place = vec![
-            Span::styled(pane.name.clone(), Style::new().add_modifier(Modifier::BOLD)),
-            Span::styled(format!(" · {}", pane.tab), theme::dim()),
-        ];
+        let mut place = vec![Span::styled(
+            pane.name.clone(),
+            Style::new().add_modifier(Modifier::BOLD),
+        )];
+        if !pane.tab.is_empty() {
+            place.push(Span::styled(format!(" · {}", pane.tab), theme::dim()));
+        }
         if app.here.as_deref() == Some(pane.block_id.as_str()) {
             place.push(Span::styled(" · here", theme::dim()));
         }
@@ -3471,13 +3514,16 @@ mod tests {
 
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
-    use ratatui::crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+    use ratatui::crossterm::event::{
+        KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    };
 
     use super::*;
     use crate::app::facts::Way;
     use crate::app::history::Ask;
     use crate::app::state::Action;
-    use crate::app::state::fixtures::pane;
+    use crate::app::state::fixtures::{agent, pane};
+    use crate::catalog::Hit;
 
     const OWN: &str = "block-own";
 
@@ -3540,6 +3586,45 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn an_opened_pane_draws_under_opened_with_a_close_mark_and_resumes_only() {
+        let mut app = App::new(None);
+        app.cols = 100;
+        app.set_panes(panes());
+        let before = screen(&mut app);
+        assert!(before.contains("Go to pane"), "{before}");
+        app.on_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL));
+        app.set_results(vec![Hit {
+            agent: agent("old-0", "Old work"),
+            snippet: None,
+            prompts: 1,
+        }]);
+        app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let session = screen(&mut app);
+        assert!(session.contains("Resume"), "{session}");
+        assert!(!session.contains("Go to pane"), "{session}");
+        app.on_key(KeyEvent::new(KeyCode::Char('1'), KeyModifiers::NONE));
+        // The move of focus is done.
+        app.moved = None;
+        let list = screen(&mut app);
+        assert!(list.contains("Opened"), "{list}");
+        let rows: Vec<&str> = list.lines().collect();
+        let header = rows
+            .iter()
+            .position(|row| row.contains("Opened"))
+            .expect("an Opened header");
+        let first = rows
+            .iter()
+            .position(|row| row.contains("Fix login"))
+            .expect("the first pane");
+        assert!(header < first, "{list}");
+        assert!(
+            rows.iter()
+                .any(|row| row.contains("Old work") && row.contains('×')),
+            "{list}"
+        );
     }
 
     #[test]

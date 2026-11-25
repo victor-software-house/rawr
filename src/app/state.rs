@@ -147,6 +147,8 @@ pub(crate) enum Target {
     Pane(usize),
     Session(usize),
     Result(usize),
+    /// The close mark of an opened pane, by the pane's place in the list.
+    Close(usize),
     Search,
     Button(Button),
     /// A column, folded or not; a click focuses it.
@@ -489,6 +491,11 @@ pub(crate) struct App {
     pub(crate) ahead: usize,
     /// The pane to select once the feed lists it, by block ID.
     pub(crate) want: Option<String>,
+    /// The panes the daemon last listed, before the opened panes join them.
+    listed: Vec<Pane>,
+    /// The sessions chosen from the search that no listed pane lists, each
+    /// shown as an opened pane until a listed pane lists it.
+    opened: Vec<Agent>,
     /// The block of the pane this window stands in for, when it is a
     /// stand-in: it lists that pane alone and never focuses the panes or
     /// the search.
@@ -608,6 +615,8 @@ impl App {
             files_shown: Shown::All,
             file_type: None,
             want: None,
+            listed: Vec::new(),
+            opened: Vec::new(),
             stand_in: None,
             scrolls: [Scroll::default(); 4],
             fold: Fold {
@@ -1091,28 +1100,63 @@ impl App {
         });
     }
 
-    /// Takes a new list of panes, sorted by attention, and keeps the
-    /// selection on the same pane when it is still there.
+    /// Takes a new list of panes from the daemon, and lists them as
+    /// [`App::merge`] does.
     pub(crate) fn set_panes(&mut self, mut panes: Vec<Pane>) {
         // A stand-in lists its own pane alone.
         if let Some(block) = &self.stand_in {
             panes.retain(|pane| &pane.block_id == block);
         }
         let first = self.link == Link::Connecting;
-        panes.sort_by(|a, b| {
-            a.closed
-                .cmp(&b.closed)
-                .then_with(|| rank(a.status).cmp(&rank(b.status)))
-                .then_with(|| newest(a).cmp(&newest(b)))
-        });
+        self.listed = panes;
+        self.link = Link::Live;
+        self.merge();
+        // A stand-in opens on the pane's sessions when it lists them, else on
+        // the session.
+        if first && self.is_stand_in() {
+            let focus = if self.lists_sessions() {
+                Focus::Sessions
+            } else {
+                Focus::Session
+            };
+            (self.focus, self.lead, self.back) = (focus, focus, focus);
+        }
+    }
+
+    /// Lists the daemon's panes and an opened pane for each opened session
+    /// none of them lists, sorted by attention with the opened panes first,
+    /// and keeps the selection on the same pane when it is still there. An
+    /// opened session that a daemon pane lists now leaves the opened ones, and
+    /// the selection follows it to that pane.
+    fn merge(&mut self) {
         // The pane asked for, until the feed lists it; then the one selected.
-        let kept = self
+        let mut kept = self
             .want
             .clone()
             .or_else(|| self.selected().map(|pane| pane.block_id.clone()));
+        let mut followed = None;
+        let listed = &self.listed;
+        self.opened.retain(|agent| {
+            let Some(pane) = listed.iter().find(|pane| lists(pane, &agent.session_id)) else {
+                return true;
+            };
+            if kept.as_deref() == Some(opened_block(&agent.session_id).as_str()) {
+                kept = Some(pane.block_id.clone());
+                followed = Some(agent.session_id.clone());
+            }
+            false
+        });
+        let mut panes = self.listed.clone();
+        panes.extend(self.opened.iter().map(opened_pane));
+        panes.sort_by(|a, b| {
+            b.opened
+                .cmp(&a.opened)
+                .then_with(|| a.closed.cmp(&b.closed))
+                .then_with(|| rank(a.status).cmp(&rank(b.status)))
+                .then_with(|| newest(a).cmp(&newest(b)))
+        });
         let before = self.pane;
         self.panes = panes;
-        self.link = Link::Live;
         let found = kept
             .as_ref()
             .and_then(|id| self.panes.iter().position(|pane| &pane.block_id == id));
@@ -1131,17 +1175,12 @@ impl App {
         if self.pane != before {
             self.scroll_mut(Focus::Panes).follow = true;
         }
-        self.session = self.session.min(self.session_count().saturating_sub(1));
-        // A stand-in opens on the pane's sessions when it lists them, else on
-        // the session.
-        if first && self.is_stand_in() {
-            let focus = if self.lists_sessions() {
-                Focus::Sessions
-            } else {
-                Focus::Session
-            };
-            (self.focus, self.lead, self.back) = (focus, focus, focus);
+        if let Some(place) =
+            followed.and_then(|id| self.selected().and_then(|pane| session_in(pane, &id)))
+        {
+            self.session = place;
         }
+        self.session = self.session.min(self.session_count().saturating_sub(1));
     }
 
     fn session_count(&self) -> usize {
@@ -1395,6 +1434,10 @@ impl App {
             }
             KeyCode::Char('r') => self.resume(),
             KeyCode::Char('g') => self.go_to(),
+            KeyCode::Char('x') => {
+                self.close_opened(self.pane);
+                Action::None
+            }
             KeyCode::Enter => match self.focus {
                 Focus::Panes => self.go_to(),
                 Focus::Sessions => {
@@ -1499,12 +1542,10 @@ impl App {
     fn on_search_key(&mut self, key: KeyEvent) -> Action {
         match key.code {
             KeyCode::Esc => {
-                self.focus = self.back;
-                self.query.clear();
-                self.results.clear();
+                self.close_search();
                 Action::None
             }
-            KeyCode::Enter => self.open_hit(),
+            KeyCode::Enter => self.choose(),
             KeyCode::Down => {
                 self.step(1);
                 Action::None
@@ -1786,10 +1827,11 @@ impl App {
                 Action::None
             }
             Target::Result(index) => {
-                if self.result == index {
-                    return self.open_hit();
-                }
                 self.result = index;
+                self.choose()
+            }
+            Target::Close(index) => {
+                self.close_opened(index);
                 Action::None
             }
             Target::Search => {
@@ -1949,20 +1991,82 @@ impl App {
         self.chosen().map_or(Action::None, Action::Resume)
     }
 
-    /// A search hit whose Claude runs goes to its pane; any other resumes.
-    fn open_hit(&self) -> Action {
-        let Some(hit) = self.results.get(self.result) else {
+    /// Shuts the search as Esc does: focus goes back, and the query and the
+    /// results are cleared.
+    fn close_search(&mut self) {
+        self.focus = self.back;
+        self.query.clear();
+        self.results.clear();
+    }
+
+    /// Chooses the result: the search closes and the result's session is
+    /// shown in the session column, in the pane that lists it, else in an
+    /// opened pane. Nothing resumes and Rex keeps its pane.
+    fn choose(&mut self) -> Action {
+        let Some(agent) = self.results.get(self.result).map(|hit| hit.agent.clone()) else {
             return Action::None;
         };
-        match self
-            .running(&hit.agent.session_id)
-            .and_then(|index| self.panes.get(index))
-        {
-            Some(pane) => Action::GoTo {
-                session_id: pane.session_id.clone(),
-                block_id: pane.block_id.clone(),
-            },
-            None => self.resume(),
+        self.close_search();
+        let id = agent.session_id.clone();
+        if self.place_of(&id).is_none() {
+            if !self.opened.iter().any(|opened| opened.session_id == id) {
+                self.opened.push(agent.clone());
+            }
+            self.want = Some(opened_block(&id));
+            self.merge();
+        }
+        let Some((pane, session)) = self.place_of(&id) else {
+            return Action::None;
+        };
+        self.pane = pane;
+        self.session = session;
+        // A filter that hides the chosen session would hide what was asked for.
+        if !self.visible_panes().contains(&pane) {
+            self.filters[Focus::Panes.index()].clear();
+        }
+        if !self.visible_sessions().contains(&session) {
+            self.filters[Focus::Sessions.index()].clear();
+            self.show_scratch |= !self.visible_sessions().contains(&session);
+        }
+        self.scroll_mut(Focus::Panes).follow = true;
+        self.reset_scroll(Focus::Sessions);
+        self.reset_scroll(Focus::Session);
+        self.focus_here(Focus::Session);
+        Action::None
+    }
+
+    /// The pane that lists the session `session_id`, and its place there:
+    /// one the list shows before one it hides.
+    fn place_of(&self, session_id: &str) -> Option<(usize, usize)> {
+        self.panes
+            .iter()
+            .enumerate()
+            .filter_map(|(index, pane)| {
+                session_in(pane, session_id).map(|place| (index, pane, place))
+            })
+            .min_by_key(|(_, pane, _)| self.moved_to(pane).is_some())
+            .map(|(index, _, place)| (index, place))
+    }
+
+    /// Closes the opened pane at `index`, if it is one. When it was the
+    /// selected pane, the first pane is selected.
+    fn close_opened(&mut self, index: usize) {
+        let Some(id) = self
+            .panes
+            .get(index)
+            .filter(|pane| pane.opened)
+            .and_then(|pane| pane.sessions.first())
+            .map(|(agent, _)| agent.session_id.clone())
+        else {
+            return;
+        };
+        let before = self.selected().map(|pane| pane.block_id.clone());
+        self.opened.retain(|agent| agent.session_id != id);
+        self.merge();
+        if self.selected().map(|pane| pane.block_id.clone()) != before {
+            self.session = self.first_session();
+            self.reset_scroll(Focus::Sessions);
+            self.reset_scroll(Focus::Session);
         }
     }
 
@@ -2354,6 +2458,39 @@ fn newest(pane: &Pane) -> Duration {
         .unwrap_or(Duration::MAX)
 }
 
+/// The block ID of the opened pane for `session_id`.
+fn opened_block(session_id: &str) -> String {
+    format!("opened:{session_id}")
+}
+
+/// The opened pane for a session no daemon pane lists.
+fn opened_pane(agent: &Agent) -> Pane {
+    Pane {
+        session_id: String::new(),
+        block_id: opened_block(&agent.session_id),
+        name: agent.title.clone(),
+        status: Status::Stopped,
+        tab: String::new(),
+        progress: None,
+        msg: None,
+        sessions: vec![(agent.clone(), false)],
+        closed: true,
+        opened: true,
+    }
+}
+
+/// Whether `pane` lists the session `session_id`.
+fn lists(pane: &Pane, session_id: &str) -> bool {
+    session_in(pane, session_id).is_some()
+}
+
+/// Where `pane` lists the session `session_id`.
+fn session_in(pane: &Pane, session_id: &str) -> Option<usize> {
+    pane.sessions
+        .iter()
+        .position(|(agent, _)| agent.session_id == session_id)
+}
+
 impl App {
     /// The session the session column shows: the search hit, or the
     /// selected session of the selected pane.
@@ -2476,6 +2613,7 @@ pub(crate) mod fixtures {
                 .map(|(place, title)| (agent(&format!("{block}-{place}"), title), false))
                 .collect(),
             closed: false,
+            opened: false,
         }
     }
 }
@@ -2484,7 +2622,7 @@ pub(crate) mod fixtures {
 mod tests {
     use ratatui::layout::Rect;
 
-    use super::fixtures::pane;
+    use super::fixtures::{agent, pane};
     use super::*;
 
     const OWN: &str = "block-own";
@@ -2505,6 +2643,151 @@ mod tests {
         let mut app = App::stand_in(OWN.to_owned());
         app.set_panes(three_panes(own_titles));
         app
+    }
+
+    /// A search for which the sessions `ids` are the results, as the daemon
+    /// answers it.
+    fn search_finds(app: &mut App, ids: &[&str]) {
+        app.on_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL));
+        app.set_results(
+            ids.iter()
+                .map(|id| Hit {
+                    agent: agent(id, "Found session"),
+                    snippet: None,
+                    prompts: 1,
+                })
+                .collect(),
+        );
+    }
+
+    /// A press of the left button on `target`.
+    fn press_on(app: &mut App, target: Target) -> Action {
+        app.on_mouse(
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 3,
+                row: 3,
+                modifiers: KeyModifiers::NONE,
+            },
+            Under {
+                target: Some(target),
+                ..Under::default()
+            },
+        )
+    }
+
+    /// An app with the three panes, the last of which lists two sessions.
+    fn listed_app() -> App {
+        let mut app = App::new(None);
+        app.set_panes(vec![
+            pane("block-a", "alpha/one", Status::Working, &["Fix login"]),
+            pane(OWN, "work/shell", Status::Stopped, &["Fix checkout"]),
+            pane(
+                "block-b",
+                "beta/two",
+                Status::Idle,
+                &["Tune search", "Add coupons"],
+            ),
+        ]);
+        app
+    }
+
+    fn selected_block(app: &App) -> &str {
+        app.selected().map_or("", |pane| pane.block_id.as_str())
+    }
+
+    #[test]
+    fn enter_on_a_result_a_pane_lists_selects_its_pane_and_session() {
+        let mut app = listed_app();
+        search_finds(&mut app, &["block-b-1"]);
+        let action = app.on_key(key(KeyCode::Enter));
+        assert!(matches!(action, Action::None), "{action:?}");
+        assert_eq!(selected_block(&app), "block-b");
+        assert_eq!(app.session, 1);
+        assert_eq!(app.focus, Focus::Session);
+        assert!(app.query.is_empty() && app.results.is_empty());
+    }
+
+    #[test]
+    fn a_click_on_a_result_that_is_not_selected_chooses_it() {
+        let mut app = listed_app();
+        search_finds(&mut app, &["block-a-0", "block-b-0"]);
+        let action = press_on(&mut app, Target::Result(1));
+        assert!(matches!(action, Action::None), "{action:?}");
+        assert_eq!(selected_block(&app), "block-b");
+        assert_eq!(app.session, 0);
+        assert_ne!(app.focus, Focus::Search);
+    }
+
+    #[test]
+    fn a_result_no_pane_lists_opens_first_in_the_list_and_selected() {
+        let mut app = listed_app();
+        search_finds(&mut app, &["old-0"]);
+        let action = press_on(&mut app, Target::Result(0));
+        assert!(matches!(action, Action::None), "{action:?}");
+        assert_eq!(app.panes.len(), 4);
+        assert_eq!(app.pane, 0);
+        let opened = &app.panes[0];
+        assert!(opened.opened && opened.closed);
+        assert_eq!(opened.block_id, "opened:old-0");
+        assert_eq!(opened.sessions.len(), 1);
+        assert_eq!(app.session, 0);
+        assert_eq!(app.focus, Focus::Session);
+        assert_eq!(
+            app.current().map(|agent| agent.session_id.as_str()),
+            Some("old-0")
+        );
+    }
+
+    #[test]
+    fn choosing_an_opened_session_twice_leaves_one_opened_pane() {
+        let mut app = listed_app();
+        for _ in 0..2 {
+            search_finds(&mut app, &["old-0"]);
+            app.on_key(key(KeyCode::Enter));
+        }
+        assert_eq!(app.panes.iter().filter(|pane| pane.opened).count(), 1);
+        assert_eq!(app.panes.len(), 4);
+        assert_eq!(selected_block(&app), "opened:old-0");
+    }
+
+    #[test]
+    fn x_closes_the_selected_opened_pane_and_selects_the_first_pane() {
+        let mut app = listed_app();
+        search_finds(&mut app, &["old-0"]);
+        app.on_key(key(KeyCode::Enter));
+        app.on_key(key(KeyCode::Char('x')));
+        assert!(app.panes.iter().all(|pane| !pane.opened));
+        assert_eq!(app.panes.len(), 3);
+        assert_eq!(app.pane, 0);
+        assert_eq!(selected_block(&app), "block-a");
+        // A pane Rex lists has no close.
+        app.on_key(key(KeyCode::Char('x')));
+        assert_eq!(app.panes.len(), 3);
+    }
+
+    #[test]
+    fn a_click_on_the_close_mark_closes_the_opened_pane() {
+        let mut app = listed_app();
+        search_finds(&mut app, &["old-0"]);
+        app.on_key(key(KeyCode::Enter));
+        let action = press_on(&mut app, Target::Close(0));
+        assert!(matches!(action, Action::None), "{action:?}");
+        assert!(app.panes.iter().all(|pane| !pane.opened));
+        assert_eq!(selected_block(&app), "block-a");
+    }
+
+    #[test]
+    fn a_daemon_pane_that_comes_to_list_an_opened_session_replaces_it() {
+        let mut app = listed_app();
+        search_finds(&mut app, &["old-0"]);
+        app.on_key(key(KeyCode::Enter));
+        let mut panes = three_panes(&["Fix checkout"]);
+        panes.push(pane("old", "gamma/three", Status::Working, &["Old work"]));
+        app.set_panes(panes);
+        assert!(app.panes.iter().all(|pane| !pane.opened));
+        assert_eq!(selected_block(&app), "old");
+        assert_eq!(app.session, 0);
     }
 
     #[test]
