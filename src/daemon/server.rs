@@ -101,13 +101,11 @@ impl State {
 
     /// Takes the client ID of a window that said hello, and returns it with
     /// the window's view: the one it asked to keep, or its own ID. A kept
-    /// view moves `next` past it, for a clock that went back since.
+    /// view leaves `next` alone, so a hello cannot push the counter to its
+    /// end and give every later window one ID.
     fn admit(&mut self, kept: Option<u64>) -> (u64, u64) {
         let id = self.next;
         self.next = self.next.saturating_add(1);
-        if let Some(kept) = kept {
-            self.next = self.next.max(kept.saturating_add(1));
-        }
         (id, kept.unwrap_or(id))
     }
 }
@@ -847,21 +845,18 @@ mod tests {
     }
 
     #[test]
-    fn ids_start_from_the_clock_and_pass_a_view_kept_from_a_later_run() {
+    fn ids_start_from_the_clock_and_a_kept_view_leaves_them_alone() {
         let mut state = State::new();
         // After 2023-11-14, in microseconds since the epoch.
         assert!(state.next > 1_700_000_000_000_000, "{}", state.next);
-        let kept = state.next + 100;
-        let (id, view) = state.admit(Some(kept));
-        assert_eq!(view, kept);
-        assert!(state.next > kept, "{} is not past {kept}", state.next);
-        // A window with no view takes its own ID, and no other takes it.
+        let start = state.next;
+        let (id, view) = state.admit(Some(u64::MAX));
+        assert_eq!((id, view), (start, u64::MAX));
+        // A window with no view takes its own ID, and the next one another.
         let (other, own) = state.admit(None);
-        assert_eq!(own, other);
-        assert!(other > kept && other != id);
-        // A kept view at the top of the range moves nothing past it.
-        let (_, top) = state.admit(Some(u64::MAX));
-        assert_eq!(top, u64::MAX);
+        assert_eq!((other, own), (start + 1, start + 1));
+        let (third, _) = state.admit(None);
+        assert_eq!(third, start + 2);
     }
 
     #[test]
