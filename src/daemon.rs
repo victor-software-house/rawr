@@ -71,6 +71,15 @@ pub(crate) enum ToDaemon {
         after: EntryId,
         count: usize,
     },
+    /// Up to `count` entries of `list` nearest the byte `at` of the
+    /// transcript, which the daemon answers with `around`, naming `ask`.
+    Around {
+        path: PathBuf,
+        list: List,
+        at: u64,
+        count: usize,
+        ask: u64,
+    },
     /// Every session that matches `query`, those of the pane `pane` first.
     /// A newer search from the same client ends this one.
     Search {
@@ -129,6 +138,19 @@ pub(crate) enum FromDaemon {
         more: bool,
         /// Why the transcript could not be read, when it could not. The
         /// entries and `more` then say nothing.
+        failed: Option<String>,
+    },
+    /// The answer to `around` `ask`: the entries, oldest first, whether the
+    /// transcript has more before them, and the entry nearest the place asked
+    /// for.
+    Around {
+        path: PathBuf,
+        list: List,
+        ask: u64,
+        entries: Vec<Said>,
+        older: bool,
+        place: Option<EntryId>,
+        /// Why the transcript could not be read, when it could not.
         failed: Option<String>,
     },
     /// A batch of matches for search `id`, after `read` of `total`

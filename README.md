@@ -184,7 +184,7 @@ Going to a pane switches the Rex app to it, which needs Remote Control turned on
 | --- | --- | --- |
 | Switch columns | `1` `2`, `Tab` | Click a column |
 | Switch tabs | `←` `→`, `h` `l`, `[` `]` | Click a tab |
-| Move the selection or scroll | `↑` `↓`, `j` `k` | Click a row, or scroll the wheel |
+| Move the selection or scroll | `↑` `↓`, `j` `k` | Click a row, scroll the wheel, or drag the scrollbar |
 | Go to the pane in the Rex app | `Enter` on a pane, `g` | Click the selected pane |
 | Resume the session | `Enter` on a session, `r` | Click the selected session |
 | Filter the focused column | `/`; `Esc` clears the filter | |

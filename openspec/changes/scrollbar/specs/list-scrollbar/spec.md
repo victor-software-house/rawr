@@ -38,10 +38,11 @@ A list that fits SHALL draw no bar.
 
 ### Requirement: A drag past the held entries jumps
 
-In the Conversation and Activity tabs, a drag that ends or rests for 100 ms on a place no held entry covers SHALL load the entries at that place directly, and show them once they land.
+In the Conversation and Activity tabs, a drag that reaches a place no held entry covers SHALL load the entries at that place directly, and show them once they land.
+A thumb that moves with no input SHALL glide to its new row over 100 ms.
 
 #### Scenario: Dragging to the start of a long session
 
 - **WHEN** a window holds the newest 300 of 5,800 calls and the reader drags the Activity thumb to the bottom of the track
-- **THEN** the window asks the daemon for the entries at the end of the list's bytes, and shows the first calls of the session when they land
+- **THEN** the window asks the daemon for the entries at the start of the transcript's bytes, and shows the first calls of the session when they land
 - **AND** it asks for no page between them

@@ -17,17 +17,16 @@ use ratatui::buffer::{Buffer, Cell, CellDiffOption};
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{
-    Block, BorderType, Clear, Padding, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
-};
+use ratatui::widgets::{Block, BorderType, Clear, Padding, Paragraph};
 
 use crate::app::facts::{EntryId, Facts, Kind, List, Outcome, Pr, Said};
 use crate::app::feed::Pane;
 use crate::app::history::{Gaps, History, NEAR, Reach, Shape};
 use crate::app::layouts::{Laid, Layouts};
+use crate::app::scrollbar::{self, Geometry, Track};
 use crate::app::state::{
-    self, Anchor, App, Arrangement, Button, FULL, Focus, Grip, Link, RAIL, Scroll, Tab, Target,
-    Under,
+    self, Anchor, App, Arrangement, Button, Drag, FULL, Focus, Grip, Link, RAIL, Scroll, Seek, Tab,
+    Target, Under,
 };
 use crate::app::{markup, theme};
 use crate::catalog;
@@ -65,6 +64,10 @@ pub(crate) struct Hits {
     pub(crate) anchor: Option<Anchor>,
     /// Where the view stands among the entries held, when it lists entries.
     pub(crate) reach: Option<Reach>,
+    /// The scrollbars of the lists that do not fit, with where each stands.
+    pub(crate) bars: Vec<Track>,
+    /// What this frame found at the place the session's thumb asked for.
+    pub(crate) seek: Option<Seek>,
 }
 
 impl Hits {
@@ -104,6 +107,7 @@ impl Hits {
         self.targets.retain(|(under, _)| !under.intersects(area));
         self.lists.retain(|(under, _)| !under.intersects(area));
         self.rails.retain(|(under, _)| !under.intersects(area));
+        self.bars.retain(|track| !track.area.intersects(area));
     }
 }
 
@@ -145,6 +149,7 @@ fn draw_with(frame: &mut Frame<'_>, app: &App, layouts: &mut Layouts, shown: Sho
     if app.help {
         hits.targets.clear();
         hits.rails.clear();
+        hits.bars.clear();
         hits.cursor = None;
         help(frame, app.is_stand_in());
     }
@@ -296,7 +301,7 @@ fn keep_area(app: &App, area: Rect, rail: Rect, column: Focus) -> Rect {
 /// when `grip` lets it move.
 fn edge_line(frame: &mut Frame<'_>, app: &App, area: Rect, grip: Option<Grip>, hits: &mut Hits) {
     let lit = grip.is_some_and(|grip| {
-        app.dragging.is_some_and(|held| held.column == grip.column)
+        matches!(app.dragging, Some(Drag::Edge(held)) if held.column == grip.column)
             || app.hover == Some(Target::Edge(grip))
     });
     let (glyph, style) = if lit {
@@ -712,7 +717,7 @@ fn panes_list(frame: &mut Frame<'_>, app: &App, list: Rect, hits: &mut Hits) {
         });
     let skip = top_of(app.scroll_of(Focus::Panes), total, list.height, selection);
     hits.tops.push((Focus::Panes, skip));
-    scrollbar(frame, list, skip, total);
+    draw_bar(frame, app, hits, Focus::Panes, list, skip, total);
     let list = Rect {
         width: list.width.saturating_sub(u16::from(total > list.height)),
         ..list
@@ -1104,6 +1109,7 @@ fn pane_view(
     hits.tops.push((Focus::Session, skip));
     hits.anchor = body.anchor;
     hits.reach = body.reach;
+    hits.seek = body.seek;
     let prs_at = body.prs_at;
     for (at, span, target) in body.rows {
         if let Some(row) = u16::try_from(at)
@@ -1121,7 +1127,15 @@ fn pane_view(
             hits.add(cell, target);
         }
     }
-    scrollbar(frame, content, body.bar.0, body.bar.1);
+    draw_bar(
+        frame,
+        app,
+        hits,
+        Focus::Session,
+        content,
+        body.bar.0,
+        body.bar.1,
+    );
     frame.render_widget(
         Paragraph::new(body.lines)
             .style(Style::new().fg(theme::TEXT))
@@ -1196,7 +1210,7 @@ fn session_list(frame: &mut Frame<'_>, app: &App, area: Rect, pane: &Pane, hits:
         selection,
     );
     hits.tops.push((Focus::Sessions, skip));
-    scrollbar(frame, list, skip, total);
+    draw_bar(frame, app, hits, Focus::Sessions, list, skip, total);
     let rows = Rect {
         width: list.width.saturating_sub(u16::from(total > list.height)),
         ..list
@@ -1357,6 +1371,8 @@ struct Body {
     anchor: Option<Anchor>,
     /// Where the view stands among the entries held, when the tab lists them.
     reach: Option<Reach>,
+    /// What the frame found at the place the scrollbar's thumb asked for.
+    seek: Option<Seek>,
     /// Which line holds the pull requests.
     prs_at: Option<usize>,
     /// Which lines take a click.
@@ -1487,6 +1503,7 @@ fn tab_lines(
                     top: entries.top,
                     anchor: entries.anchor,
                     reach: entries.reach,
+                    seek: entries.seek,
                     prs_at: None,
                     rows: entries.rows,
                 };
@@ -1519,6 +1536,7 @@ fn tab_lines(
         top,
         anchor: None,
         reach,
+        seek: None,
         prs_at,
         rows,
     }
@@ -1543,6 +1561,8 @@ struct Entries {
     reach: Option<Reach>,
     /// The scrollbar's position and length, which count the entries not held.
     bar: (usize, usize),
+    /// What was found at the place the scrollbar's thumb asked for, if it did.
+    seek: Option<Seek>,
 }
 
 /// The entries a tab lists, and what is known of those not held.
@@ -1585,22 +1605,33 @@ struct Stand {
 }
 
 /// Where the view of `height` lines stands among the `placed` entries: at the
-/// scroll's anchor entry, or at its line when it has none, and never out of the
-/// run of held entries that entry is in. `tail` is whether the oldest run ends
-/// with one more line.
-fn stand(app: &App, placed: &[Placed], height: u16, tail: bool) -> Stand {
+/// line the scrollbar's thumb asks for, `seek`, as a run and a line of the held
+/// entries, else at the scroll's anchor entry, or at its line when it has none,
+/// and never out of the run of held entries that entry is in. `tail` is whether
+/// the oldest run ends with one more line.
+fn stand(
+    app: &App,
+    placed: &[Placed],
+    height: u16,
+    tail: bool,
+    seek: Option<(usize, usize)>,
+) -> Stand {
     let scroll = app.scroll_of(Focus::Session);
-    let anchored = scroll.anchor.and_then(|anchor| {
-        // The entry itself, else the nearest newer one still listed.
-        let (entry, line) = match placed.iter().find(|entry| entry.id == anchor.id) {
-            Some(entry) => (entry, anchor.line),
-            None => (placed.iter().rfind(|entry| entry.id > anchor.id)?, 0),
-        };
-        // The wheel's steps since the last frame count wherever the view
-        // stands.
-        let line = i64::from(line).saturating_add(i64::from(anchor.moved));
-        Some((entry.run, entry.start, line))
-    });
+    let anchored = seek
+        .map(|(run, line)| (run, 0, i64::try_from(line).unwrap_or(i64::MAX)))
+        .or_else(|| {
+            scroll.anchor.and_then(|anchor| {
+                // The entry itself, else the nearest newer one still listed.
+                let (entry, line) = match placed.iter().find(|entry| entry.id == anchor.id) {
+                    Some(entry) => (entry, anchor.line),
+                    None => (placed.iter().rfind(|entry| entry.id > anchor.id)?, 0),
+                };
+                // The wheel's steps since the last frame count wherever the
+                // view stands.
+                let line = i64::from(line).saturating_add(i64::from(anchor.moved));
+                Some((entry.run, entry.start, line))
+            })
+        });
     let current = anchored
         .map(|(run, ..)| run)
         .or_else(|| placed.first().map(|entry| entry.run))
@@ -1649,7 +1680,10 @@ fn said(
 ) -> Entries {
     let filter = app.filter(Focus::Session);
     let (placed, total) = place(app, layouts, open, (items, shape.gaps), width);
-    let Stand { top, lo, hi, tail } = stand(app, &placed, height, unsearched);
+    let filtered = !filter.is_empty();
+    let asked = app.scroll_of(Focus::Session).seek;
+    let seek = asked.and_then(|at| seek_line(&placed, shape, filtered, (at, total)));
+    let Stand { top, lo, hi, tail } = stand(app, &placed, height, unsearched, seek);
     let anchor = if top == 0 {
         None
     } else {
@@ -1685,7 +1719,6 @@ fn said(
     if tail && bottom == hi {
         lines.push(Line::styled(UNSEARCHED, theme::dim()));
     }
-    let filtered = !filter.is_empty();
     let lead = app.ahead.min(NEAR);
     let reach = shown
         .first()
@@ -1715,6 +1748,17 @@ fn said(
         });
     // A filter shows held entries only, so it counts none that are not held.
     let counted = if filtered { None } else { reach };
+    let bar = bar(
+        shape,
+        counted,
+        (top, total + usize::from(tail), placed.len()),
+    );
+    // A filter counts no entry that is not held, so no place lies past them.
+    let seek = asked.and_then(|at| match seek {
+        Some(_) => Some(Seek::Held),
+        None if filtered => None,
+        None => seek_byte(&placed, shape, (at, total)).map(|byte| Seek::Past(list, byte)),
+    });
     Entries {
         lines,
         rows,
@@ -1722,11 +1766,8 @@ fn said(
         top: u16::try_from(top).unwrap_or(u16::MAX),
         anchor,
         reach,
-        bar: bar(
-            shape,
-            counted,
-            (top, total + usize::from(tail), placed.len()),
-        ),
+        bar,
+        seek,
     }
 }
 
@@ -1796,6 +1837,85 @@ fn place(
     (placed, total)
 }
 
+/// The run of held entries and the line of the `placed` ones that the
+/// scrollbar's line `at` stands for, among `total` lines held: the inverse of
+/// [`bar`]. `None` when no held entry covers it, because it falls in a gap or
+/// among the older entries not held. A filter counts none that are not held.
+fn seek_line(
+    placed: &[Placed],
+    shape: Shape<'_>,
+    filtered: bool,
+    (at, total): (usize, usize),
+) -> Option<(usize, usize)> {
+    placed.chunk_by(|a, b| a.run == b.run).find_map(|run| {
+        let (first, last) = (run.first()?, run.last()?);
+        let lines = last.start + last.height - first.start;
+        // The gaps above the run's newest entry move it down the bar.
+        let above: usize = if filtered {
+            0
+        } else {
+            shape
+                .gaps
+                .range(first.id..)
+                .map(|(_, missing)| *missing)
+                .sum()
+        };
+        let from = first.start + tall(above, total, placed.len());
+        (from..from + lines)
+            .contains(&at)
+            .then(|| (first.run, first.start + (at - from)))
+    })
+}
+
+/// The byte of the transcript that the scrollbar's line `at`, which no held
+/// entry covers, stands for: inside the gap it falls in, or among the entries
+/// older than the held ones, by how far into it the line is. The list shows the
+/// newest entries first, so the top of a gap is the byte of the oldest entry
+/// held above it, its bottom the byte of the newest held below it, and the
+/// older entries end at the transcript's first byte. `None` when no entry is
+/// held.
+fn seek_byte(placed: &[Placed], shape: Shape<'_>, (at, total): (usize, usize)) -> Option<u64> {
+    // Where the runs of held entries seen so far end on the bar, and the byte
+    // of the oldest entry among them.
+    let mut above: Option<(usize, u64)> = None;
+    for run in placed.chunk_by(|a, b| a.run == b.run) {
+        let (first, last) = (run.first()?, run.last()?);
+        let gaps: usize = shape
+            .gaps
+            .range(first.id..)
+            .map(|(_, missing)| *missing)
+            .sum();
+        let from = first.start + tall(gaps, total, placed.len());
+        if let Some((end, newer)) = above
+            && at < from
+        {
+            return Some(between(
+                (at.saturating_sub(end), from - end),
+                (newer, first.id.line),
+            ));
+        }
+        above = Some((from + last.start + last.height - first.start, last.id.line));
+    }
+    let (end, oldest) = above?;
+    let older = tall(shape.older, total, placed.len());
+    Some(between((at.saturating_sub(end), older), (oldest, 0)))
+}
+
+/// The byte `far` of `span` of the way from `top` down to `bottom`, the two
+/// bytes of the transcript that end a stretch of the bar.
+fn between((far, span): (usize, usize), (top, bottom): (u64, u64)) -> u64 {
+    let far = u128::try_from(far.min(span)).unwrap_or(0);
+    let span = u128::try_from(span.max(1)).unwrap_or(1);
+    let down = u128::from(top.saturating_sub(bottom)) * far / span;
+    top.saturating_sub(u64::try_from(down).unwrap_or(u64::MAX))
+}
+
+/// How many lines `entries` entries not held take: as many as those held take
+/// on average, `held` entries taking `total` lines.
+fn tall(entries: usize, total: usize, held: usize) -> usize {
+    entries * total / held.max(1)
+}
+
 /// The scrollbar's position and length for a view of the held entries that
 /// starts at line `top` of `total` lines, which `held` entries take. The
 /// entries not held count as tall as those held are on average. `reach` is
@@ -1808,7 +1928,6 @@ fn bar(
     let Some(reach) = reach else {
         return (top, total);
     };
-    let tall = |entries: usize| entries * total / held.max(1);
     let not_held = shape.gaps.values().sum::<usize>() + shape.older;
     // The gaps above the view's first entry move the thumb down.
     let above: usize = shape
@@ -1816,7 +1935,10 @@ fn bar(
         .range(reach.first..)
         .map(|(_, missing)| *missing)
         .sum();
-    (top + tall(above), total + tall(not_held))
+    (
+        top + tall(above, total, held),
+        total + tall(not_held, total, held),
+    )
 }
 
 /// Row `row` of an entry laid out as `laid`, with what a frame draws over it:
@@ -2818,7 +2940,7 @@ fn session_rows(
     });
     let skip = top_of(app.scroll_of(list), total, area.height, selection);
     hits.tops.push((list, skip));
-    scrollbar(frame, area, skip, total);
+    draw_bar(frame, app, hits, list, area, skip, total);
     let area = Rect {
         width: area.width.saturating_sub(u16::from(total > area.height)),
         ..area
@@ -3072,31 +3194,47 @@ fn top_of(scroll: Scroll, total: u16, height: u16, selection: Option<(u16, u16)>
     top.min(total.saturating_sub(height))
 }
 
-/// A thin scrollbar down the right edge of `area`, when a list `total` lines
-/// tall does not fit in it.
-fn scrollbar(frame: &mut Frame<'_>, area: Rect, top: impl Into<usize>, total: impl Into<usize>) {
-    let (top, total) = (top.into(), total.into());
-    let height = usize::from(area.height);
-    if total <= height {
+/// The scrollbar of `list` down the last column of `area`, when a list `total`
+/// lines tall does not fit in it, and where it takes the mouse. The column
+/// stays reserved while the bar is hidden. The thumb stands where the pointer
+/// holds it, else where the list stands.
+fn draw_bar(
+    frame: &mut Frame<'_>,
+    app: &App,
+    hits: &mut Hits,
+    list: Focus,
+    area: Rect,
+    top: impl Into<usize>,
+    total: impl Into<usize>,
+) {
+    let geometry = Geometry::new(top.into(), area.height, total.into());
+    if !geometry.shown() {
         return;
     }
-    let mut state = ScrollbarState::new(total - height + 1)
-        .position(top)
-        .viewport_content_length(usize::from(area.height));
-    frame.render_stateful_widget(
-        Scrollbar::new(ScrollbarOrientation::VerticalRight)
-            .begin_symbol(None)
-            .end_symbol(None)
-            .track_symbol(Some(" "))
-            .thumb_symbol("┃")
-            .thumb_style(theme::line()),
-        area,
-        &mut state,
+    let track = Rect {
+        x: area.right().saturating_sub(1),
+        width: 1,
+        ..area
+    };
+    let (start, size) = geometry.thumb();
+    scrollbar::draw(
+        frame.buffer_mut(),
+        track,
+        (app.thumb_row(list, start, app.now), size),
+        app.bar_shade(list, app.now),
     );
+    hits.bars.push(Track {
+        list,
+        area: track,
+        geometry,
+    });
+    // Before the rows, so the bar's own column takes the press.
+    hits.targets.insert(0, (track, Target::Bar(list)));
 }
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
     use std::time::Instant;
 
     use ratatui::Terminal;
@@ -3105,9 +3243,13 @@ mod tests {
 
     use super::*;
     use crate::app::facts::Way;
+    use crate::app::history::Ask;
     use crate::app::state::fixtures::pane;
 
     const OWN: &str = "block-own";
+
+    /// The transcript of every session the fixtures make.
+    const TRANSCRIPT: &str = "/work/shop/session.jsonl";
 
     /// The text of `app` drawn on a 100 by 40 screen, one line a row.
     fn screen(app: &mut App) -> String {
@@ -3181,6 +3323,8 @@ mod tests {
         history: History,
         /// Where the last frame left the view.
         reach: Option<Reach>,
+        /// Where the last frame put what takes a click.
+        hits: Hits,
         terminal: Terminal<TestBackend>,
     }
 
@@ -3236,6 +3380,7 @@ mod tests {
                 app,
                 history,
                 reach: None,
+                hits: Hits::default(),
                 terminal: Terminal::new(TestBackend::new(120, 40)).expect("a test terminal"),
             }
         }
@@ -3262,9 +3407,11 @@ mod tests {
                 .draw(|frame| hits = Some(draw(frame, &mut self.app, shown)))
                 .expect("the app draws");
             let hits = hits.expect("a frame was drawn");
-            self.app.settle(&hits.tops, hits.anchor);
+            self.app.settle(&hits.tops, hits.anchor, &hits.bars);
             self.app.cols = hits.width;
             self.reach = hits.reach;
+            self.app.found_seek(hits.seek);
+            self.hits = hits;
         }
 
         /// The entries a frame shows, one text each.
@@ -3649,6 +3796,619 @@ mod tests {
         assert!(rig.entries()[0].contains("file-299.rs"));
         rig.history.facts.activity.push(call(300, "file-new.rs"));
         assert!(rig.entries()[0].contains("file-new.rs"));
+    }
+
+    impl Rig {
+        /// The pages the loop would ask for after the last frame: none while
+        /// the view is held for a thumb.
+        fn asks(&mut self) -> Vec<Ask> {
+            if self.app.holds_view() {
+                return Vec::new();
+            }
+            let reach = self.reach;
+            reach
+                .and_then(|reach| self.history.settle(reach, 200))
+                .into_iter()
+                .collect()
+        }
+
+        /// The pointer's report `kind` at `column`, `row`, over what the last
+        /// frame drew there.
+        fn pointer(&mut self, kind: MouseEventKind, column: u16, row: u16) {
+            let under = self.hits.under(column, row);
+            self.app.on_mouse(
+                MouseEvent {
+                    kind,
+                    column,
+                    row,
+                    modifiers: KeyModifiers::NONE,
+                },
+                under,
+            );
+        }
+
+        /// The session list's scrollbar as the last frame drew it.
+        fn track(&self) -> Track {
+            self.hits
+                .bars
+                .iter()
+                .find(|track| track.list == Focus::Session)
+                .copied()
+                .expect("the list does not fit, so a bar is drawn")
+        }
+
+        /// The glyph in each row of the scrollbar's column in the last frame.
+        fn glyphs(&self) -> Vec<String> {
+            let track = self.track();
+            let buffer = self.terminal.backend().buffer();
+            (track.area.y..track.area.bottom())
+                .map(|y| buffer[(track.area.x, y)].symbol().to_owned())
+                .collect()
+        }
+    }
+
+    const LEFT: MouseButton = MouseButton::Left;
+
+    fn at(start: Instant, ms: u64) -> Instant {
+        start + Duration::from_millis(ms)
+    }
+
+    /// The rows of `glyphs` that hold `glyph`.
+    fn rows_of(glyphs: &[String], glyph: &str) -> Vec<usize> {
+        (0..glyphs.len())
+            .filter(|row| glyphs[*row] == glyph)
+            .collect()
+    }
+
+    #[test]
+    fn dragging_the_thumb_five_rows_down_moves_it_and_the_list_with_it() {
+        let mut rig = Rig::new(300);
+        rig.draw();
+        let track = rig.track();
+        let (top, size) = track.geometry.thumb();
+        assert_eq!(top, 0);
+        let (x, y) = (track.area.x, track.area.y);
+        rig.pointer(MouseEventKind::Down(LEFT), x, y);
+        rig.pointer(MouseEventKind::Drag(LEFT), x, y + 5);
+        let shown = rig.entries();
+        let size = usize::try_from(size).expect("a small number");
+        assert_eq!(
+            rows_of(&rig.glyphs(), "█"),
+            (5..5 + size).collect::<Vec<_>>()
+        );
+        assert_eq!(rig.track().geometry.thumb().0, 5);
+        let offset = usize::try_from(track.geometry.offset_for_top(5)).expect("a small number");
+        assert!(
+            shown[0].contains(&format!("file-{}.rs", 299 - offset)),
+            "{shown:?}"
+        );
+    }
+
+    #[test]
+    fn a_drag_goes_on_when_the_pointer_leaves_the_bar_column() {
+        let mut rig = Rig::new(300);
+        rig.draw();
+        let track = rig.track();
+        let (x, y) = (track.area.x, track.area.y);
+        rig.pointer(MouseEventKind::Down(LEFT), x, y);
+        rig.pointer(MouseEventKind::Drag(LEFT), x - 30, y + 5);
+        rig.draw();
+        assert_eq!(rig.track().geometry.thumb().0, 5);
+        rig.pointer(MouseEventKind::Up(LEFT), x - 30, y + 5);
+        assert_eq!(rig.app.held_thumb(Focus::Session), None);
+    }
+
+    #[test]
+    fn a_press_on_the_track_below_the_thumb_pages_down_by_the_lists_height() {
+        let mut rig = Rig::new(300);
+        rig.draw();
+        let track = rig.track();
+        let height = usize::from(track.area.height);
+        rig.pointer(
+            MouseEventKind::Down(LEFT),
+            track.area.x,
+            track.area.bottom() - 1,
+        );
+        let shown = rig.entries();
+        assert!(
+            shown[0].contains(&format!("file-{}.rs", 299 - height)),
+            "{shown:?}"
+        );
+        // The wheel reports read before the press are stale.
+        assert_eq!(rig.app.take_cleared(), [Focus::Session]);
+        // A press above the thumb pages back to the top.
+        let thumb = rig.track().geometry.thumb().0;
+        assert!(thumb > 0);
+        rig.pointer(MouseEventKind::Down(LEFT), track.area.x, track.area.y);
+        assert!(rig.entries()[0].contains("file-299.rs"));
+    }
+
+    #[test]
+    fn a_bar_is_drawn_only_when_the_list_does_not_fit() {
+        let mut rig = Rig::new(5);
+        rig.draw();
+        assert_eq!(rig.hits.bars.len(), 0);
+        let mut rig = Rig::new(300);
+        rig.draw();
+        assert_eq!(rig.hits.bars.len(), 1);
+    }
+
+    #[test]
+    fn the_bar_column_takes_a_press_before_the_column_it_is_in() {
+        let mut rig = Rig::new(300);
+        rig.draw();
+        let track = rig.track();
+        for y in track.area.y..track.area.bottom() {
+            assert_eq!(
+                rig.hits.target(track.area.x, y),
+                Some(Target::Bar(Focus::Session)),
+                "row {y}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_bar_shows_while_the_list_scrolls_and_is_gone_a_second_after() {
+        let mut rig = Rig::new(300);
+        let t0 = Instant::now();
+        rig.app.now = t0;
+        rig.draw();
+        assert!(rig.glyphs().iter().all(|glyph| glyph == " "));
+        rig.scroll(10);
+        let mut seen = Vec::new();
+        let mut first_rows: Option<Vec<String>> = None;
+        for ms in [0, 799, 800, 899, 999, 1000, 1500] {
+            rig.app.now = at(t0, ms);
+            let rows = rig.draw();
+            let track = rig.track();
+            let top = u16::try_from(track.geometry.thumb().0).expect("a small number");
+            let cell = &rig.terminal.backend().buffer()[(track.area.x, track.area.y + top)];
+            // A blank cell has no colour of its own to compare.
+            let ink = (cell.symbol() != " ").then(|| cell.style().fg).flatten();
+            seen.push((cell.symbol().to_owned(), ink));
+            // The text keeps its columns whether the bar shows or not.
+            let column = usize::from(track.area.x);
+            let first = first_rows.get_or_insert_with(|| rows.clone());
+            assert!(
+                rows.iter()
+                    .zip(first.iter())
+                    .all(|(now, then)| now.chars().take(column).eq(then.chars().take(column))),
+                "at {ms} ms the text moved"
+            );
+        }
+        let want = |glyph: &str, style: Option<Style>| {
+            (glyph.to_owned(), style.and_then(|style| style.fg))
+        };
+        assert_eq!(
+            seen,
+            [
+                want("┃", Some(theme::line())),
+                want("┃", Some(theme::line())),
+                want("┃", Some(theme::fading(1))),
+                want("┃", Some(theme::fading(2))),
+                want("┃", Some(theme::fading(4))),
+                want(" ", None),
+                want(" ", None),
+            ]
+        );
+    }
+
+    #[test]
+    fn hovering_the_last_column_shows_the_bar_with_the_thumb_a_full_cell() {
+        let mut rig = Rig::new(300);
+        let t0 = Instant::now();
+        rig.app.now = t0;
+        rig.draw();
+        let track = rig.track();
+        assert!(rig.glyphs().iter().all(|glyph| glyph == " "));
+        rig.pointer(MouseEventKind::Moved, track.area.x, track.area.bottom() - 1);
+        rig.draw();
+        let (top, size) = track.geometry.thumb();
+        let (top, size) = (
+            usize::try_from(top).expect("a small number"),
+            usize::try_from(size).expect("a small number"),
+        );
+        assert_eq!(
+            rows_of(&rig.glyphs(), "█"),
+            (top..top + size).collect::<Vec<_>>()
+        );
+        // The pointer going off it leaves the thumb a line again, for a while.
+        rig.app.now = at(t0, 50);
+        rig.pointer(MouseEventKind::Moved, 10, 10);
+        rig.draw();
+        assert_eq!(
+            rows_of(&rig.glyphs(), "┃"),
+            (top..top + size).collect::<Vec<_>>()
+        );
+        rig.app.now = at(t0, 1100);
+        rig.draw();
+        assert!(rig.glyphs().iter().all(|glyph| glyph == " "));
+    }
+
+    #[test]
+    fn a_drag_past_the_held_entries_keeps_the_view_where_it_was() {
+        // The newest 300 of 5,800 calls.
+        let mut rig = Rig::with(calls(5500..5800, 5800));
+        rig.draw();
+        let track = rig.track();
+        let (x, y) = (track.area.x, track.area.y);
+        rig.pointer(MouseEventKind::Down(LEFT), x, y);
+        // One row down stands for a place among the 300 held.
+        rig.pointer(MouseEventKind::Drag(LEFT), x, y + 1);
+        // The rows, less the thumb at their end.
+        let text = |rig: &mut Rig| -> Vec<String> {
+            rig.entries()
+                .iter()
+                .map(|row| row.trim_end_matches(['█', '┃', ' ']).to_owned())
+                .collect()
+        };
+        let held = text(&mut rig);
+        assert!(!held[0].contains("file-5799.rs"), "{held:?}");
+        for row in 2..track.area.height {
+            rig.pointer(MouseEventKind::Drag(LEFT), x, y + row);
+            assert_eq!(text(&mut rig), held, "row {row}");
+        }
+        // The thumb is at the bottom of the track all the same.
+        assert_eq!(rig.glyphs().last().map(String::as_str), Some("█"));
+    }
+
+    #[test]
+    fn dragging_to_the_bottom_of_a_long_session_asks_around_as_it_goes_and_no_page_between() {
+        // The newest 300 of 5,800 calls, as a window starts.
+        let all: Vec<Said> = (0..5800)
+            .map(|place| call(place, &format!("file-{place}.rs")))
+            .collect();
+        let mut rig = Rig::with(calls(5500..5800, 5800));
+        let t0 = Instant::now();
+        rig.app.now = t0;
+        rig.draw();
+        let mut asked = rig.asks();
+        let epoch = rig.history.epoch(List::Activity);
+        let track = rig.track();
+        let (x, y) = (track.area.x, track.area.y);
+        rig.pointer(MouseEventKind::Down(LEFT), x, y);
+        let mut sent = Vec::new();
+        for row in 1..track.area.height {
+            rig.pointer(MouseEventKind::Drag(LEFT), x, y + row);
+            rig.draw();
+            asked.extend(rig.asks());
+            sent.extend(rig.app.take_jump(|_, _| epoch));
+        }
+        rig.pointer(MouseEventKind::Up(LEFT), x, y + track.area.height - 1);
+        rig.draw();
+        asked.extend(rig.asks());
+        sent.extend(rig.app.take_jump(|_, _| epoch));
+        // The first place no held entry covers is asked for at once, and the
+        // places the thumb passes on its way wait for the answer.
+        assert_eq!(sent.len(), 1, "{sent:?}");
+        let first = &sent[0];
+        assert_eq!(
+            (first.list, first.ask, first.path.as_path()),
+            (List::Activity, 1, Path::new(TRANSCRIPT))
+        );
+        assert!((500_000..550_000).contains(&first.at), "{}", first.at);
+        assert_eq!(asked, [], "no page is asked for on the way");
+        let path = Path::new(TRANSCRIPT);
+        assert!(rig.app.expects(path, List::Activity, first.ask, epoch));
+        assert!(!rig.app.expects(path, List::Activity, first.ask + 1, epoch));
+        // The first answer lands, and the view shows its place.
+        let near = usize::try_from(first.at / 100).expect("a small number");
+        let (_, fresh) =
+            rig.history
+                .land_around(List::Activity, all[near - 50..near + 50].to_vec(), true);
+        rig.app.arrive(all[near].id, fresh);
+        let shown = rig.entries();
+        assert!(shown[0].contains(&format!("file-{near}.rs")), "{shown:?}");
+        // The thumb stood on the bottom of the track all the while: its place
+        // is found and asked for next, the newest, the start of the transcript.
+        rig.draw();
+        rig.draw();
+        let epoch = rig.history.epoch(List::Activity);
+        let last = rig
+            .app
+            .take_jump(|_, _| epoch)
+            .expect("a jump to the newest place");
+        assert_eq!(last.ask, 2);
+        assert!(last.at < 20_000, "{}", last.at);
+        assert_eq!(rig.app.take_jump(|_, _| epoch), None);
+        // Its answer: the first 100 calls, and the start of the transcript
+        // among them.
+        let (_, fresh) = rig
+            .history
+            .land_around(List::Activity, all[..100].to_vec(), false);
+        rig.app.arrive(all[0].id, fresh);
+        let shown = rig.entries();
+        assert!(
+            shown.last().is_some_and(|row| row.contains("file-0.rs")),
+            "{shown:?}"
+        );
+        assert!(shown.iter().all(|row| !row.contains("file-5799.rs")));
+        // The gaps the pages left are filled as any gap is: from the newest
+        // entry of the page, upward.
+        let next = rig.asks();
+        assert_eq!(next.len(), 1);
+        assert_eq!((next[0].way, next[0].at), (Way::Newer, all[99].id));
+    }
+
+    #[test]
+    fn a_drag_through_three_places_not_held_asks_for_the_first_then_the_newest() {
+        let all: Vec<Said> = (0..5800)
+            .map(|place| call(place, &format!("file-{place}.rs")))
+            .collect();
+        let mut rig = Rig::with(calls(5500..5800, 5800));
+        rig.draw();
+        let epoch = rig.history.epoch(List::Activity);
+        let track = rig.track();
+        let (x, y) = (track.area.x, track.area.y);
+        rig.pointer(MouseEventKind::Down(LEFT), x, y);
+        let mut sent = Vec::new();
+        for row in [3, 8, 14] {
+            rig.pointer(MouseEventKind::Drag(LEFT), x, y + row);
+            rig.draw();
+            sent.extend(rig.app.take_jump(|_, _| epoch));
+            // Never more than one is in flight.
+            assert_eq!(rig.app.take_jump(|_, _| epoch), None, "row {row}");
+        }
+        assert_eq!(sent.len(), 1, "{sent:?}");
+        let first = sent.remove(0);
+        // The first answer lands while the thumb is held at the third place.
+        let near = usize::try_from(first.at / 100).expect("a small number");
+        let (_, fresh) =
+            rig.history
+                .land_around(List::Activity, all[near - 50..near + 50].to_vec(), true);
+        rig.app.arrive(all[near].id, fresh);
+        rig.draw();
+        rig.draw();
+        let epoch = rig.history.epoch(List::Activity);
+        let newest = rig
+            .app
+            .take_jump(|_, _| epoch)
+            .expect("a jump to the newest place");
+        assert_eq!(newest.ask, first.ask + 1);
+        assert!(newest.at < first.at, "{} {}", newest.at, first.at);
+        assert_eq!(rig.app.take_jump(|_, _| epoch), None);
+    }
+
+    #[test]
+    fn a_thumb_glides_to_its_new_row_after_a_page_lands() {
+        let all: Vec<Said> = (0..5800)
+            .map(|place| call(place, &format!("file-{place}.rs")))
+            .collect();
+        let mut rig = Rig::with(calls(5500..5800, 5800));
+        let t0 = Instant::now();
+        rig.app.now = t0;
+        rig.draw();
+        let track = rig.track();
+        let (x, y) = (track.area.x, track.area.y);
+        rig.pointer(MouseEventKind::Down(LEFT), x, y);
+        rig.pointer(MouseEventKind::Drag(LEFT), x, y + track.area.height - 1);
+        rig.draw();
+        rig.pointer(MouseEventKind::Up(LEFT), x, y + track.area.height - 1);
+        rig.draw();
+        let epoch = rig.history.epoch(List::Activity);
+        rig.app
+            .take_jump(|_, _| epoch)
+            .expect("a jump on letting go");
+        // The thumb is back at the top, where the list stands.
+        let thumb = |rig: &Rig| -> Vec<usize> {
+            let glyphs = rig.glyphs();
+            (0..glyphs.len())
+                .filter(|row| glyphs[*row] != " ")
+                .collect()
+        };
+        assert_eq!(thumb(&rig), [0]);
+        let (_, fresh) = rig
+            .history
+            .land_around(List::Activity, all[..100].to_vec(), false);
+        rig.app.arrive(all[0].id, fresh);
+        // The frame that draws the new place keeps the thumb where it was, and
+        // the next ones move it down by the clock.
+        rig.app.now = at(t0, 10);
+        rig.draw();
+        assert_eq!(thumb(&rig), [0]);
+        let end = usize::try_from(rig.track().geometry.thumb().0).expect("a small number");
+        assert!(end > 4, "the thumb has a way to go: {end}");
+        rig.app.now = at(t0, 60);
+        rig.draw();
+        let half = thumb(&rig)[0];
+        assert!(half > 0 && half < end, "{half} of {end}");
+        assert_eq!(rig.app.bars_wake(), Some(at(t0, 76)));
+        rig.app.now = at(t0, 110);
+        rig.draw();
+        assert_eq!(thumb(&rig), [end]);
+        // The pointer is on the bar, so it is not fading either.
+        assert_eq!(rig.app.bars_wake(), None);
+    }
+
+    #[test]
+    fn a_thumb_that_comes_back_to_held_entries_asks_for_nothing() {
+        let mut rig = Rig::with(calls(5500..5800, 5800));
+        rig.draw();
+        let track = rig.track();
+        let (x, y) = (track.area.x, track.area.y);
+        rig.pointer(MouseEventKind::Down(LEFT), x, y);
+        rig.pointer(MouseEventKind::Drag(LEFT), x, y + track.area.height - 1);
+        rig.draw();
+        assert!(rig.app.holds_view());
+        rig.pointer(MouseEventKind::Drag(LEFT), x, y + 1);
+        rig.draw();
+        assert!(rig.app.holds_view());
+        rig.pointer(MouseEventKind::Up(LEFT), x, y + 1);
+        rig.draw();
+        assert!(!rig.app.holds_view());
+        assert_eq!(rig.app.take_jump(|_, _| 0), None);
+    }
+
+    #[test]
+    fn a_session_shown_instead_drops_the_place_the_thumb_was_going_to() {
+        let mut rig = Rig::with(calls(5500..5800, 5800));
+        rig.draw();
+        let track = rig.track();
+        let (x, y) = (track.area.x, track.area.y);
+        rig.pointer(MouseEventKind::Down(LEFT), x, y);
+        rig.pointer(MouseEventKind::Drag(LEFT), x, y + track.area.height - 1);
+        rig.draw();
+        rig.pointer(MouseEventKind::Up(LEFT), x, y);
+        assert!(rig.app.holds_view());
+        // A tab of the session clicked.
+        let under = Under {
+            target: Some(Target::Tab(Tab::Prompts)),
+            ..Under::default()
+        };
+        rig.app.on_mouse(
+            MouseEvent {
+                kind: MouseEventKind::Down(LEFT),
+                column: 20,
+                row: 5,
+                modifiers: KeyModifiers::NONE,
+            },
+            under,
+        );
+        assert!(!rig.app.holds_view());
+    }
+
+    #[test]
+    fn a_drag_just_past_the_held_entries_asks_for_a_byte_just_before_the_oldest_held_one() {
+        // The newest 300 of 5,800 calls, the oldest of them at byte 550,000.
+        let drag_to = |row: u16| {
+            let mut rig = Rig::with(calls(5500..5800, 5800));
+            rig.draw();
+            let track = rig.track();
+            let (x, y) = (track.area.x, track.area.y);
+            rig.pointer(MouseEventKind::Down(LEFT), x, y);
+            rig.pointer(MouseEventKind::Drag(LEFT), x, y + row);
+            rig.draw();
+            rig.pointer(MouseEventKind::Up(LEFT), x, y + row);
+            rig.draw();
+            let epoch = rig.history.epoch(List::Activity);
+            rig.app.take_jump(|_, _| epoch)
+        };
+        let mut rig = Rig::with(calls(5500..5800, 5800));
+        rig.draw();
+        let height = rig.track().area.height;
+        // The first row of the track whose place no held entry covers.
+        let jump = (1..height)
+            .find_map(drag_to)
+            .expect("a row past the held entries");
+        assert!((500_000..550_000).contains(&jump.at), "{}", jump.at);
+    }
+
+    #[test]
+    fn an_answer_of_entries_already_held_leaves_the_view_where_it_is() {
+        let mut rig = Rig::with(calls(5500..5800, 5800));
+        // The rows, less the thumb at their end.
+        let text = |rig: &mut Rig| -> Vec<String> {
+            rig.entries()
+                .iter()
+                .map(|row| row.trim_end_matches(['█', '┃', ' ']).to_owned())
+                .collect()
+        };
+        let before = text(&mut rig);
+        let track = rig.track();
+        let (x, y) = (track.area.x, track.area.y);
+        rig.pointer(MouseEventKind::Down(LEFT), x, y);
+        rig.pointer(MouseEventKind::Drag(LEFT), x, y + track.area.height - 1);
+        rig.draw();
+        rig.pointer(MouseEventKind::Up(LEFT), x, y + track.area.height - 1);
+        rig.draw();
+        let epoch = rig.history.epoch(List::Activity);
+        rig.app
+            .take_jump(|_, _| epoch)
+            .expect("a jump on letting go");
+        // The daemon's answer holds the entries around the place, which are
+        // all held already.
+        let held: Vec<Said> = rig.history.facts.activity[100..200].to_vec();
+        let place = held[50].id;
+        let (_, fresh) = rig.history.land_around(List::Activity, held, true);
+        assert_eq!(fresh, 0);
+        rig.app.arrive(place, fresh);
+        assert!(!rig.app.holds_view());
+        assert_eq!(text(&mut rig), before);
+    }
+
+    #[test]
+    fn a_place_in_a_gap_or_among_the_older_entries_is_a_byte_between_the_entries_each_side() {
+        let placed = |run: usize, start: usize, line: u64| Placed {
+            index: 0,
+            id: EntryId { line, index: 0 },
+            open: false,
+            run,
+            start,
+            height: 1,
+        };
+        // Two runs of two lines, 10 entries not held between them and 20
+        // older than both.
+        let held = [
+            placed(0, 0, 900),
+            placed(0, 1, 800),
+            placed(1, 2, 300),
+            placed(1, 3, 200),
+        ];
+        let gaps = Gaps::from([(
+            EntryId {
+                line: 300,
+                index: 0,
+            },
+            10,
+        )]);
+        let shape = Shape {
+            gaps: &gaps,
+            older: 20,
+        };
+        // The bar's lines: the first run takes 0 and 1, the gap 2 to 11, the
+        // second run 12 and 13, and the older entries 14 to 33.
+        let byte = |at| seek_byte(&held, shape, (at, 4));
+        // The top of the gap is the byte of the oldest entry above it.
+        assert_eq!(byte(2), Some(800));
+        assert_eq!(byte(7), Some(550));
+        assert_eq!(byte(11), Some(350));
+        // The older entries run from the oldest held one to the first byte.
+        assert_eq!(byte(14), Some(200));
+        assert_eq!(byte(24), Some(100));
+        assert_eq!(byte(34), Some(0));
+        assert_eq!(byte(500), Some(0));
+        assert_eq!(seek_byte(&[], shape, (3, 0)), None);
+    }
+
+    #[test]
+    fn a_seek_lands_on_the_run_that_covers_it_and_on_none_in_a_gap() {
+        let placed = |run: usize, start: usize, id: u64| Placed {
+            index: 0,
+            id: EntryId { line: id, index: 0 },
+            open: false,
+            run,
+            start,
+            height: 1,
+        };
+        // Two runs of two lines, and 10 entries not held between them.
+        let held = [
+            placed(0, 0, 900),
+            placed(0, 1, 800),
+            placed(1, 2, 300),
+            placed(1, 3, 200),
+        ];
+        let gaps = Gaps::from([(
+            EntryId {
+                line: 300,
+                index: 0,
+            },
+            10,
+        )]);
+        let shape = Shape {
+            gaps: &gaps,
+            older: 0,
+        };
+        let seek = |at| seek_line(&held, shape, false, (at, 4));
+        // 4 lines held by 4 entries: each entry not held takes a line.
+        assert_eq!(seek(0), Some((0, 0)));
+        assert_eq!(seek(1), Some((0, 1)));
+        assert_eq!(seek(2), None);
+        assert_eq!(seek(11), None);
+        assert_eq!(seek(12), Some((1, 2)));
+        assert_eq!(seek(13), Some((1, 3)));
+        assert_eq!(seek(14), None);
+        // A filter counts none that are not held.
+        assert_eq!(seek_line(&held, shape, true, (2, 4)), Some((1, 2)));
     }
 
     /// The time of the frame at the 99th percentile of `times`.

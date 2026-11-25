@@ -136,6 +136,10 @@ struct Held {
     stalled: Option<(EntryId, EntryId)>,
     /// The entries the facts counted when they were last read whole.
     seen: Option<usize>,
+    /// How many times what a page in flight reads from was lost: a rewrite of
+    /// the transcript, or the daemon's connection. A jump asked for before
+    /// one reads the old numbering.
+    epoch: u64,
 }
 
 impl Default for Held {
@@ -147,6 +151,7 @@ impl Default for Held {
             view: None,
             stalled: None,
             seen: None,
+            epoch: 0,
         }
     }
 }
@@ -240,8 +245,10 @@ impl History {
         for list in List::BOTH {
             let mine = self.facts.entries_mut(list);
             mine.drain(..mine.len().saturating_sub(KEEP));
+            let epoch = self.lists[list.index()].epoch + 1;
             self.lists[list.index()] = Held {
                 older: self.facts.older(list),
+                epoch,
                 ..Held::default()
             };
         }
@@ -251,7 +258,34 @@ impl History {
     pub(crate) fn lost(&mut self) {
         for held in &mut self.lists {
             held.flight = None;
+            held.epoch += 1;
         }
+    }
+
+    /// Which generation of `list` the numbering of its entries is in, which
+    /// changes when a rewrite or a lost connection ends a page's meaning.
+    pub(crate) fn epoch(&self, list: List) -> u64 {
+        self.lists[list.index()].epoch
+    }
+
+    /// The page of the entries around a place has come: `entries`, oldest
+    /// first, with whether the transcript has more before them. They
+    /// join the held ones, with a gap on each side where the held ones do not
+    /// reach them. Returns the entries whose layout is stale, and how many of
+    /// the page's entries were not held before.
+    pub(crate) fn land_around(
+        &mut self,
+        list: List,
+        entries: Vec<Said>,
+        older_more: bool,
+    ) -> (Vec<EntryId>, usize) {
+        let total = self.facts.total(list);
+        self.lists[list.index()].land_around(
+            self.facts.entries_mut(list),
+            (list, total),
+            entries,
+            older_more,
+        )
     }
 
     /// Whether `list` has older entries than the held ones, which a filter does
@@ -265,8 +299,10 @@ impl History {
         let held = &self.lists[list.index()];
         let missing: usize = held.gaps.values().sum();
         let have = self.facts.entries(list).len();
+        // The daemon says older entries exist, so the count of them is not 0
+        // however the held ones and the gaps add up.
         let older = if held.older {
-            self.facts.total(list).saturating_sub(have + missing)
+            self.facts.total(list).saturating_sub(have + missing).max(1)
         } else {
             0
         };
@@ -317,6 +353,7 @@ impl Held {
             self.older = older;
             // A page in flight reads the old numbering.
             self.flight = None;
+            self.epoch += 1;
             self.view = None;
             self.stalled = None;
             return incoming;
@@ -410,6 +447,120 @@ impl Held {
         stale
     }
 
+    /// Joins the page `entries` of the entries around a place to `mine`, of
+    /// which `total` entries are counted in all. Returns the entries whose
+    /// layout is stale, and how many of the page's were not held before.
+    ///
+    /// Held entries are in runs with a gap between two, recorded with how many
+    /// entries it misses. The page is a run of its own, or joins the ones it
+    /// reaches. Where it lies in a gap, or in the older entries, the entries
+    /// that were missing there and are not in the page are shared between the
+    /// two sides of it by how many bytes of the transcript each side has,
+    /// since the daemon does not count them.
+    fn land_around(
+        &mut self,
+        mine: &mut Vec<Said>,
+        (kind, total): (List, usize),
+        entries: Vec<Said>,
+        older_more: bool,
+    ) -> (Vec<EntryId>, usize) {
+        let mut stale = Vec::new();
+        let (Some(first), Some(last)) = (
+            entries.first().map(|said| said.id),
+            entries.last().map(|said| said.id),
+        ) else {
+            return (stale, 0);
+        };
+        // The newest held entry older than the page, and the oldest newer.
+        let below = mine.partition_point(|said| said.id < first);
+        let end = mine.partition_point(|said| said.id <= last);
+        let older_held = below.checked_sub(1).map(|at| mine[at].id);
+        let newer_held = mine.get(end).map(|said| said.id);
+        let mut fresh = Vec::new();
+        for said in entries {
+            match mine.binary_search_by_key(&said.id, |held| held.id) {
+                Ok(at) => {
+                    if mine[at].result.is_none() && said.result.is_some() {
+                        stale.push(said.id);
+                        mine[at] = said;
+                    }
+                }
+                Err(_) => fresh.push(said),
+            }
+        }
+        let fresh_in = |from: Option<EntryId>, to: Option<EntryId>| {
+            fresh
+                .iter()
+                .filter(|said| {
+                    from.is_none_or(|from| said.id > from) && to.is_none_or(|to| said.id < to)
+                })
+                .count()
+        };
+        let first_held = below < end && mine[below].id == first;
+        let last_held = below < end && mine[end - 1].id == last;
+        if below == end {
+            // No held entry is in the page: it lies in one gap.
+            let missing = match older_held {
+                Some(newest) => self.gaps.get(&newest).copied().unwrap_or(0),
+                None if self.older => {
+                    total.saturating_sub(mine.len() + self.gaps.values().sum::<usize>())
+                }
+                None => 0,
+            };
+            let left = missing.saturating_sub(fresh.len());
+            let before = if older_held.is_some() || older_more {
+                first
+                    .line
+                    .saturating_sub(older_held.map_or(0, |held| held.line))
+            } else {
+                0
+            };
+            let after = newer_held.map_or(0, |held| held.line.saturating_sub(last.line));
+            let (down, up) = share(left, before, after);
+            if let Some(newest) = older_held {
+                self.gaps.insert(newest, down);
+            }
+            if newer_held.is_some() {
+                self.gaps.insert(last, up);
+            }
+        } else {
+            // The page reaches held entries, which close the gaps it spans.
+            if !first_held && let Some(newest) = older_held {
+                let missing = self.gaps.get(&newest).copied().unwrap_or(0);
+                let filled = fresh_in(None, Some(mine[below].id));
+                self.gaps.insert(newest, missing.saturating_sub(filled));
+            }
+            for held in &mine[below..end - 1] {
+                self.gaps.remove(&held.id);
+            }
+            let newest_inside = mine[end - 1].id;
+            if !last_held && let Some(missing) = self.gaps.remove(&newest_inside) {
+                let filled = fresh_in(Some(newest_inside), None);
+                self.gaps.insert(last, missing.saturating_sub(filled));
+            }
+        }
+        if older_held.is_none() && !first_held {
+            self.older = older_more;
+        }
+        let added = fresh.len();
+        mine.extend(fresh);
+        mine.sort_by_key(|said| said.id);
+        // The view is where the page is, so the entries dropped to stay within
+        // [`HELD`] are the ones farthest from it.
+        self.view = Some(Reach {
+            list: kind,
+            first: last,
+            last: first,
+            below: 0,
+            above: 0,
+            filtered: false,
+            keep: (first, last),
+        });
+        self.stalled = None;
+        self.trim(mine, Way::Older, Some((first, last)), &mut stale);
+        (stale, added)
+    }
+
     /// Drops entries from `mine` while it holds more than [`HELD`], the ones
     /// farthest from the view first, and on the side the view leaves, which is
     /// the one opposite the page that `landed`. The view and the lead past it
@@ -488,6 +639,22 @@ impl Held {
         }
         *mine = kept;
     }
+}
+
+/// `entries` shared between a side with `before` bytes and one with `after`:
+/// the first side's share, and the second's. Both sides empty gives it all to
+/// the second.
+fn share(entries: usize, before: u64, after: u64) -> (usize, usize) {
+    let down = if before == 0 {
+        0
+    } else if after == 0 {
+        entries
+    } else {
+        let part = u128::try_from(entries).unwrap_or(0) * u128::from(before)
+            / (u128::from(before) + u128::from(after));
+        usize::try_from(part).unwrap_or(entries)
+    };
+    (down, entries - down)
 }
 
 #[cfg(test)]
@@ -1000,5 +1167,117 @@ mod tests {
         history.merge(facts_of(&all, 2100..2400));
         assert_eq!(history.shape(List::Activity).older, 2100);
         assert_eq!(history.facts.total(List::Activity), 2400);
+    }
+
+    /// The held entries of the newest 300 of 5,800 calls, as a window starts.
+    fn long_history() -> (Vec<Said>, History) {
+        let all = world(5800);
+        let mut history = History::default();
+        history.merge(facts_of(&all, 5500..5800));
+        (all, history)
+    }
+
+    /// The entries held, the missing ones in the gaps and the older ones.
+    fn counted(history: &History) -> usize {
+        let shape = history.shape(List::Activity);
+        held(history) + shape.gaps.values().sum::<usize>() + shape.older
+    }
+
+    #[test]
+    fn a_page_far_from_the_held_entries_has_a_gap_on_each_side() {
+        let (all, mut history) = long_history();
+        history.land_around(List::Activity, all[100..200].to_vec(), true);
+        assert_eq!(held(&history), 400);
+        let shape = history.shape(List::Activity);
+        // The page's newest entry has the gap above it, and the entries older
+        // than the page are the ones counted before it.
+        let keys: Vec<EntryId> = shape.gaps.keys().copied().collect();
+        assert_eq!(keys, [all[199].id]);
+        assert!(shape.older.abs_diff(100) < 5, "{}", shape.older);
+        // Every entry of the session is counted once, as before.
+        assert_eq!(counted(&history), 5800);
+    }
+
+    #[test]
+    fn a_page_that_reaches_the_first_entry_leaves_none_older() {
+        let (all, mut history) = long_history();
+        history.land_around(List::Activity, all[..100].to_vec(), false);
+        let shape = history.shape(List::Activity);
+        assert_eq!(shape.older, 0);
+        assert_eq!(shape.gaps.get(&all[99].id), Some(&5400));
+        assert_eq!(counted(&history), 5800);
+    }
+
+    #[test]
+    fn a_page_that_overlaps_the_held_edge_leaves_no_gap_there() {
+        let (all, mut history) = long_history();
+        history.land_around(List::Activity, all[5450..5550].to_vec(), true);
+        assert_eq!(held(&history), 350);
+        let shape = history.shape(List::Activity);
+        assert!(shape.gaps.is_empty(), "{:?}", shape.gaps);
+        assert_eq!(shape.older, 5450);
+        // The same page again changes nothing.
+        history.land_around(List::Activity, all[5450..5550].to_vec(), true);
+        assert_eq!(held(&history), 350);
+        assert!(history.shape(List::Activity).gaps.is_empty());
+    }
+
+    #[test]
+    fn a_page_inside_a_gap_splits_it_and_the_counts_stay_whole() {
+        let (all, mut history) = long_history();
+        history.land_around(List::Activity, all[100..200].to_vec(), true);
+        history.land_around(List::Activity, all[3000..3100].to_vec(), true);
+        assert_eq!(held(&history), 500);
+        let shape = history.shape(List::Activity);
+        let keys: Vec<EntryId> = shape.gaps.keys().copied().collect();
+        assert_eq!(keys, [all[199].id, all[3099].id]);
+        assert_eq!(counted(&history), 5800);
+        // The bigger share of what was missing is where there is more of the
+        // transcript.
+        assert!(shape.gaps[&all[3099].id] > 2000, "{:?}", shape.gaps);
+    }
+
+    #[test]
+    fn a_page_across_a_gap_edge_moves_the_gap_to_its_far_end() {
+        let (all, mut history) = long_history();
+        history.land_around(List::Activity, all[..100].to_vec(), false);
+        // 10 held entries and 10 fresh ones above them.
+        history.land_around(List::Activity, all[90..110].to_vec(), true);
+        let shape = history.shape(List::Activity);
+        assert_eq!(shape.gaps.get(&all[109].id), Some(&5390));
+        assert_eq!(shape.gaps.get(&all[99].id), None);
+        assert_eq!(counted(&history), 5800);
+    }
+
+    #[test]
+    fn a_page_counts_how_many_of_its_entries_were_not_held() {
+        let (all, mut history) = long_history();
+        let (_, fresh) = history.land_around(List::Activity, all[5450..5550].to_vec(), true);
+        assert_eq!(fresh, 50);
+        let (_, fresh) = history.land_around(List::Activity, all[5450..5550].to_vec(), true);
+        assert_eq!(fresh, 0);
+        let (_, fresh) = history.land_around(List::Activity, all[100..200].to_vec(), true);
+        assert_eq!(fresh, 100);
+    }
+
+    #[test]
+    fn older_entries_the_daemon_reports_count_as_at_least_one() {
+        // Not every line is read, and the counts so far equal the entries held.
+        let mut history = History::default();
+        history.merge(Facts {
+            activity: world(300),
+            activity_total: 300,
+            whole: false,
+            ..Facts::default()
+        });
+        assert_eq!(history.shape(List::Activity).older, 1);
+    }
+
+    #[test]
+    fn a_lost_connection_is_a_different_epoch() {
+        let (_, mut history) = long_history();
+        let before = history.epoch(List::Activity);
+        history.lost();
+        assert_ne!(history.epoch(List::Activity), before);
     }
 }

@@ -308,7 +308,7 @@ fn serve(hub: &Arc<Hub>, stream: UnixStream, socket: &Path) {
                 before,
                 count,
             } => {
-                let _ = pages.send(Job {
+                let _ = pages.send(Job::Page {
                     path,
                     way: Way::Older,
                     list,
@@ -322,12 +322,27 @@ fn serve(hub: &Arc<Hub>, stream: UnixStream, socket: &Path) {
                 after,
                 count,
             } => {
-                let _ = pages.send(Job {
+                let _ = pages.send(Job::Page {
                     path,
                     way: Way::Newer,
                     list,
                     at: after,
                     count,
+                });
+            }
+            ToDaemon::Around {
+                path,
+                list,
+                at,
+                count,
+                ask,
+            } => {
+                let _ = pages.send(Job::Around {
+                    path,
+                    list,
+                    at,
+                    count,
+                    ask,
                 });
             }
             ToDaemon::Search { id, query, pane } => {
@@ -468,12 +483,23 @@ fn worker<J: Send + 'static>(
 }
 
 /// One page a window asked for.
-struct Job {
-    path: PathBuf,
-    way: Way,
-    list: List,
-    at: EntryId,
-    count: usize,
+enum Job {
+    /// The entries just before or after an entry.
+    Page {
+        path: PathBuf,
+        way: Way,
+        list: List,
+        at: EntryId,
+        count: usize,
+    },
+    /// The entries nearest a place in the transcript.
+    Around {
+        path: PathBuf,
+        list: List,
+        at: u64,
+        count: usize,
+        ask: u64,
+    },
 }
 
 /// A thread that answers every page request, in order. It drops none, unlike
@@ -484,27 +510,58 @@ fn pager(send: SyncSender<FromDaemon>) -> mpsc::Sender<Job> {
     let (jobs, inbox) = mpsc::channel::<Job>();
     thread::spawn(move || {
         for job in inbox {
-            let answer = match facts::page(&job.path, job.way, job.list, job.at, job.count) {
-                Ok(page) => FromDaemon::Page {
-                    list: job.list,
-                    way: job.way,
-                    at: job.at,
-                    entries: page.entries,
-                    more: page.more,
-                    failed: None,
-                    path: job.path,
+            let answer = match job {
+                Job::Page {
+                    path,
+                    way,
+                    list,
+                    at,
+                    count,
+                } => match facts::page(&path, way, list, at, count) {
+                    Ok(page) => FromDaemon::Page {
+                        list,
+                        way,
+                        at,
+                        entries: page.entries,
+                        more: page.more,
+                        failed: None,
+                        path,
+                    },
+                    Err(error) => FromDaemon::Page {
+                        failed: Some(unreadable(&path, &error)),
+                        list,
+                        way,
+                        at,
+                        entries: Vec::new(),
+                        more: true,
+                        path,
+                    },
                 },
-                Err(error) => FromDaemon::Page {
-                    failed: Some(format!(
-                        "could not read the transcript {}: {error}",
-                        job.path.display()
-                    )),
-                    list: job.list,
-                    way: job.way,
-                    at: job.at,
-                    entries: Vec::new(),
-                    more: true,
-                    path: job.path,
+                Job::Around {
+                    path,
+                    list,
+                    at,
+                    count,
+                    ask,
+                } => match facts::around(&path, list, at, count) {
+                    Ok(page) => FromDaemon::Around {
+                        list,
+                        ask,
+                        entries: page.entries,
+                        older: page.older,
+                        place: page.place,
+                        failed: None,
+                        path,
+                    },
+                    Err(error) => FromDaemon::Around {
+                        failed: Some(unreadable(&path, &error)),
+                        list,
+                        ask,
+                        entries: Vec::new(),
+                        older: true,
+                        place: None,
+                        path,
+                    },
                 },
             };
             if send.send(answer).is_err() {
@@ -513,6 +570,12 @@ fn pager(send: SyncSender<FromDaemon>) -> mpsc::Sender<Job> {
         }
     });
     jobs
+}
+
+/// What a window is told when a page of the transcript at `path` cannot be
+/// read.
+fn unreadable(path: &Path, error: &io::Error) -> String {
+    format!("could not read the transcript {}: {error}", path.display())
 }
 
 /// Reads the transcript at `path` from its newest line back, sending the
@@ -656,7 +719,7 @@ mod tests {
         let (send, receive) = mpsc::sync_channel(4);
         let jobs = pager(send);
         let path = env::temp_dir().join(format!("rawr-pager-gone-{}.jsonl", process::id()));
-        jobs.send(Job {
+        jobs.send(Job::Page {
             path,
             way: Way::Older,
             list: List::Activity,
