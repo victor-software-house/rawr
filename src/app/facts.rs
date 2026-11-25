@@ -9,7 +9,7 @@
 
 use std::borrow::Cow;
 use std::fmt::Write as _;
-use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
+use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 use std::{env, fs, mem};
 
@@ -502,15 +502,22 @@ pub(crate) struct Page {
 /// entry `at`, read from the transcript at `path` and kept nowhere. The ids are
 /// those the whole transcript's reading gives the same lines. A tool call's
 /// result written after the page shows, when it is within [`AHEAD`] of it.
-/// `None` when the transcript cannot be read.
-pub(crate) fn page(path: &Path, way: Way, list: List, at: EntryId, count: usize) -> Option<Page> {
+/// An error when the transcript cannot be opened or read.
+pub(crate) fn page(
+    path: &Path,
+    way: Way,
+    list: List,
+    at: EntryId,
+    count: usize,
+) -> io::Result<Page> {
     let count = count.clamp(1, KEEP);
-    let mut file = fs::File::open(path).ok()?;
-    let len = file.metadata().ok()?.len();
+    let mut file = fs::File::open(path)?;
+    let len = file.metadata()?.len();
     match way {
         Way::Older => older(&mut file, path, len, list, at, count),
         Way::Newer => newer(&mut file, len, list, at, count),
     }
+    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "a line could not be read"))
 }
 
 /// The entries of `list` in `stretch`.
@@ -1554,7 +1561,7 @@ fn shown_path(path: &str, cwd: Option<&str>) -> String {
 mod tests {
     use std::fmt::Write as _;
     use std::fs::{self, File, OpenOptions};
-    use std::io::{BufRead, BufReader, Write as _};
+    use std::io::{BufRead, BufReader, ErrorKind, Write as _};
     use std::os::unix::net::UnixStream;
     use std::path::PathBuf;
     use std::time::{Duration, Instant};
@@ -1934,10 +1941,11 @@ mod tests {
     }
 
     #[test]
-    fn a_page_of_a_transcript_that_is_gone_is_none() {
+    fn a_page_of_a_transcript_that_is_gone_is_an_error() {
         let path = env::temp_dir().join("rawr-facts-gone.jsonl");
         let id = EntryId { line: 0, index: 0 };
-        assert_eq!(page(&path, Way::Older, List::Log, id, 100), None);
+        let error = page(&path, Way::Older, List::Log, id, 100).expect_err("no page");
+        assert_eq!(error.kind(), ErrorKind::NotFound);
     }
 
     /// The size of the result of tool call `turn` of the timing transcript: a

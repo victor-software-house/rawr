@@ -485,16 +485,16 @@ fn pager(send: SyncSender<FromDaemon>) -> mpsc::Sender<Job> {
     thread::spawn(move || {
         for job in inbox {
             let answer = match facts::page(&job.path, job.way, job.list, job.at, job.count) {
-                Some(page) => FromDaemon::Page {
+                Ok(page) => FromDaemon::Page {
                     list: job.list,
                     entries: page.entries,
                     more: page.more,
                     failed: None,
                     path: job.path,
                 },
-                None => FromDaemon::Page {
+                Err(error) => FromDaemon::Page {
                     failed: Some(format!(
-                        "could not read the transcript {}",
+                        "could not read the transcript {}: {error}",
                         job.path.display()
                     )),
                     list: job.list,
@@ -667,6 +667,8 @@ mod tests {
             panic!("the answer is a page");
         };
         assert_eq!(entries.len(), 0);
+        let reason = failed.clone().unwrap_or_default();
+        assert!(reason.contains("No such file"), "{reason}");
         assert!(
             failed.is_some_and(|reason| reason.contains("could not read the transcript")),
             "a failure names its reason"
