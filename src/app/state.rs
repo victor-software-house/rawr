@@ -332,6 +332,10 @@ pub(crate) struct App {
     pub(crate) open: HashSet<u64>,
     /// The pane to select once the feed lists it, by block ID.
     pub(crate) want: Option<String>,
+    /// The block of the pane this window stands in for, when it is a
+    /// stand-in: it lists that pane alone and never focuses the panes or
+    /// the search.
+    stand_in: Option<String>,
     /// The panes, sessions, session and results, in that order.
     scrolls: [Scroll; 4],
     /// The width each column takes when it has focus or is drawn out; the
@@ -410,6 +414,7 @@ impl App {
             files_shown: Shown::All,
             file_type: None,
             want: None,
+            stand_in: None,
             scrolls: [Scroll::default(); 4],
             wants: [48, 60, 72],
             drawer: None,
@@ -417,6 +422,30 @@ impl App {
             outside: None,
             cols: 0,
             dragging: None,
+        }
+    }
+
+    /// A stand-in for the pane `block`: it lists that pane's sessions and
+    /// nothing else.
+    pub(crate) fn stand_in(block: String) -> Self {
+        Self {
+            here: Some(block.clone()),
+            stand_in: Some(block),
+            ..Self::new(None)
+        }
+    }
+
+    /// Whether this window stands in for one pane instead of showing them all.
+    pub(crate) const fn is_stand_in(&self) -> bool {
+        self.stand_in.is_some()
+    }
+
+    /// Whether focus may go to `column`: a stand-in has no panes column and
+    /// no search.
+    const fn may_focus(&self, column: Focus) -> bool {
+        match column {
+            Focus::Panes | Focus::Search => !self.is_stand_in(),
+            Focus::Sessions | Focus::Session => true,
         }
     }
 
@@ -553,6 +582,9 @@ impl App {
     /// Moves focus to `column`, marking the move for the screen. The
     /// columns reflow, so a drawer has nothing left to cover.
     fn focus_on(&mut self, column: Focus) {
+        if !self.may_focus(column) {
+            return;
+        }
         if column != self.lead {
             self.start_move(self.lead);
             self.lead = column;
@@ -567,6 +599,9 @@ impl App {
     /// Focuses `column` after a click in it. One drawn in full keeps the
     /// columns where they are; a folded one is laid out around.
     fn focus_here(&mut self, column: Focus) {
+        if !self.may_focus(column) {
+            return;
+        }
         let full = self.arrangement == Arrangement::Rails
             && self
                 .layout()
@@ -642,6 +677,11 @@ impl App {
     /// Takes a new list of panes, sorted by attention, and keeps the
     /// selection on the same pane when it is still there.
     pub(crate) fn set_panes(&mut self, mut panes: Vec<Pane>) {
+        // A stand-in lists its own pane alone.
+        if let Some(block) = &self.stand_in {
+            panes.retain(|pane| &pane.block_id == block);
+        }
+        let first = self.link == Link::Connecting;
         panes.sort_by(|a, b| {
             a.closed
                 .cmp(&b.closed)
@@ -675,6 +715,16 @@ impl App {
             self.scroll_mut(Focus::Panes).follow = true;
         }
         self.session = self.session.min(self.session_count().saturating_sub(1));
+        // A stand-in opens on the pane's sessions when it lists them, else on
+        // the session.
+        if first && self.is_stand_in() {
+            let focus = if self.lists_sessions() {
+                Focus::Sessions
+            } else {
+                Focus::Session
+            };
+            (self.focus, self.lead, self.back) = (focus, focus, focus);
+        }
     }
 
     fn session_count(&self) -> usize {
@@ -817,6 +867,9 @@ impl App {
                 return Action::None;
             }
             (true, KeyCode::Char('f')) => {
+                if self.is_stand_in() {
+                    return Action::None;
+                }
                 if self.focus != Focus::Search {
                     self.back = self.focus;
                     self.focus = Focus::Search;
@@ -841,7 +894,7 @@ impl App {
                 let index = self.focus.index();
                 if !self.filters[index].is_empty() {
                     self.filters[index].clear();
-                } else if self.focus == Focus::Panes {
+                } else if self.focus == Focus::Panes || self.is_stand_in() {
                     return Action::Quit;
                 } else {
                     self.focus_on(Focus::Panes);
@@ -861,6 +914,7 @@ impl App {
                 // and the session.
                 let order: Vec<Focus> = [Focus::Panes, Focus::Sessions, Focus::Session]
                     .into_iter()
+                    .filter(|focus| self.may_focus(*focus))
                     .filter(|focus| *focus != Focus::Sessions || self.lists_sessions())
                     .collect();
                 let at = order
@@ -1229,6 +1283,9 @@ impl App {
                 Action::None
             }
             Target::Search => {
+                if self.is_stand_in() {
+                    return Action::None;
+                }
                 if self.focus != Focus::Search {
                     self.back = self.focus;
                     self.focus = Focus::Search;
@@ -1296,6 +1353,9 @@ impl App {
         if self.filtering {
             self.filters[self.focus.index()].push_str(&text);
             self.keep_visible();
+            return Action::None;
+        }
+        if self.is_stand_in() {
             return Action::None;
         }
         if self.focus != Focus::Search {
@@ -1366,8 +1426,12 @@ impl App {
     }
 
     /// Shows the selected pane; a closed one has no pane to show, so its
-    /// session resumes instead.
+    /// session resumes instead. A stand-in shows no other pane and goes
+    /// nowhere.
     fn go_to(&self) -> Action {
+        if self.is_stand_in() {
+            return Action::None;
+        }
         match self.selected() {
             Some(pane) if pane.closed => self.resume(),
             Some(pane) => Action::GoTo {
@@ -1576,5 +1640,139 @@ pub(crate) mod fixtures {
                 .collect(),
             closed: false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fixtures::pane;
+    use super::*;
+
+    const OWN: &str = "block-own";
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn three_panes(own_titles: &[&str]) -> Vec<Pane> {
+        vec![
+            pane("block-a", "alpha/one", Status::Working, &["Fix login"]),
+            pane(OWN, "work/shell", Status::Stopped, own_titles),
+            pane("block-b", "beta/two", Status::Idle, &["Tune search"]),
+        ]
+    }
+
+    fn stand_in(own_titles: &[&str]) -> App {
+        let mut app = App::stand_in(OWN.to_owned());
+        app.set_panes(three_panes(own_titles));
+        app
+    }
+
+    #[test]
+    fn a_stand_in_lists_only_its_own_pane() {
+        let app = stand_in(&["Fix checkout"]);
+        let blocks: Vec<&str> = app
+            .panes
+            .iter()
+            .map(|pane| pane.block_id.as_str())
+            .collect();
+        assert_eq!(blocks, [OWN]);
+    }
+
+    #[test]
+    fn a_full_app_lists_every_pane() {
+        let mut app = App::new(None);
+        app.set_panes(three_panes(&["Fix checkout"]));
+        assert_eq!(app.panes.len(), 3);
+    }
+
+    #[test]
+    fn a_stand_in_opens_on_the_sessions_only_when_the_pane_lists_them() {
+        assert_eq!(stand_in(&["Fix checkout"]).focus, Focus::Session);
+        assert_eq!(
+            stand_in(&["Fix checkout", "Add coupons"]).focus,
+            Focus::Sessions
+        );
+    }
+
+    #[test]
+    fn no_key_takes_a_stand_in_to_the_panes_or_the_search() {
+        let keys = [
+            key(KeyCode::Char('1')),
+            key(KeyCode::Char('h')),
+            key(KeyCode::Left),
+            key(KeyCode::Backspace),
+            key(KeyCode::Tab),
+            key(KeyCode::BackTab),
+            key(KeyCode::Char('2')),
+            key(KeyCode::Char('g')),
+            key(KeyCode::Enter),
+            KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL),
+        ];
+        for titles in [&["Fix checkout"][..], &["Fix checkout", "Add coupons"][..]] {
+            let mut app = stand_in(titles);
+            for press in keys {
+                let action = app.on_key(press);
+                assert!(
+                    !matches!(action, Action::GoTo { .. } | Action::Search),
+                    "{press:?} asked for {action:?}"
+                );
+                assert!(
+                    matches!(app.focus, Focus::Sessions | Focus::Session),
+                    "{press:?} moved focus to {:?}",
+                    app.focus
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_same_keys_reach_the_panes_in_the_full_app() {
+        let mut app = App::new(None);
+        app.set_panes(three_panes(&["Fix checkout"]));
+        app.on_key(key(KeyCode::Char('1')));
+        assert_eq!(app.focus, Focus::Panes);
+        app.on_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL));
+        assert_eq!(app.focus, Focus::Search);
+    }
+
+    #[test]
+    fn a_click_on_the_search_or_a_paste_leaves_a_stand_in_as_it_was() {
+        let mut app = stand_in(&["Fix checkout"]);
+        let click = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 3,
+            row: 3,
+            modifiers: KeyModifiers::NONE,
+        };
+        let under = Under {
+            target: Some(Target::Search),
+            ..Under::default()
+        };
+        assert_eq!(app.on_mouse(click, under), Action::None);
+        assert_eq!(app.on_paste("coupons"), Action::None);
+        assert_eq!(app.focus, Focus::Session);
+        assert_eq!(app.query, "");
+    }
+
+    #[test]
+    fn a_paste_goes_into_a_stand_ins_active_filter() {
+        let mut app = stand_in(&["Fix checkout", "Add coupons"]);
+        app.on_key(key(KeyCode::Char('/')));
+        app.on_paste("coupons");
+        assert_eq!(app.filter(Focus::Sessions), "coupons");
+        assert_eq!(app.query, "");
+    }
+
+    #[test]
+    fn esc_clears_a_stand_ins_filter_and_then_quits() {
+        let mut app = stand_in(&["Fix checkout", "Add coupons"]);
+        for press in [KeyCode::Char('/'), KeyCode::Char('a'), KeyCode::Enter] {
+            app.on_key(key(press));
+        }
+        assert_eq!(app.filter(Focus::Sessions), "a");
+        assert_eq!(app.on_key(key(KeyCode::Esc)), Action::None);
+        assert_eq!(app.filter(Focus::Sessions), "");
+        assert_eq!(app.on_key(key(KeyCode::Esc)), Action::Quit);
     }
 }

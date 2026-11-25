@@ -18,6 +18,7 @@ mod status;
 use std::collections::HashSet;
 use std::env;
 use std::io::{self, IsTerminal};
+use std::path::Path;
 
 use anyhow::{Context, Result};
 use ctl_core::completion::CompletionCommand;
@@ -149,7 +150,7 @@ fn main() -> ExitCode {
         })
         .run(|cli| match cli.command {
             None if cli.startup => startup(),
-            None => open_app(cli.view, None),
+            None => open_app(cli.view, &app::Mode::Full),
             Some(Command::Record) => record().map(|()| Outcome::Recorded),
             Some(Command::Daemon) => daemon::serve().map(|()| Outcome::Recorded),
             Some(Command::Status(_)) => list_panes(),
@@ -197,25 +198,41 @@ fn pane_agents(live: &HashSet<String>) -> Result<Vec<Agent>> {
     Ok(session::resumable(pane.entries(), live))
 }
 
-/// Opens the app on this pane's sessions when one of them can be resumed;
+/// Opens a stand-in on this pane's sessions when one of them can be resumed;
 /// otherwise prints nothing and returns [`Outcome::Closed`], since a new
 /// shell runs it in every pane.
 fn startup() -> Result<Outcome> {
-    if !io::stderr().is_terminal() || pane_agents(&session::live_sessions()?)?.is_empty() {
+    if !io::stderr().is_terminal() {
         return Ok(Outcome::Closed);
     }
-    // The pane, as Rex names its blocks, so the app finds it in its list.
-    open_app(None, env::var("REX_BLOCK").ok())
+    let agents = pane_agents(&session::live_sessions()?)?;
+    // The pane, as Rex names its blocks, so the stand-in finds it in its list.
+    let (Some(newest), Ok(block)) = (agents.first(), env::var("REX_BLOCK")) else {
+        return Ok(Outcome::Closed);
+    };
+    let title = stand_in_title(newest);
+    open_app(None, &app::Mode::StandIn { block, title })
 }
 
-/// Opens the app, with the pane `select` selected once the daemon lists it,
-/// and resumes the session the user chooses.
-fn open_app(view: Option<u64>, select: Option<String>) -> Result<Outcome> {
+/// What a stand-in calls its pane: the title of the newest resumable
+/// session, or its folder's name when the title is empty.
+fn stand_in_title(agent: &Agent) -> String {
+    if !agent.title.is_empty() {
+        return agent.title.clone();
+    }
+    Path::new(&agent.cwd).file_name().map_or_else(
+        || agent.cwd.clone(),
+        |name| name.to_string_lossy().into_owned(),
+    )
+}
+
+/// Opens the app in `mode`, and resumes the session the user chooses.
+fn open_app(view: Option<u64>, mode: &app::Mode) -> Result<Outcome> {
     if !io::stderr().is_terminal() {
         eprintln!("rawr needs a terminal; rawr status --format json lists the panes");
         return Ok(Outcome::Nothing);
     }
-    match app::run(view, select)? {
+    match app::run(view, mode)? {
         Some(agent) => match agent.resume()? {},
         None => Ok(Outcome::Closed),
     }
@@ -242,9 +259,11 @@ fn setup_claude(mode: Mode) -> Result<Outcome> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use ctl_core::prelude::*;
 
-    use super::{Cli, Outcome};
+    use super::{Agent, Cli, Outcome};
 
     fn shown(outcome: &Outcome) -> (String, Destination) {
         let captured = View::new(OutputFormat::Pretty, ColorMode::Never)
@@ -278,6 +297,20 @@ mod tests {
         let cli = Cli::try_parse_from(["rawr", "--startup"]).expect("--startup parses");
         assert!(cli.startup && cli.command.is_none());
         assert!(Cli::try_parse_from(["rawr", "--startup", "status"]).is_err());
+    }
+
+    #[test]
+    fn a_stand_in_is_named_after_its_session_or_its_folder() {
+        let mut agent = Agent {
+            session_id: "0190f3a2".to_owned(),
+            cwd: "/work/shop".to_owned(),
+            title: "Fix checkout".to_owned(),
+            idle: None,
+            transcript: PathBuf::from("/work/shop/session.jsonl"),
+        };
+        assert_eq!(super::stand_in_title(&agent), "Fix checkout");
+        agent.title.clear();
+        assert_eq!(super::stand_in_title(&agent), "shop");
     }
 
     #[test]
