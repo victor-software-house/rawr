@@ -36,7 +36,7 @@ use state::{Action, App, Focus, Link};
 use terminal::{Pointer, Screen};
 
 use crate::app::facts::Way;
-use crate::app::history::History;
+use crate::app::history::{Ask, History, PAGE};
 use crate::catalog;
 use crate::daemon::link::{self, Incoming};
 use crate::daemon::{FromDaemon, Reach, ToDaemon};
@@ -289,16 +289,24 @@ pub(crate) fn run(view: Option<u64>, mode: &Mode) -> Result<Option<Agent>> {
                             FromDaemon::Page {
                                 path,
                                 list,
+                                way,
+                                at,
                                 entries,
                                 more,
                                 failed,
                             } => {
                                 if let Some(history) = histories.get_mut(&path) {
+                                    let ask = Ask {
+                                        way,
+                                        list,
+                                        at,
+                                        count: PAGE,
+                                    };
                                     if let Some(reason) = failed {
-                                        history.fail(list);
+                                        history.fail(ask);
                                         app.notice = Some(reason);
                                     } else {
-                                        let stale = history.land(list, entries, more);
+                                        let stale = history.land(ask, entries, more);
                                         app.layouts.forget(&path, &stale);
                                     }
                                 }

@@ -18,7 +18,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 pub(crate) use server::run as serve;
 
-use crate::app::facts::{EntryId, Facts, List, Said};
+use crate::app::facts::{EntryId, Facts, List, Said, Way};
 use crate::app::feed::Pane;
 use crate::app::state::Carry;
 use crate::catalog::Hit;
@@ -122,6 +122,9 @@ pub(crate) enum FromDaemon {
     Page {
         path: PathBuf,
         list: List,
+        /// The request this answers: the way, and the entry it read from.
+        way: Way,
+        at: EntryId,
         entries: Vec<Said>,
         more: bool,
         /// Why the transcript could not be read, when it could not. The

@@ -3303,7 +3303,7 @@ mod tests {
         assert_eq!(rig.entries(), shown);
         // The page lands, and the view moves on.
         let page = older_page(900..1000, |place| format!("file-{place}.rs"));
-        rig.history.land(List::Activity, page, true);
+        rig.history.land(ask, page, true);
         rig.scroll(100_000);
         let shown = rig.entries();
         assert!(
@@ -3362,8 +3362,7 @@ mod tests {
         let ask = rig.history.settle(reach, 200).expect("a page is asked for");
         assert_eq!(ask.way, Way::Older);
         // Older matches appear as the reader scrolls on.
-        rig.history
-            .land(List::Activity, older_page(900..1000, text), true);
+        rig.history.land(ask, older_page(900..1000, text), true);
         rig.scroll(100_000);
         let shown = rig.entries();
         assert!(
@@ -3384,8 +3383,7 @@ mod tests {
         };
         let end = all.partition_point(|said| said.id < ask.at);
         let from = end.saturating_sub(ask.count);
-        rig.history
-            .land(List::Activity, all[from..end].to_vec(), from > 0);
+        rig.history.land(ask, all[from..end].to_vec(), from > 0);
         true
     }
 
@@ -3473,7 +3471,7 @@ mod tests {
             .expect("a page is asked for");
         assert_eq!(ask.way, Way::Older);
         let page = older_page(900..1000, |place| format!("file-{place}.rs"));
-        rig.history.land(List::Activity, page, true);
+        rig.history.land(ask, page, true);
         assert_eq!(bar(&rig, &mut layouts).1, 2400);
     }
 

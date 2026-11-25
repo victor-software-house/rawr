@@ -159,14 +159,16 @@ impl History {
         stale
     }
 
-    /// The page asked for in `list` has come. Returns the entries whose layout
-    /// is stale: those it changed and those it dropped.
-    pub(crate) fn land(&mut self, list: List, entries: Vec<Said>, more: bool) -> Vec<EntryId> {
-        let held = &mut self.lists[list.index()];
-        let Some(ask) = held.flight.take() else {
+    /// The answer to `ask` has come. An answer that is not to the page in
+    /// flight, such as one asked for before a rewrite, is ignored. Returns the
+    /// entries whose layout is stale: those it changed and those it dropped.
+    pub(crate) fn land(&mut self, ask: Ask, entries: Vec<Said>, more: bool) -> Vec<EntryId> {
+        let held = &mut self.lists[ask.list.index()];
+        if !held.asked(ask) {
             return Vec::new();
-        };
-        held.land(self.facts.entries_mut(list), ask, entries, more)
+        }
+        held.flight = None;
+        held.land(self.facts.entries_mut(ask.list), ask, entries, more)
     }
 
     /// A frame left the view at `reach`, with `lead` lines to hold past it.
@@ -214,11 +216,12 @@ impl History {
         Some(ask)
     }
 
-    /// The page asked for in `list` could not be read. The list stays open, and
-    /// the page is asked for again when the view moves.
-    pub(crate) fn fail(&mut self, list: List) {
-        let held = &mut self.lists[list.index()];
-        if held.flight.take().is_some() {
+    /// The page `ask` could not be read. The list stays open, and the page is
+    /// asked for again when the view moves.
+    pub(crate) fn fail(&mut self, ask: Ask) {
+        let held = &mut self.lists[ask.list.index()];
+        if held.asked(ask) {
+            held.flight = None;
             held.stalled = held.view.map(|(reach, _)| reach);
         }
     }
@@ -268,6 +271,12 @@ impl History {
 }
 
 impl Held {
+    /// Whether `ask` is the page in flight: the same way, from the same entry.
+    fn asked(&self, ask: Ask) -> bool {
+        self.flight
+            .is_some_and(|flight| (flight.way, flight.at) == (ask.way, ask.at))
+    }
+
     /// Joins the facts' `incoming` entries to the `kept` ones, which are the
     /// facts' earlier and the pages'. `older` is whether the facts say entries
     /// older than theirs exist.
@@ -594,7 +603,7 @@ mod tests {
         let ask = history.settle(near, LEAD_MIN).expect("a page is asked for");
         assert_eq!(history.settle(near, LEAD_MIN), None);
         let (entries, more) = answer(&all, ask);
-        history.land(List::Activity, entries, more);
+        history.land(ask, entries, more);
         assert_eq!(held(&history), 400);
         assert!(
             history
@@ -620,7 +629,7 @@ mod tests {
                 .settle(view(&a, (0, 39), (0, 1000)), LEAD_MIN)
                 .expect("a page is asked for");
             let (entries, more) = answer(&all, ask);
-            a.land(List::Activity, entries, more);
+            a.land(ask, entries, more);
         }
         let other = world(400);
         let mut b = History::default();
@@ -664,7 +673,7 @@ mod tests {
             asked.push(ask.at);
             let (entries, more) = answer(&all, ask);
             let page = (entries[0].id, entries[entries.len() - 1].id);
-            history.land(List::Activity, entries, more);
+            history.land(ask, entries, more);
             assert!(held(&history) <= HELD);
             // The page that landed stays.
             let mine = &history.facts.activity;
@@ -683,8 +692,8 @@ mod tests {
         let mut history = History::default();
         history.merge(facts_of(&all, 2100..2400));
         let near = view(&history, (0, 10), (0, 100));
-        assert!(history.settle(near, LEAD_MIN).is_some());
-        history.fail(List::Activity);
+        let ask = history.settle(near, LEAD_MIN).expect("a page is asked for");
+        history.fail(ask);
         // The same view asks for nothing, and the list has not ended.
         assert_eq!(history.settle(near, LEAD_MIN), None);
         assert_eq!(history.shape(List::Activity).older, 2100);
@@ -703,7 +712,7 @@ mod tests {
             .expect("a page is asked for");
         let (entries, more) = answer(&all, ask);
         assert!(!more);
-        history.land(List::Activity, entries, more);
+        history.land(ask, entries, more);
         assert_eq!(held(&history), 350);
         assert_eq!(
             history.settle(view(&history, (0, 10), (0, 100)), LEAD_MIN),
@@ -727,7 +736,7 @@ mod tests {
             };
             assert_eq!(ask.way, Way::Older);
             let (entries, more) = answer(&all, ask);
-            history.land(List::Activity, entries, more);
+            history.land(ask, entries, more);
             pages += 1;
             let mine = &history.facts.activity;
             assert!(mine.len() <= HELD, "{} held", mine.len());
@@ -750,7 +759,7 @@ mod tests {
         history.merge(facts_of(&all, 4700..5000));
         while let Some(ask) = history.settle(view(&history, (0, 39), (0, 1000)), LEAD_MIN) {
             let (entries, more) = answer(&all, ask);
-            history.land(List::Activity, entries, more);
+            history.land(ask, entries, more);
         }
         let gap = |history: &History| history.lists[List::Activity.index()].gaps.clone();
         assert_eq!(gap(&history).len(), 1);
@@ -763,7 +772,7 @@ mod tests {
             let ask = history.settle(seen, LEAD_MIN).expect("a page is asked for");
             assert_eq!((ask.way, ask.at), (Way::Newer, newest));
             let (entries, more) = answer(&all, ask);
-            history.land(List::Activity, entries, more);
+            history.land(ask, entries, more);
             pages += 1;
             assert!(held(&history) <= HELD);
             assert!(pages < 100);
@@ -807,7 +816,7 @@ mod tests {
             .expect("a page is asked for");
         assert_eq!((ask.way, ask.at), (Way::Newer, all[299].id));
         let (entries, more) = answer(&all, ask);
-        history.land(List::Activity, entries, more);
+        history.land(ask, entries, more);
         assert_eq!(held(&history), 700);
         // Four more pages follow: three of the missing entries, and one that
         // finds the held ones next to its last.
@@ -817,7 +826,7 @@ mod tests {
                 .settle(view(&history, (290, 299), (1000, 0)), LEAD_MIN)
                 .expect("a page is asked for");
             let (entries, more) = answer(&all, ask);
-            history.land(List::Activity, entries, more);
+            history.land(ask, entries, more);
             pages += 1;
             assert!(pages < 10);
         }
@@ -853,8 +862,37 @@ mod tests {
         assert_eq!(held(&history), 50);
         // The page asked for in the old numbering is nobody's answer now.
         let (entries, more) = answer(&all, ask);
-        assert_eq!(history.land(List::Activity, entries, more), Vec::new());
+        assert_eq!(history.land(ask, entries, more), Vec::new());
         assert_eq!(held(&history), 50);
+    }
+
+    #[test]
+    fn an_answer_to_an_earlier_ask_is_ignored_after_a_rewrite() {
+        let all = world(400);
+        let mut history = History::default();
+        history.merge(facts_of(&all, 100..400));
+        let first = history
+            .settle(view(&history, (0, 10), (0, 100)), LEAD_MIN)
+            .expect("a page is asked for");
+        // The transcript is written again, and the new numbering gets its own
+        // ask.
+        history.merge(facts_of(&world(400), 0..300));
+        let second = history
+            .settle(view(&history, (0, 10), (0, 100)), LEAD_MIN)
+            .expect("a page is asked for");
+        assert_ne!((first.way, first.at), (second.way, second.at));
+        // The answer to the first ask comes late: nothing changes.
+        let (entries, more) = answer(&all, first);
+        assert_eq!(history.land(first, entries, more), Vec::new());
+        assert_eq!(held(&history), 300);
+        assert_eq!(
+            history.settle(view(&history, (0, 10), (0, 100)), LEAD_MIN),
+            None
+        );
+        // The answer to the second lands.
+        let (entries, more) = answer(&world(400), second);
+        history.land(second, entries, more);
+        assert_eq!(held(&history), 300);
     }
 
     #[test]
@@ -862,10 +900,13 @@ mod tests {
         let all = world(400);
         let mut history = History::default();
         history.merge(facts_of(&all, 100..400));
-        assert_eq!(
-            history.land(List::Activity, all[..100].to_vec(), true),
-            Vec::new()
-        );
+        let ask = Ask {
+            way: Way::Older,
+            list: List::Activity,
+            at: all[100].id,
+            count: PAGE,
+        };
+        assert_eq!(history.land(ask, all[..100].to_vec(), true), Vec::new());
         assert_eq!(held(&history), 300);
     }
 

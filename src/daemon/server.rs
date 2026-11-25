@@ -487,6 +487,8 @@ fn pager(send: SyncSender<FromDaemon>) -> mpsc::Sender<Job> {
             let answer = match facts::page(&job.path, job.way, job.list, job.at, job.count) {
                 Ok(page) => FromDaemon::Page {
                     list: job.list,
+                    way: job.way,
+                    at: job.at,
                     entries: page.entries,
                     more: page.more,
                     failed: None,
@@ -498,6 +500,8 @@ fn pager(send: SyncSender<FromDaemon>) -> mpsc::Sender<Job> {
                         job.path.display()
                     )),
                     list: job.list,
+                    way: job.way,
+                    at: job.at,
                     entries: Vec::new(),
                     more: true,
                     path: job.path,
@@ -661,11 +665,17 @@ mod tests {
         })
         .expect("the pager takes the job");
         let FromDaemon::Page {
-            entries, failed, ..
+            way,
+            at,
+            entries,
+            failed,
+            ..
         } = receive.recv().expect("the pager answers")
         else {
             panic!("the answer is a page");
         };
+        // The answer names the request it is for.
+        assert_eq!((way, at), (Way::Older, EntryId { line: 0, index: 0 }));
         assert_eq!(entries.len(), 0);
         let reason = failed.clone().unwrap_or_default();
         assert!(reason.contains("No such file"), "{reason}");

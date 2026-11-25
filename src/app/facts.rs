@@ -480,7 +480,8 @@ impl Reading {
 const AHEAD: u64 = 256 << 10;
 
 /// Which way a page reads from the entry it starts at.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum Way {
     /// The entries just before it.
     Older,
@@ -1970,6 +1971,10 @@ mod tests {
     /// `cargo test --release -- --ignored page_round_trip --nocapture`.
     #[test]
     #[ignore = "a timing run, in a release build"]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one run that writes the transcript, serves the pages and times them"
+    )]
     fn page_round_trip_on_a_transcript_of_fifty_megabytes() {
         // Turns of a prompt, a reply with a call, and its result, until the
         // transcript is 50 MB; the offsets of the lines the pages start at.
@@ -2012,6 +2017,8 @@ mod tests {
                     let mut answer = serde_json::to_vec(&FromDaemon::Page {
                         path: path.clone(),
                         list,
+                        way: Way::Older,
+                        at: before,
                         entries: got.entries,
                         more: got.more,
                         failed: None,
