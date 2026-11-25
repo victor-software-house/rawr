@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use std::{process, thread};
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -77,7 +77,10 @@ struct Client {
 }
 
 impl State {
-    /// A daemon that has seen no feed and no client yet.
+    /// A daemon that has seen no feed and no client yet. IDs start at the
+    /// wall clock in microseconds, so they differ across daemon runs: a
+    /// window that reconnects after a restart keeps its old view ID, which
+    /// no new window may take.
     fn new() -> Self {
         Self {
             panes: Vec::new(),
@@ -85,10 +88,26 @@ impl State {
             closed: Vec::new(),
             link: (Reach::Stale, Some("reading Rex".to_owned())),
             clients: HashMap::new(),
-            next: 0,
+            next: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .ok()
+                .and_then(|elapsed| u64::try_from(elapsed.as_micros()).ok())
+                .unwrap_or(0),
             handoffs: HashMap::new(),
             going: HashSet::new(),
         }
+    }
+
+    /// Takes the client ID of a window that said hello, and returns it with
+    /// the window's view: the one it asked to keep, or its own ID. A kept
+    /// view moves `next` past it, for a clock that went back since.
+    fn admit(&mut self, kept: Option<u64>) -> (u64, u64) {
+        let id = self.next;
+        self.next += 1;
+        if let Some(kept) = kept {
+            self.next = self.next.max(kept.saturating_add(1));
+        }
+        (id, kept.unwrap_or(id))
     }
 }
 
@@ -303,9 +322,7 @@ fn serve(hub: &Arc<Hub>, stream: UnixStream, socket: &Path) {
     }
     let (id, view) = {
         let mut state = hold(&hub.state);
-        let id = state.next;
-        state.next += 1;
-        let view = view.unwrap_or(id);
+        let (id, view) = state.admit(view);
         let carry = state
             .handoffs
             .get(&view)
@@ -797,7 +814,6 @@ fn search(
 mod tests {
     use std::env;
     use std::io::Read;
-    use std::time::UNIX_EPOCH;
 
     use super::*;
     use crate::app::state::App;
@@ -827,6 +843,21 @@ mod tests {
         // when the daemon shuts the socket.
         let mut buffer = [0_u8; 8];
         assert_eq!(window.read(&mut buffer).expect("the socket reads"), 0);
+    }
+
+    #[test]
+    fn ids_start_from_the_clock_and_pass_a_view_kept_from_a_later_run() {
+        let mut state = State::new();
+        // After 2023-11-14, in microseconds since the epoch.
+        assert!(state.next > 1_700_000_000_000_000, "{}", state.next);
+        let kept = state.next + 100;
+        let (id, view) = state.admit(Some(kept));
+        assert_eq!(view, kept);
+        assert!(state.next > kept, "{} is not past {kept}", state.next);
+        // A window with no view takes its own ID, and no other takes it.
+        let (other, own) = state.admit(None);
+        assert_eq!(own, other);
+        assert!(other > kept && other != id);
     }
 
     #[test]
