@@ -1826,11 +1826,20 @@ impl App {
         })
     }
 
-    /// When the loop must wake for a held thumb that rests.
+    /// When the loop must wake for a place that waits to be asked: where a
+    /// held thumb's rest ends, or now once it is let go of. It does not wake
+    /// while a request is out, or while a drag report waits to be drawn, whose
+    /// frame comes next and may move the thumb.
     pub(crate) fn jump_wake(&self) -> Option<Instant> {
         let reaching = self.reaching.as_ref()?;
-        (reaching.ask.is_none() && self.held_thumb(Focus::Session).is_some())
-            .then(|| reaching.since + REST)
+        if reaching.ask.is_some() || self.scroll_of(Focus::Session).seek.is_some() {
+            return None;
+        }
+        Some(if self.held_thumb(Focus::Session).is_some() {
+            reaching.since + REST
+        } else {
+            self.now
+        })
     }
 
     /// Whether the answer `ask` about `list` of the transcript at `path`,
@@ -2640,6 +2649,37 @@ mod tests {
         app.on_mouse(pointer(MouseEventKind::Up(LEFT), 4), Under::default());
         let jump = app.take_jump(|_, _| 7).expect("a jump on letting go");
         (app, jump)
+    }
+
+    #[test]
+    fn a_thumb_let_go_of_wakes_the_loop_at_once_until_it_asks() {
+        let t0 = Instant::now();
+        let mut app = shown_app();
+        app.settle(
+            &[(Focus::Session, 0)],
+            None,
+            &[track(Focus::Session, 20, (0, 100))],
+        );
+        app.now = t0;
+        app.on_mouse(
+            pointer(MouseEventKind::Down(LEFT), 4),
+            on_bar(Focus::Session),
+        );
+        app.found_seek(Some(Seek::Past(List::Activity, 0)));
+        // Held: the loop wakes where the rest ends.
+        assert_eq!(app.jump_wake(), Some(t0 + REST));
+        app.on_mouse(pointer(MouseEventKind::Up(LEFT), 4), Under::default());
+        // Let go of, with no request sent and no drag report to draw.
+        let later = t0 + Duration::from_millis(5);
+        app.now = later;
+        assert_eq!(app.jump_wake(), Some(later));
+        // A drag report waits for its frame, which comes first.
+        app.scroll_mut(Focus::Session).seek = Some(3);
+        assert_eq!(app.jump_wake(), None);
+        app.scroll_mut(Focus::Session).seek = None;
+        // The request sent waits for its answer.
+        assert!(app.take_jump(|_, _| 0).is_some());
+        assert_eq!(app.jump_wake(), None);
     }
 
     #[test]
