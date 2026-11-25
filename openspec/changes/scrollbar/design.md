@@ -29,13 +29,16 @@
      It lost: the maintainer asked for it out of sight (operator, 2026-11-25).
 4. **A drag past the held entries jumps.**
    - In the Conversation and Activity tabs, the thumb's position stands for a place in the whole session, by the counts the tabs already show.
-   - When a drag ends, or rests for 100 ms, on a place no held entry covers, the window asks the daemon `around` with the list and that place as a share of the transcript's bytes.
-   - The share is in millionths from the transcript's first byte.
-     The tabs list the newest entry first, so the bottom of the track is share 0, and a drag to the bottom asks for the first calls.
+   - When a drag ends, or rests for 100 ms, on a place no held entry covers, the window asks the daemon `around` with the list, the transcript the frame found the place in, and that place as a byte of the transcript.
+   - A place in a gap, or among the entries older than the held ones, is a byte inside that stretch.
+     It lies between the byte offsets of the held entries on each side of the stretch, the first or last byte of the transcript when none is held there, by how far into the stretch's estimated entries the bar line is.
+     The tabs list the newest entry first, so a drag just past the held entries asks for a byte just before the oldest held one, and a drag to the bottom asks for the first calls.
    - The daemon reads the 100 entries of that list nearest that byte, as it reads any page, and answers `around`, a message of its own that names the request it answers.
      Each request carries a number, and only the answer to the newest one lands, so a thumb that moved on drops the older answer.
    - The window keeps its view until the answer lands, then shows the entry at that place at the top.
+     An answer that adds no entry the window did not hold leaves the view where it is.
      The answer joins the held entries with gaps on both sides, which pages fill as for any gap.
+   - The place belongs to its transcript: an answer for another transcript never lands, and showing another transcript gives the place up.
    - The daemon cannot count the entries it skips, so the window shares the entries not held there between the two new gaps by the bytes each side spans.
      The counts of the whole session stay as they were.
    - While the thumb is held, or a place is waiting for its entries, the window asks for no older or newer page, so a drag through the held entries loads nothing on its way.
