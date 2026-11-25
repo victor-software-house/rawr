@@ -13,7 +13,7 @@ The README describes the behaviour; this file holds the rules for changing it.
    On a resume in their own pane they restore the terminal, then replace their own process with `claude --resume <session id>` in the session's folder.
    `rawr --startup` prints nothing and exits 0 when the pane has nothing to resume, because it runs in every new shell.
 4. The binary talks to the Rex server over its control protocol instead of starting `rex`.
-   It starts three programs and nothing else: its own `rawr daemon`, `claude` on a resume, and `/usr/bin/open` for a file the user clicks.
+   It starts three programs and nothing else: its own `rawr daemon`, `claude` on a resume, and `/usr/bin/open` (`xdg-open` off macOS) for a file the user clicks.
    Nothing resumes and nothing opens without the user's choice.
 5. The repository is public.
    Examples, fixtures and docs use invented session titles, folders and IDs, never ones taken from a real machine.
