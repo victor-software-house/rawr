@@ -253,6 +253,19 @@ queue:
     plan: openspec/changes/compact-header/proposal.md
     notes:
       - 2026-11-25, the maintainer asked for the header to fold while scrolled and come back on hover, as the pane rail does.
+
+  - id: RAWR-036
+    title: Open a search result in rawr instead of resuming it
+    scope: app
+    outcome: >-
+      Choosing a search result shows its session in rawr, and only its buttons resume
+      it or go to its pane.
+    blocked_by:
+      - RAWR-035
+    acceptance:
+      - Enter or a click on a result never sends a resume or a pane switch.
+      - A result no pane lists opens as a closable pane under Opened.
+    plan: openspec/changes/search-opens/proposal.md
 archive:
   - id: RAWR-021
     title: Draw the picker search box at the bottom
