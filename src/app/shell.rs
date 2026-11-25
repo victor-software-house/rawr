@@ -390,6 +390,14 @@ mod tests {
             writes("tee <<< data out.log", Some("/work")),
             ["/work/out.log"]
         );
+        assert_eq!(
+            writes("tee <<<data out.log", Some("/work")),
+            ["/work/out.log"]
+        );
+        assert_eq!(
+            writes("tee <<< \"a > b\" out.log", Some("/work")),
+            ["/work/out.log"]
+        );
     }
 
     #[test]

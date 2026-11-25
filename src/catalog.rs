@@ -237,7 +237,9 @@ pub(crate) struct Hit {
 const SNIPPET_CHARS: usize = 160;
 
 /// `text` cut to about [`SNIPPET_CHARS`] around the first place `term`
-/// occurs, on one line and safe to draw.
+/// occurs, on one line and safe to draw. `term` is lowercased with
+/// [`str::to_lowercase`], as [`terms`] does, since the text is lowercased the
+/// same way to find it.
 pub(crate) fn around(text: &str, term: &str) -> String {
     let flat = sanitize(&text.split_whitespace().collect::<Vec<_>>().join(" "));
     // Lowercasing can lengthen a character, so `starts` maps each byte of
