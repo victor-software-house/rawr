@@ -292,21 +292,11 @@ fn rails(
         rightward: true,
     });
     edge_line(frame, app, edge, grip, hits);
-    let slides = app.slides();
-    for (index, (column, rect)) in Focus::COLUMNS.into_iter().zip(rects).enumerate() {
+    for (column, rect) in Focus::COLUMNS.into_iter().zip(rects) {
         if rect.width == 0 || rect.height < 3 {
             continue;
         }
-        // A column that moves between a rail and its full width is drawn as
-        // it is when open and cut at its moving edge, and a rail only once
-        // the move has ended.
-        let open = slides
-            .and_then(|ends| ends.get(index).copied())
-            .filter(|&(from, to)| from.min(to) < FULL)
-            .map(|(from, to)| from.max(to).max(rect.width));
-        if let Some(open) = open {
-            slid(frame, app, layouts, column, (rect, open), shown, hits);
-        } else if rect.width < FULL {
+        if rect.width < FULL {
             rail(frame, app, column, rect, shown, hits);
         } else {
             header(frame, app, column, rect, hits);
@@ -682,34 +672,6 @@ fn crumbs(frame: &mut Frame<'_>, app: &App, area: Rect, hits: &mut Hits) {
     };
     if app.at() == Focus::Panes && rest.width > 8 {
         put(frame, rest, summary(app));
-    }
-}
-
-/// `column` as it is when it is `open` columns wide, cut to `rect`, the width
-/// it has now, so its rows slide with the edge that moves.
-fn slid(
-    frame: &mut Frame<'_>,
-    app: &App,
-    layouts: &mut Layouts,
-    column: Focus,
-    (rect, open): (Rect, u16),
-    shown: Shown<'_>,
-    hits: &mut Hits,
-) {
-    let whole = Rect {
-        width: open,
-        ..rect
-    };
-    hits.within(false, |hits| {
-        let cells = scratch(whole.right(), whole.bottom(), |screen| {
-            header(screen, app, column, whole, hits);
-            view(screen, app, layouts, column, below(whole, 2), shown, hits);
-        });
-        paste(frame.buffer_mut(), &cells, rect);
-        rect
-    });
-    if rect.width < FULL {
-        hits.rails.push((rect, column));
     }
 }
 
@@ -4751,93 +4713,6 @@ mod tests {
             resized.last().expect("frames"),
         );
         assert!(scroll < Duration::from_millis(2), "p99 {scroll:?}");
-    }
-
-    /// Draws the frames of a move, ten milliseconds apart, while `moving`
-    /// says it goes on, and checks that each shows the panes' rows of `open`
-    /// cut at the column's edge. Returns how many frames it checked and the
-    /// narrowest width it saw.
-    fn frames_cut_at_the_edge(
-        rig: &mut Rig,
-        open: &[String],
-        moving: fn(&App) -> bool,
-    ) -> (usize, usize) {
-        let mut frames = 0;
-        let mut narrowest = usize::MAX;
-        for _ in 0..100 {
-            rig.app.elapse(Duration::from_millis(10));
-            if !moving(&rig.app) {
-                break;
-            }
-            let rows = rig.draw();
-            let edge = rows[5]
-                .chars()
-                .position(|glyph| glyph == '│')
-                .expect("the panes' edge is drawn");
-            for y in 1..37 {
-                let shown: String = rows[y].chars().take(edge).collect();
-                let wanted: String = open[y].chars().take(edge).collect();
-                assert_eq!(shown, wanted, "row {y} with the edge at {edge}");
-            }
-            frames += 1;
-            narrowest = narrowest.min(edge);
-        }
-        (frames, narrowest)
-    }
-
-    /// Presses the left button on `target`, as the last frame drew it.
-    fn press(rig: &mut Rig, target: Target) {
-        let under = Under {
-            target: Some(target),
-            size: (120, 40),
-            ..Under::default()
-        };
-        rig.app.on_mouse(
-            MouseEvent {
-                kind: MouseEventKind::Down(LEFT),
-                column: 3,
-                row: 5,
-                modifiers: KeyModifiers::NONE,
-            },
-            under,
-        );
-    }
-
-    #[test]
-    fn a_drawer_that_shuts_slides_its_rows_with_its_edge() {
-        let mut rig = Rig::new(30);
-        rig.draw();
-        rig.pointer(MouseEventKind::Moved, 2, 5);
-        rig.app.elapse(Duration::from_secs(1));
-        let open = rig.draw();
-        assert!(open.iter().any(|row| row.contains("Fix login")), "{open:?}");
-        // The pointer leaves for the session column, and the drawer shuts.
-        rig.pointer(MouseEventKind::Moved, 100, 10);
-        let (frames, narrowest) =
-            frames_cut_at_the_edge(&mut rig, &open, |app| app.drawn().is_some());
-        assert!(frames > 3, "{frames} frames");
-        assert!(narrowest < usize::from(FULL), "narrowest {narrowest}");
-        // Once it has shut, the rail shows no titles.
-        let shut = rig.draw();
-        assert!(
-            shut.iter()
-                .all(|row| row.chars().take(6).all(|glyph| glyph != 'F')),
-            "{shut:?}"
-        );
-    }
-
-    #[test]
-    fn a_focus_move_that_folds_the_panes_slides_their_rows_with_their_edge() {
-        let mut rig = Rig::new(30);
-        rig.draw();
-        press(&mut rig, Target::Column(Focus::Panes));
-        rig.app.elapse(Duration::from_secs(1));
-        let open = rig.draw();
-        assert!(open.iter().any(|row| row.contains("Fix login")), "{open:?}");
-        press(&mut rig, Target::Column(Focus::Session));
-        let (frames, narrowest) = frames_cut_at_the_edge(&mut rig, &open, App::moving);
-        assert!(frames > 3, "{frames} frames");
-        assert!(narrowest < usize::from(FULL), "narrowest {narrowest}");
     }
 
     /// The call each row of `entries` shows.

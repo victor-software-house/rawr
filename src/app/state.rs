@@ -852,31 +852,6 @@ impl App {
         [first, total - first]
     }
 
-    /// While the columns move, by the drawer or by a move of focus, each
-    /// one's width where the move began and where it ends.
-    pub(crate) fn slides(&self) -> Option<[(u16, u16); 2]> {
-        let total = self.total();
-        let closed = self.layout()[0];
-        if let Some((Focus::Panes, out)) = self.drawn()
-            && closed < FULL
-            && out < 1.0
-        {
-            let open = self
-                .drawer_full(Focus::Panes)
-                .max(closed)
-                .min(total.saturating_sub(RAIL));
-            return Some([
-                (closed, open),
-                (total.saturating_sub(closed), total.saturating_sub(open)),
-            ]);
-        }
-        let moved = self
-            .moved
-            .filter(|moved| moved.at.elapsed() < self.move_span())?;
-        let to = widths(self.lead, total, self.wants);
-        Some([(moved.from[0], to[0]), (moved.from[1], to[1])])
-    }
-
     /// Marks a move from the columns as they stand, so a move that cuts
     /// into another starts where that one had got to.
     fn start_move(&mut self, was: Focus) {
@@ -1768,19 +1743,6 @@ impl App {
             self.peek_out(false);
         }
         drawer || header
-    }
-
-    /// Moves the start of every animation back by `by`, as if that long had
-    /// passed.
-    #[cfg(test)]
-    pub(crate) fn elapse(&mut self, by: Duration) {
-        let back = |at: Instant| at.checked_sub(by).unwrap_or(at);
-        if let Some(drawer) = &mut self.drawer {
-            drawer.at = back(drawer.at);
-        }
-        if let Some(moved) = &mut self.moved {
-            moved.at = back(moved.at);
-        }
     }
 
     /// Whether `column` is drawn out over the others.
