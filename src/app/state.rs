@@ -684,7 +684,8 @@ impl App {
             return top;
         }
         match self.thumbs[slot(list)] {
-            Some(glide) if !self.touched => glide.row(now),
+            // Input that left this thumb where it was does not stop its glide.
+            Some(glide) if glide.to == target || !self.touched => glide.row(now),
             Some(_) | None => target,
         }
     }
@@ -2914,6 +2915,10 @@ mod tests {
             &[track(Focus::Panes, 20, (40, 100))],
         );
         let at = |app: &App, after: u64| app.thumb_row(Focus::Panes, 8, t0 + ms(after));
+        // A key that leaves the thumb where it was does not stop the glide.
+        app.on_key(key(KeyCode::Char('x')));
+        assert_eq!(at(&app, 50), 4);
+        app.touched = false;
         assert_eq!(
             [
                 at(&app, 0),
