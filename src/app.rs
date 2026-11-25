@@ -21,11 +21,13 @@ mod theme;
 mod view;
 
 use std::collections::HashMap;
+use std::ffi::OsStr;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
-use std::{env, hint, io, thread};
+use std::{env, fs, hint, io, thread};
 
 use anyhow::{Context, Result};
 use pacing::{MIN_SLEEP, Moves, Pacer, Report as Wheel, SPIN_LEAD, Wait, Wake};
@@ -525,14 +527,60 @@ fn spin_at(started: Instant, now: Instant) -> usize {
         .unwrap_or(0)
 }
 
-/// Opens `file` in its default app, as a click on a `file://` link would;
-/// a file gone since the session touched it says so in the search box.
+/// Extensions of files the system runs, or opens in a program that runs
+/// them, when asked to open them.
+const LAUNCHERS: [&str; 16] = [
+    "app",
+    "command",
+    "tool",
+    "terminal",
+    "workflow",
+    "action",
+    "pkg",
+    "mpkg",
+    "scpt",
+    "scptd",
+    "applescript",
+    "jar",
+    "prefpane",
+    "fileloc",
+    "inetloc",
+    "webloc",
+];
+
+/// Whether opening `path`, a canonical path, could run it instead of
+/// showing it: a directory (a bundle), a file with an execute bit, or a
+/// file of a kind in [`LAUNCHERS`].
+fn launches(path: &Path) -> bool {
+    let Ok(meta) = fs::metadata(path) else {
+        return true;
+    };
+    meta.is_dir()
+        || meta.permissions().mode() & 0o111 != 0
+        || path
+            .extension()
+            .and_then(OsStr::to_str)
+            .is_some_and(|extension| {
+                LAUNCHERS
+                    .iter()
+                    .any(|launcher| extension.eq_ignore_ascii_case(launcher))
+            })
+}
+
+/// Opens `file` in its default app, as a click on a `file://` link would,
+/// or reveals it when opening could run it, so a click never runs a file a
+/// session wrote; a file gone since the session touched it says so in the
+/// search box.
 fn open_file(file: &Path, app: &mut App) {
-    if !file.exists() {
+    let Ok(path) = fs::canonicalize(file) else {
         app.notice = Some(format!("{} is gone", file.display()));
         return;
+    };
+    let mut command = Command::new("/usr/bin/open");
+    if launches(&path) {
+        command.arg("-R");
     }
-    match Command::new("/usr/bin/open").arg(file).spawn() {
+    match command.arg(&path).spawn() {
         Ok(mut child) => {
             // The opener ends at once; its exit is collected off the loop.
             thread::spawn(move || child.wait());
@@ -568,11 +616,53 @@ fn own_status(app: &App) -> Report {
 
 #[cfg(test)]
 mod tests {
+    use std::fs::Permissions;
+    use std::process;
+
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     use super::*;
     use crate::app::state::fixtures::pane;
     use crate::status::Status;
+
+    /// A file called `name` with permission `mode` in a folder of its own.
+    fn file_with(folder: &str, name: &str, mode: u32) -> PathBuf {
+        let dir = env::temp_dir().join(format!("rawr-app-{folder}-{}", process::id()));
+        fs::create_dir_all(&dir).expect("make the folder");
+        let path = dir.join(name);
+        fs::write(&path, "x").expect("write the file");
+        fs::set_permissions(&path, Permissions::from_mode(mode)).expect("set the mode");
+        path
+    }
+
+    #[test]
+    fn a_folder_launches() {
+        let dir = env::temp_dir().join(format!("rawr-app-bundle-{}", process::id()));
+        fs::create_dir_all(&dir).expect("make the folder");
+        assert!(launches(&dir));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_file_with_an_execute_bit_launches() {
+        let path = file_with("exec", "run.sh", 0o755);
+        assert!(launches(&path));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn a_file_of_a_launching_kind_launches_in_any_case() {
+        let path = file_with("kind", "x.COMMAND", 0o644);
+        assert!(launches(&path));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn a_plain_file_does_not_launch() {
+        let path = file_with("plain", "notes.rs", 0o644);
+        assert!(!launches(&path));
+        let _ = fs::remove_file(path);
+    }
 
     /// A report, then a key that switches the tab, then a report, in one batch:
     /// the key sets the scroll another way, so the report read before it is
