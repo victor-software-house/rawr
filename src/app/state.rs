@@ -636,6 +636,10 @@ impl App {
         // Only a frame that drew the session list knows where it stands.
         if tops.iter().any(|(list, _)| *list == Focus::Session) {
             self.scroll_mut(Focus::Session).anchor = anchor;
+        } else {
+            // A frame that drew no session has no place to find, so a drag
+            // report waiting for one would wait for ever.
+            self.scroll_mut(Focus::Session).seek = None;
         }
         // The counts changed under the thumb the pointer holds: where it
         // stands now stands for a place the next frame finds.
@@ -2942,6 +2946,18 @@ mod tests {
             &[track(Focus::Panes, 20, (60, 100))],
         );
         assert_eq!(app.thumb_row(Focus::Panes, 12, app.now), 12);
+    }
+
+    #[test]
+    fn a_frame_that_draws_no_session_gives_up_a_drag_report_waiting_for_one() {
+        let mut app = shown_app();
+        app.scroll_mut(Focus::Session).seek = Some(3);
+        assert!(app.seeking());
+        app.settle(&[(Focus::Panes, 0)], None, &[]);
+        assert!(!app.seeking());
+        app.scroll_mut(Focus::Session).seek = Some(3);
+        app.settle(&[(Focus::Session, 0)], None, &[]);
+        assert!(!app.seeking());
     }
 
     #[test]
