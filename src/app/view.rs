@@ -3220,7 +3220,7 @@ fn draw_bar(
     scrollbar::draw(
         frame.buffer_mut(),
         track,
-        (app.held_thumb(list).unwrap_or(start), size),
+        (app.thumb_row(list, start, app.now), size),
         app.bar_shade(list, app.now),
     );
     hits.bars.push(Track {
@@ -4053,7 +4053,7 @@ mod tests {
     }
 
     #[test]
-    fn dragging_to_the_bottom_of_a_long_session_asks_around_once_and_no_page_between() {
+    fn dragging_to_the_bottom_of_a_long_session_asks_around_as_it_goes_and_no_page_between() {
         // The newest 300 of 5,800 calls, as a window starts.
         let all: Vec<Said> = (0..5800)
             .map(|place| call(place, &format!("file-{place}.rs")))
@@ -4063,38 +4063,56 @@ mod tests {
         rig.app.now = t0;
         rig.draw();
         let mut asked = rig.asks();
+        let epoch = rig.history.epoch(List::Activity);
         let track = rig.track();
         let (x, y) = (track.area.x, track.area.y);
         rig.pointer(MouseEventKind::Down(LEFT), x, y);
+        let mut sent = Vec::new();
         for row in 1..track.area.height {
             rig.pointer(MouseEventKind::Drag(LEFT), x, y + row);
             rig.draw();
             asked.extend(rig.asks());
-            // The thumb is moving, so nothing is asked for yet.
-            assert_eq!(rig.app.take_jump(|_, _| 0), None, "row {row}");
+            sent.extend(rig.app.take_jump(|_, _| epoch));
         }
         rig.pointer(MouseEventKind::Up(LEFT), x, y + track.area.height - 1);
         rig.draw();
         asked.extend(rig.asks());
-        let epoch = rig.history.epoch(List::Activity);
-        let jump = rig
-            .app
-            .take_jump(|_, _| epoch)
-            .expect("a jump on letting go");
-        // The bottom of the track is the start of the transcript: a byte
-        // among the first calls, which the oldest held one is far from.
+        sent.extend(rig.app.take_jump(|_, _| epoch));
+        // The first place no held entry covers is asked for at once, and the
+        // places the thumb passes on its way wait for the answer.
+        assert_eq!(sent.len(), 1, "{sent:?}");
+        let first = &sent[0];
         assert_eq!(
-            (jump.list, jump.ask, jump.path.as_path()),
+            (first.list, first.ask, first.path.as_path()),
             (List::Activity, 1, Path::new(TRANSCRIPT))
         );
-        assert!(jump.at < 20_000, "{}", jump.at);
-        assert_eq!(rig.app.take_jump(|_, _| epoch), None);
+        assert!((500_000..550_000).contains(&first.at), "{}", first.at);
         assert_eq!(asked, [], "no page is asked for on the way");
-        // The daemon's answer: the first 100 calls, and the start of the
-        // transcript among them.
         let path = Path::new(TRANSCRIPT);
-        assert!(rig.app.expects(path, List::Activity, jump.ask, epoch));
-        assert!(!rig.app.expects(path, List::Activity, jump.ask + 1, epoch));
+        assert!(rig.app.expects(path, List::Activity, first.ask, epoch));
+        assert!(!rig.app.expects(path, List::Activity, first.ask + 1, epoch));
+        // The first answer lands, and the view shows its place.
+        let near = usize::try_from(first.at / 100).expect("a small number");
+        let (_, fresh) =
+            rig.history
+                .land_around(List::Activity, all[near - 50..near + 50].to_vec(), true);
+        rig.app.arrive(all[near].id, fresh);
+        let shown = rig.entries();
+        assert!(shown[0].contains(&format!("file-{near}.rs")), "{shown:?}");
+        // The thumb stood on the bottom of the track all the while: its place
+        // is found and asked for next, the newest, the start of the transcript.
+        rig.draw();
+        rig.draw();
+        let epoch = rig.history.epoch(List::Activity);
+        let last = rig
+            .app
+            .take_jump(|_, _| epoch)
+            .expect("a jump to the newest place");
+        assert_eq!(last.ask, 2);
+        assert!(last.at < 20_000, "{}", last.at);
+        assert_eq!(rig.app.take_jump(|_, _| epoch), None);
+        // Its answer: the first 100 calls, and the start of the transcript
+        // among them.
         let (_, fresh) = rig
             .history
             .land_around(List::Activity, all[..100].to_vec(), false);
@@ -4105,7 +4123,7 @@ mod tests {
             "{shown:?}"
         );
         assert!(shown.iter().all(|row| !row.contains("file-5799.rs")));
-        // The gaps the page left are filled as any gap is: from the newest
+        // The gaps the pages left are filled as any gap is: from the newest
         // entry of the page, upward.
         let next = rig.asks();
         assert_eq!(next.len(), 1);
@@ -4113,7 +4131,49 @@ mod tests {
     }
 
     #[test]
-    fn a_thumb_that_rests_on_a_place_not_held_asks_for_it_once() {
+    fn a_drag_through_three_places_not_held_asks_for_the_first_then_the_newest() {
+        let all: Vec<Said> = (0..5800)
+            .map(|place| call(place, &format!("file-{place}.rs")))
+            .collect();
+        let mut rig = Rig::with(calls(5500..5800, 5800));
+        rig.draw();
+        let epoch = rig.history.epoch(List::Activity);
+        let track = rig.track();
+        let (x, y) = (track.area.x, track.area.y);
+        rig.pointer(MouseEventKind::Down(LEFT), x, y);
+        let mut sent = Vec::new();
+        for row in [3, 8, 14] {
+            rig.pointer(MouseEventKind::Drag(LEFT), x, y + row);
+            rig.draw();
+            sent.extend(rig.app.take_jump(|_, _| epoch));
+            // Never more than one is in flight.
+            assert_eq!(rig.app.take_jump(|_, _| epoch), None, "row {row}");
+        }
+        assert_eq!(sent.len(), 1, "{sent:?}");
+        let first = sent.remove(0);
+        // The first answer lands while the thumb is held at the third place.
+        let near = usize::try_from(first.at / 100).expect("a small number");
+        let (_, fresh) =
+            rig.history
+                .land_around(List::Activity, all[near - 50..near + 50].to_vec(), true);
+        rig.app.arrive(all[near].id, fresh);
+        rig.draw();
+        rig.draw();
+        let epoch = rig.history.epoch(List::Activity);
+        let newest = rig
+            .app
+            .take_jump(|_, _| epoch)
+            .expect("a jump to the newest place");
+        assert_eq!(newest.ask, first.ask + 1);
+        assert!(newest.at < first.at, "{} {}", newest.at, first.at);
+        assert_eq!(rig.app.take_jump(|_, _| epoch), None);
+    }
+
+    #[test]
+    fn a_thumb_glides_to_its_new_row_after_a_page_lands() {
+        let all: Vec<Said> = (0..5800)
+            .map(|place| call(place, &format!("file-{place}.rs")))
+            .collect();
         let mut rig = Rig::with(calls(5500..5800, 5800));
         let t0 = Instant::now();
         rig.app.now = t0;
@@ -4121,41 +4181,43 @@ mod tests {
         let track = rig.track();
         let (x, y) = (track.area.x, track.area.y);
         rig.pointer(MouseEventKind::Down(LEFT), x, y);
-        rig.pointer(MouseEventKind::Drag(LEFT), x, y + track.area.height / 2);
-        rig.draw();
-        let epoch = rig.history.epoch(List::Activity);
-        rig.app.now = at(t0, 99);
-        assert_eq!(rig.app.take_jump(|_, _| epoch), None);
-        assert_eq!(rig.app.jump_wake(), Some(at(t0, 100)));
-        rig.app.now = at(t0, 100);
-        let jump = rig
-            .app
-            .take_jump(|_, _| epoch)
-            .expect("a jump after the rest");
-        // About half way down the bar: the byte that far from the oldest held
-        // call, which is at byte 550,000, to the transcript's start.
-        assert!(jump.at.abs_diff(290_000) < 50_000, "{}", jump.at);
-        assert_eq!(rig.app.take_jump(|_, _| epoch), None);
-        assert_eq!(rig.app.jump_wake(), None);
-        // The thumb moving on asks again, and the first answer is dropped.
         rig.pointer(MouseEventKind::Drag(LEFT), x, y + track.area.height - 1);
         rig.draw();
-        rig.app.now = at(t0, 300);
-        let again = rig
-            .app
+        rig.pointer(MouseEventKind::Up(LEFT), x, y + track.area.height - 1);
+        rig.draw();
+        let epoch = rig.history.epoch(List::Activity);
+        rig.app
             .take_jump(|_, _| epoch)
-            .expect("a jump to the new place");
-        assert_eq!(again.ask, 2);
-        assert!(again.at < 20_000, "{}", again.at);
-        let path = Path::new(TRANSCRIPT);
-        assert!(!rig.app.expects(path, List::Activity, jump.ask, epoch));
-        assert!(rig.app.expects(path, List::Activity, again.ask, epoch));
-        // An answer read before the connection was lost is dropped, and the
-        // place it was for is given up, so no page stays held back for it.
-        assert!(!rig.app.expects(path, List::Activity, again.ask, epoch + 1));
-        assert!(rig.app.awaits(path, List::Activity, again.ask));
-        assert!(!rig.app.awaits(path, List::Activity, again.ask + 1));
-        assert!(!rig.app.awaits(path, List::Log, again.ask));
+            .expect("a jump on letting go");
+        // The thumb is back at the top, where the list stands.
+        let thumb = |rig: &Rig| -> Vec<usize> {
+            let glyphs = rig.glyphs();
+            (0..glyphs.len())
+                .filter(|row| glyphs[*row] != " ")
+                .collect()
+        };
+        assert_eq!(thumb(&rig), [0]);
+        let (_, fresh) = rig
+            .history
+            .land_around(List::Activity, all[..100].to_vec(), false);
+        rig.app.arrive(all[0].id, fresh);
+        // The frame that draws the new place keeps the thumb where it was, and
+        // the next ones move it down by the clock.
+        rig.app.now = at(t0, 10);
+        rig.draw();
+        assert_eq!(thumb(&rig), [0]);
+        let end = usize::try_from(rig.track().geometry.thumb().0).expect("a small number");
+        assert!(end > 4, "the thumb has a way to go: {end}");
+        rig.app.now = at(t0, 60);
+        rig.draw();
+        let half = thumb(&rig)[0];
+        assert!(half > 0 && half < end, "{half} of {end}");
+        assert_eq!(rig.app.bars_wake(), Some(at(t0, 76)));
+        rig.app.now = at(t0, 110);
+        rig.draw();
+        assert_eq!(thumb(&rig), [end]);
+        // The pointer is on the bar, so it is not fading either.
+        assert_eq!(rig.app.bars_wake(), None);
     }
 
     #[test]

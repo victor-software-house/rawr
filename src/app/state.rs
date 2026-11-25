@@ -216,9 +216,33 @@ pub(crate) struct Held {
     pub(crate) top: u32,
 }
 
-/// How long a held thumb rests on a place no held entry covers before the
-/// window asks for the entries there.
-const REST: Duration = Duration::from_millis(100);
+/// How long the drawn thumb takes to glide to a row it moves to by itself.
+const GLIDE: Duration = Duration::from_millis(100);
+
+/// How often the loop wakes to draw the thumb on its way.
+const GLIDE_STEP: Duration = Duration::from_millis(16);
+
+/// The row the drawn thumb of a list is gliding to, and where it started.
+#[derive(Debug, Clone, Copy)]
+struct Glide {
+    from: u32,
+    to: u32,
+    since: Instant,
+}
+
+impl Glide {
+    /// The row the thumb is on at `now`.
+    fn row(&self, now: Instant) -> u32 {
+        let passed = now.saturating_duration_since(self.since);
+        if passed >= GLIDE {
+            return self.to;
+        }
+        let (from, to) = (i64::from(self.from), i64::from(self.to));
+        let ms = i64::try_from(passed.as_millis()).unwrap_or(0);
+        let step = (to - from) * ms / i64::try_from(GLIDE.as_millis()).unwrap_or(1);
+        u32::try_from(from + step).unwrap_or(self.to)
+    }
+}
 
 /// What a frame made of the place the scrollbar's thumb asked the view to
 /// stand at, in the prompts or the activity.
@@ -231,20 +255,22 @@ pub(crate) enum Seek {
     Past(List, u64),
 }
 
-/// A place in the session that the thumb rests on or was let go of, and no
-/// held entry covers.
+/// The newest place in the session that the thumb moved to and no held entry
+/// covers, and the request for the entries at the place before it, if one is
+/// out.
 #[derive(Debug, Clone)]
 struct Reaching {
     list: List,
-    /// The byte of the transcript the place stands for.
-    at: u64,
+    /// The byte of the transcript the newest place stands for, or `None` once
+    /// the thumb is back on held entries, which leaves only the request out.
+    at: Option<u64>,
+    /// Where the pointer keeps the thumb, in rows of its track, at that place.
+    top: u32,
     /// The transcript the place is in: the one the frame found it in.
     path: PathBuf,
-    /// When the thumb came to this place.
-    since: Instant,
-    /// The request for the entries there, with the epoch of the held entries
-    /// when it was sent.
-    ask: Option<(u64, u64)>,
+    /// The request out for the entries around a place: its number, the epoch
+    /// of the held entries when it was sent, and the byte it asked for.
+    ask: Option<(u64, u64, u64)>,
 }
 
 /// A request for the entries of `list` around the byte `at` of the transcript
@@ -467,6 +493,15 @@ pub(crate) struct App {
     reaching: Option<Reaching>,
     /// How many requests for the entries around a place were sent.
     asks: u64,
+    /// The row each list's thumb was drawn gliding to, in the order of
+    /// [`Focus::LISTS`], once a frame has drawn its bar.
+    thumbs: [Option<Glide>; 4],
+    /// Whether input moved a list since the last frame, which the thumb
+    /// follows at once instead of gliding.
+    touched: bool,
+    /// The row of the thumb, in its track, that the next frame finds the place
+    /// of, once the entries a page brought change the counts.
+    retarget: Option<u32>,
 }
 
 /// A list's place in [`App::scrolls`].
@@ -548,6 +583,9 @@ impl App {
             tracks: Vec::new(),
             reaching: None,
             asks: 0,
+            thumbs: [None; 4],
+            touched: false,
+            retarget: None,
         }
     }
 
@@ -586,6 +624,7 @@ impl App {
     /// Keeps where the last frame scrolled each list to.
     pub(crate) fn settle(&mut self, tops: &[(Focus, u16)], anchor: Option<Anchor>, bars: &[Track]) {
         self.tracks = bars.to_vec();
+        self.glide_thumbs();
         for (list, top) in tops {
             *self.scroll_mut(*list) = Scroll {
                 top: *top,
@@ -598,6 +637,65 @@ impl App {
         if tops.iter().any(|(list, _)| *list == Focus::Session) {
             self.scroll_mut(Focus::Session).anchor = anchor;
         }
+        // The counts changed under the thumb the pointer holds: where it
+        // stands now stands for a place the next frame finds.
+        if let Some(top) = self.retarget.take()
+            && let Some(track) = self.track(Focus::Session)
+        {
+            let top = self.held_thumb(Focus::Session).unwrap_or(top);
+            self.put_offset(
+                Focus::Session,
+                track.geometry.offset_for_top(i64::from(top)),
+            );
+        }
+    }
+
+    /// Notes the row each thumb stands on in the frame just drawn. One that
+    /// moved with no input glides there from where it was drawn; one that
+    /// input moved, or the pointer holds, is there at once.
+    fn glide_thumbs(&mut self) {
+        let touched = mem::take(&mut self.touched);
+        let now = self.now;
+        for list in Focus::LISTS {
+            let target = self.track(list).map(|track| track.geometry.thumb().0);
+            let held = self.held_thumb(list).is_some();
+            let before = self.thumbs[slot(list)];
+            self.thumbs[slot(list)] = target.map(|to| match before {
+                Some(glide) if glide.to == to => glide,
+                Some(glide) if !touched && !held => Glide {
+                    from: glide.row(now),
+                    to,
+                    since: now,
+                },
+                _ => Glide {
+                    from: to,
+                    to,
+                    since: now,
+                },
+            });
+        }
+    }
+
+    /// The row the thumb of `list`, which stands on row `target` of its
+    /// track, is drawn on at `now`: under the pointer while it holds it, at
+    /// once where input moved it, else gliding to it.
+    pub(crate) fn thumb_row(&self, list: Focus, target: u32, now: Instant) -> u32 {
+        if let Some(top) = self.held_thumb(list) {
+            return top;
+        }
+        match self.thumbs[slot(list)] {
+            Some(glide) if !self.touched => glide.row(now),
+            Some(_) | None => target,
+        }
+    }
+
+    /// The row each thumb is drawn on at `now`, in the order of
+    /// [`Focus::LISTS`].
+    pub(crate) fn thumb_rows(&self, now: Instant) -> [u32; 4] {
+        Focus::LISTS.map(|list| {
+            let target = self.track(list).map_or(0, |track| track.geometry.thumb().0);
+            self.thumb_row(list, target, now)
+        })
     }
 
     /// Puts `list` back at its top, and drops the wheel reports waiting to
@@ -1013,6 +1111,7 @@ impl App {
         if key.kind == KeyEventKind::Release {
             return Action::None;
         }
+        self.touched = true;
         self.notice = None;
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match (ctrl, key.code) {
@@ -1291,6 +1390,9 @@ impl App {
             }
             return Action::None;
         }
+        if mouse.kind != MouseEventKind::Moved {
+            self.touched = true;
+        }
         match mouse.kind {
             MouseEventKind::Moved => {
                 // Rex goes on reporting while the pointer is outside the pane,
@@ -1551,6 +1653,7 @@ impl App {
     /// Moves `list` by `lines`, leaving its selection where it is. The next
     /// frame clamps it to the list.
     pub(crate) fn scroll_lines(&mut self, list: Focus, lines: i64) {
+        self.touched = true;
         self.fades[slot(list)].touch(self.now);
         if list == Focus::Session {
             self.prefetch.scrolled(lines, Instant::now());
@@ -1780,73 +1883,97 @@ impl App {
     }
 
     /// What the last frame made of the thumb's place, when it had one to find.
+    /// A place no held entry covers is the one to ask for next, with a request
+    /// for an older one still out.
     pub(crate) fn found_seek(&mut self, seek: Option<Seek>) {
         match seek {
-            Some(Seek::Held) => self.reaching = None,
-            Some(Seek::Past(list, at))
+            Some(Seek::Held) => {
+                // A request out is still answered, and the answer joins the
+                // entries without moving the view.
+                if let Some(reaching) = &mut self.reaching {
+                    reaching.at = None;
+                }
                 if self
                     .reaching
                     .as_ref()
-                    .is_none_or(|reaching| (reaching.list, reaching.at) != (list, at)) =>
-            {
-                self.reaching = self.current().map(|agent| Reaching {
-                    list,
-                    at,
-                    path: agent.transcript.clone(),
-                    since: self.now,
-                    ask: None,
-                });
+                    .is_some_and(|reaching| reaching.ask.is_none())
+                {
+                    self.reaching = None;
+                }
             }
-            Some(Seek::Past(..)) | None => {}
+            Some(Seek::Past(list, at)) => {
+                let top = self.held_thumb(Focus::Session);
+                let path = self.current().map(|agent| agent.transcript.clone());
+                match (&mut self.reaching, path) {
+                    (Some(reaching), Some(path))
+                        if reaching.path == path && reaching.list == list =>
+                    {
+                        reaching.at = Some(at);
+                        reaching.top = top.unwrap_or(reaching.top);
+                    }
+                    (_, Some(path)) => {
+                        self.reaching = Some(Reaching {
+                            list,
+                            at: Some(at),
+                            top: top.unwrap_or(0),
+                            path,
+                            ask: None,
+                        });
+                    }
+                    (_, None) => self.reaching = None,
+                }
+            }
+            None => {}
         }
     }
 
-    /// The request to send now, when the thumb was let go of or has rested on a
-    /// place no held entry covers. `epoch` gives the generation of the held
-    /// entries of a list of a transcript, which an answer must still be in.
+    /// The request to send now: the newest place no held entry covers, when
+    /// none is out, the thumb having moved on to it or let go of it. `epoch`
+    /// gives the generation of the held entries of a list of a transcript,
+    /// which an answer must still be in.
     pub(crate) fn take_jump(&mut self, epoch: impl FnOnce(List, &Path) -> u64) -> Option<Jump> {
-        let held = self.held_thumb(Focus::Session).is_some();
         // A drag report not yet drawn may put the thumb somewhere else.
         let pending = self.scroll_of(Focus::Session).seek.is_some();
-        let rested = self.now;
         let reaching = self.reaching.as_mut()?;
-        if reaching.ask.is_some()
-            || pending
-            || (held && rested.saturating_duration_since(reaching.since) < REST)
-        {
+        let at = reaching.at?;
+        if reaching.ask.is_some() || pending {
             return None;
         }
         self.asks += 1;
-        reaching.ask = Some((self.asks, epoch(reaching.list, &reaching.path)));
+        reaching.ask = Some((self.asks, epoch(reaching.list, &reaching.path), at));
         Some(Jump {
             list: reaching.list,
-            at: reaching.at,
+            at,
             path: reaching.path.clone(),
             ask: self.asks,
         })
     }
 
-    /// When the loop must wake for a place that waits to be asked: where a
-    /// held thumb's rest ends, or now once it is let go of. It does not wake
-    /// while a request is out, or while a drag report waits to be drawn, whose
-    /// frame comes next and may move the thumb.
+    /// When the loop must wake for a place that waits to be asked: now, unless
+    /// a request is out, or a drag report waits to be drawn, whose frame comes
+    /// next and may move the thumb.
     pub(crate) fn jump_wake(&self) -> Option<Instant> {
         let reaching = self.reaching.as_ref()?;
-        if reaching.ask.is_some() || self.scroll_of(Focus::Session).seek.is_some() {
-            return None;
-        }
-        Some(if self.held_thumb(Focus::Session).is_some() {
-            reaching.since + REST
-        } else {
-            self.now
-        })
+        (reaching.at.is_some()
+            && reaching.ask.is_none()
+            && self.scroll_of(Focus::Session).seek.is_none())
+        .then_some(self.now)
+    }
+
+    /// Whether a drag report waits for the frame that finds its place.
+    pub(crate) fn seeking(&self) -> bool {
+        self.scroll_of(Focus::Session).seek.is_some()
     }
 
     /// Whether the answer `ask` about `list` of the transcript at `path`,
     /// read in `epoch`, is to the request the window is waiting for.
     pub(crate) fn expects(&self, path: &Path, list: List, ask: u64, epoch: u64) -> bool {
         self.reaching.as_ref().is_some_and(|reaching| {
-            reaching.path == path && reaching.list == list && reaching.ask == Some((ask, epoch))
+            reaching.path == path
+                && reaching.list == list
+                && reaching
+                    .ask
+                    .is_some_and(|(sent, read, _)| (sent, read) == (ask, epoch))
         })
     }
 
@@ -1857,7 +1984,7 @@ impl App {
         self.reaching.as_ref().is_some_and(|reaching| {
             reaching.path == path
                 && reaching.list == list
-                && reaching.ask.is_some_and(|(sent, _)| sent == ask)
+                && reaching.ask.is_some_and(|(sent, _, _)| sent == ask)
         })
     }
 
@@ -1886,8 +2013,20 @@ impl App {
     /// line on top. Entries all held already show nothing the view does not, so
     /// it stays where it is.
     pub(crate) fn arrive(&mut self, place: EntryId, fresh: usize) {
-        self.reaching = None;
-        if fresh == 0 {
+        let reaching = self.reaching.take();
+        // The thumb went on to another place while the page was on its way:
+        // the next frame finds where it stands now, and the place is asked for
+        // if no held entry covers it.
+        self.retarget = reaching
+            .as_ref()
+            .and_then(|reaching| {
+                let (_, _, asked) = reaching.ask?;
+                reaching.at.filter(|at| *at != asked).map(|_| reaching.top)
+            })
+            .or(self.retarget);
+        // The thumb came back to held entries, which the view stands at.
+        let covered = reaching.is_some_and(|reaching| reaching.at.is_none());
+        if fresh == 0 || covered {
             return;
         }
         self.put_scroll(
@@ -1908,12 +2047,16 @@ impl App {
     /// The entries around the place are not coming: the view stays.
     pub(crate) fn drop_jump(&mut self) {
         self.reaching = None;
+        self.retarget = None;
     }
 
     /// Whether the view is held where it is for a jump, or while the thumb is
     /// held on the session, so no page is asked for in the meantime.
     pub(crate) fn holds_view(&self) -> bool {
-        self.reaching.is_some() || self.held_thumb(Focus::Session).is_some()
+        self.reaching.is_some()
+            || self.retarget.is_some()
+            || self.seeking()
+            || self.held_thumb(Focus::Session).is_some()
     }
 
     /// The scrollbar of `list` as the last frame drew it.
@@ -1948,9 +2091,16 @@ impl App {
     /// When a scrollbar next draws differently with no event: where its hold
     /// ends, then each step of its fade.
     pub(crate) fn bars_wake(&self) -> Option<Instant> {
+        let gliding = self
+            .thumbs
+            .iter()
+            .flatten()
+            .any(|glide| glide.row(self.now) != glide.to)
+            .then(|| self.now + GLIDE_STEP);
         Focus::LISTS
             .into_iter()
             .filter_map(|list| self.fades[slot(list)].next_change(self.now, self.bar_lit(list)))
+            .chain(gliding)
             .min()
     }
 }
@@ -2580,7 +2730,7 @@ mod tests {
     }
 
     #[test]
-    fn losing_focus_lets_go_of_a_held_thumb_and_a_waiting_jump_is_asked() {
+    fn losing_focus_lets_go_of_a_held_thumb_whose_place_is_asked_already() {
         let t0 = Instant::now();
         let ms = Duration::from_millis;
         let mut app = shown_app();
@@ -2595,16 +2745,7 @@ mod tests {
             on_bar(Focus::Session),
         );
         app.found_seek(Some(Seek::Past(List::Activity, 0)));
-        // Held and just arrived: nothing is asked yet.
-        assert_eq!(app.take_jump(|_, _| 0), None);
-        app.on_blur();
-        assert_eq!(app.dragging, None);
-        assert_eq!(app.held_thumb(Focus::Session), None);
-        assert_eq!(
-            app.bar_shade(Focus::Session, t0 + ms(799)),
-            Shade::Rest,
-            "the bar fades from the moment it was let go of"
-        );
+        // Held, and asked for at once.
         assert_eq!(
             app.take_jump(|_, _| 7),
             Some(Jump {
@@ -2614,6 +2755,15 @@ mod tests {
                 ask: 1,
             })
         );
+        app.on_blur();
+        assert_eq!(app.dragging, None);
+        assert_eq!(app.held_thumb(Focus::Session), None);
+        assert_eq!(
+            app.bar_shade(Focus::Session, t0 + ms(799)),
+            Shade::Rest,
+            "the bar fades from the moment it was let go of"
+        );
+        assert_eq!(app.take_jump(|_, _| 7), None);
     }
 
     /// The transcript of every session the fixtures make.
@@ -2652,7 +2802,7 @@ mod tests {
     }
 
     #[test]
-    fn a_thumb_let_go_of_wakes_the_loop_at_once_until_it_asks() {
+    fn a_place_to_ask_for_wakes_the_loop_at_once_until_it_asks() {
         let t0 = Instant::now();
         let mut app = shown_app();
         app.settle(
@@ -2666,10 +2816,9 @@ mod tests {
             on_bar(Focus::Session),
         );
         app.found_seek(Some(Seek::Past(List::Activity, 0)));
-        // Held: the loop wakes where the rest ends.
-        assert_eq!(app.jump_wake(), Some(t0 + REST));
+        // Held, with no request sent and no drag report to draw.
+        assert_eq!(app.jump_wake(), Some(t0));
         app.on_mouse(pointer(MouseEventKind::Up(LEFT), 4), Under::default());
-        // Let go of, with no request sent and no drag report to draw.
         let later = t0 + Duration::from_millis(5);
         app.now = later;
         assert_eq!(app.jump_wake(), Some(later));
@@ -2742,6 +2891,73 @@ mod tests {
             app.scroll_of(Focus::Session).anchor.map(|anchor| anchor.id),
             Some(place)
         );
+    }
+
+    #[test]
+    fn a_thumb_that_moves_with_no_input_glides_to_its_row_and_input_moves_it_at_once() {
+        let ms = Duration::from_millis;
+        let t0 = Instant::now();
+        let mut app = App::new(None);
+        app.now = t0;
+        // The thumb stands on row 0, then its list's counts change under it.
+        app.settle(
+            &[(Focus::Panes, 0)],
+            None,
+            &[track(Focus::Panes, 20, (0, 100))],
+        );
+        assert_eq!(app.thumb_row(Focus::Panes, 0, t0), 0);
+        // The frame that draws the new row keeps the thumb where it was.
+        assert_eq!(app.thumb_row(Focus::Panes, 8, t0), 0);
+        app.settle(
+            &[(Focus::Panes, 0)],
+            None,
+            &[track(Focus::Panes, 20, (40, 100))],
+        );
+        let at = |app: &App, after: u64| app.thumb_row(Focus::Panes, 8, t0 + ms(after));
+        assert_eq!(
+            [
+                at(&app, 0),
+                at(&app, 25),
+                at(&app, 50),
+                at(&app, 99),
+                at(&app, 100)
+            ],
+            [0, 2, 4, 7, 8]
+        );
+        assert_eq!(app.bars_wake(), Some(t0 + ms(16)));
+        app.now = t0 + ms(100);
+        assert_eq!(app.bars_wake(), None);
+        // Input that moves the list moves the thumb with it, at once.
+        app.now = t0 + ms(200);
+        app.scroll_lines(Focus::Panes, 20);
+        assert_eq!(app.thumb_row(Focus::Panes, 12, app.now), 12);
+        app.settle(
+            &[(Focus::Panes, 0)],
+            None,
+            &[track(Focus::Panes, 20, (60, 100))],
+        );
+        assert_eq!(app.thumb_row(Focus::Panes, 12, app.now), 12);
+    }
+
+    #[test]
+    fn a_held_thumb_stays_under_the_pointer_while_the_counts_change() {
+        let t0 = Instant::now();
+        let mut app = App::new(None);
+        app.now = t0;
+        app.settle(
+            &[(Focus::Panes, 0)],
+            None,
+            &[track(Focus::Panes, 20, (0, 100))],
+        );
+        app.on_mouse(pointer(MouseEventKind::Down(LEFT), 4), on_bar(Focus::Panes));
+        app.on_mouse(pointer(MouseEventKind::Drag(LEFT), 9), Under::default());
+        assert_eq!(app.thumb_row(Focus::Panes, 0, t0), 5);
+        app.settle(
+            &[(Focus::Panes, 0)],
+            None,
+            &[track(Focus::Panes, 20, (40, 100))],
+        );
+        assert_eq!(app.thumb_row(Focus::Panes, 8, t0), 5);
     }
 
     #[test]

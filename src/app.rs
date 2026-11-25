@@ -131,6 +131,8 @@ pub(crate) fn run(view: Option<u64>, mode: &Mode) -> Result<Option<Agent>> {
     let mut drawn_spin = usize::MAX;
     // How each scrollbar drew in the last frame, which fades by the clock.
     let mut drawn_bars = app.bar_shades(started);
+    // The row each thumb was drawn on, which glides when it moves by itself.
+    let mut drawn_rows = app.thumb_rows(started);
     // The lines each list moves in the frame to draw; none once it is drawn.
     let mut due = Some(Moves::default());
     loop {
@@ -177,6 +179,7 @@ pub(crate) fn run(view: Option<u64>, mode: &Mode) -> Result<Option<Agent>> {
             app.settle(&hits.tops, hits.anchor, &hits.bars);
             app.found_seek(hits.seek);
             drawn_bars = app.bar_shades(app.now);
+            drawn_rows = app.thumb_rows(app.now);
             // Entries held past the view toward what is not held, no more than
             // the lead, are asked for before the view reaches them.
             // None while the thumb is held or on its way to a place, which
@@ -479,7 +482,9 @@ pub(crate) fn run(view: Option<u64>, mode: &Mode) -> Result<Option<Agent>> {
             urgent,
             dirty: dirty
                 || (app.animating() && spin_at(started, woke) != drawn_spin)
-                || app.bar_shades(woke) != drawn_bars,
+                || app.bar_shades(woke) != drawn_bars
+                || app.thumb_rows(woke) != drawn_rows
+                || app.seeking(),
             moving: app.moving(),
         });
     }
