@@ -13,6 +13,7 @@ mod layouts;
 mod markup;
 mod pacing;
 mod report;
+mod scrollbar;
 mod shell;
 pub(crate) mod state;
 mod terminal;
@@ -32,7 +33,7 @@ use ratatui::crossterm::cursor::SetCursorStyle;
 use ratatui::crossterm::event::{self, Event, MouseEventKind};
 use ratatui::crossterm::execute;
 use report::{Report, Reporter, State};
-use state::{Action, App, Focus, Link};
+use state::{Action, App, Drag, Focus, Link};
 use terminal::{Pointer, Screen};
 
 use crate::app::facts::Way;
@@ -128,6 +129,8 @@ pub(crate) fn run(view: Option<u64>, mode: &Mode) -> Result<Option<Agent>> {
     let mut hits = view::Hits::default();
     // The spinner's frame in the last frame drawn.
     let mut drawn_spin = usize::MAX;
+    // How each scrollbar drew in the last frame, which fades by the clock.
+    let mut drawn_bars = app.bar_shades(started);
     // The lines each list moves in the frame to draw; none once it is drawn.
     let mut due = Some(Moves::default());
     loop {
@@ -150,6 +153,7 @@ pub(crate) fn run(view: Option<u64>, mode: &Mode) -> Result<Option<Agent>> {
             });
         }
         if let Some(moves) = due.take() {
+            app.now = Instant::now();
             for (list, lines) in Focus::LISTS.into_iter().zip(moves) {
                 if lines != 0 {
                     app.scroll_lines(list, lines);
@@ -167,7 +171,8 @@ pub(crate) fn run(view: Option<u64>, mode: &Mode) -> Result<Option<Agent>> {
             screen
                 .draw(|frame| hits = view::draw(frame, &mut app, shown))
                 .context("draw the app")?;
-            app.settle(&hits.tops, hits.anchor);
+            app.settle(&hits.tops, hits.anchor, &hits.bars);
+            drawn_bars = app.bar_shades(app.now);
             // Entries held past the view toward what is not held, no more than
             // the lead, are asked for before the view reaches them.
             if let (Some(agent), Some(reach)) = (&agent, hits.reach)
@@ -210,11 +215,13 @@ pub(crate) fn run(view: Option<u64>, mode: &Mode) -> Result<Option<Agent>> {
         let spinner = app.animating().then(|| {
             started + SPIN * u32::try_from(spin_at(started, Instant::now()) + 1).unwrap_or(u32::MAX)
         });
-        let first = match pacer.wait(app.moving(), &[spinner, app.wake_at()]) {
+        app.now = Instant::now();
+        let first = match pacer.wait(app.moving(), &[spinner, app.wake_at(), app.bars_wake()]) {
             Some(wait) => wait_until(&receive, wait)?,
             None => Some(receive.recv().context("the app's inputs closed")?),
         };
         let woke = Instant::now();
+        app.now = woke;
         // What reads between frames: the wheel waits for the clock, a key or
         // a click draws at once, and anything else that changes what is on
         // screen draws at once while the clock rests, and on its next tick
@@ -229,7 +236,11 @@ pub(crate) fn run(view: Option<u64>, mode: &Mode) -> Result<Option<Agent>> {
                 Msg::Input(Event::Key(key), _) => app.on_key(key),
                 Msg::Input(Event::Mouse(mouse), at) => {
                     let action = app.on_mouse(mouse, hits.under(mouse.column, mouse.row));
-                    calm = mouse.kind == MouseEventKind::Moved;
+                    // A held thumb draws on the clock, as the pointer's moves
+                    // do.
+                    calm = mouse.kind == MouseEventKind::Moved
+                        || (matches!(mouse.kind, MouseEventKind::Drag(_))
+                            && matches!(app.dragging, Some(Drag::Thumb(_))));
                     if let Action::Wheel(list, rows) = action {
                         wheel = true;
                         reports.push(Wheel { list, rows, at });
@@ -412,7 +423,9 @@ pub(crate) fn run(view: Option<u64>, mode: &Mode) -> Result<Option<Agent>> {
             now: woke,
             reports: &reports,
             urgent,
-            dirty: dirty || (app.animating() && spin_at(started, woke) != drawn_spin),
+            dirty: dirty
+                || (app.animating() && spin_at(started, woke) != drawn_spin)
+                || app.bar_shades(woke) != drawn_bars,
             moving: app.moving(),
         });
     }

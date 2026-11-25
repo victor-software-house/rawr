@@ -15,6 +15,7 @@ use crate::app::facts::EntryId;
 use crate::app::feed::Pane;
 use crate::app::history::Lead;
 use crate::app::layouts::Layouts;
+use crate::app::scrollbar::{self, Fade, Press, Shade, Track};
 use crate::catalog::Hit;
 use crate::session::Agent;
 use crate::status::Status;
@@ -155,6 +156,9 @@ pub(crate) enum Target {
     Scratch,
     /// The edge of a column, which a drag moves.
     Edge(Grip),
+    /// A list's scrollbar column: a press on its thumb holds it, and a press
+    /// on its track pages the list.
+    Bar(Focus),
     /// An entry of the prompts or the activity, which a click opens or
     /// folds, by its id in the transcript.
     Entry(EntryId),
@@ -191,6 +195,25 @@ pub(crate) struct Grip {
     /// right edge otherwise.
     pub(crate) anchor: u16,
     pub(crate) rightward: bool,
+}
+
+/// What a drag moves, from the press that began it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Drag {
+    /// A column's edge.
+    Edge(Grip),
+    /// A list's scrollbar thumb.
+    Thumb(Held),
+}
+
+/// A scrollbar thumb held by the pointer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Held {
+    pub(crate) list: Focus,
+    /// The row of the thumb the press took hold of, from its top.
+    grab: u32,
+    /// The thumb's first row in the track, where the pointer keeps it.
+    pub(crate) top: u32,
 }
 
 /// A folded column drawn out over the others while the pointer is on it.
@@ -291,6 +314,11 @@ pub(crate) struct Scroll {
     /// entries that arrive above it move nothing on screen. `None` shows `top`,
     /// which is the newest entry first while it is 0.
     pub(crate) anchor: Option<Anchor>,
+    /// For the prompts and the activity: where the scrollbar's thumb asks the
+    /// view to stand, in the lines of the bar, which count the entries not
+    /// held. The next frame finds the line it stands for, and the view stays
+    /// where it is until then.
+    pub(crate) seek: Option<usize>,
 }
 
 /// A place in a list of entries: a line within an entry, and how many lines
@@ -383,8 +411,15 @@ pub(crate) struct App {
     outside: Option<Instant>,
     /// The screen's width as last drawn, which sets how far a move goes.
     pub(crate) cols: u16,
-    /// The edge being dragged.
-    pub(crate) dragging: Option<Grip>,
+    /// What the pointer drags: a column's edge or a scrollbar's thumb.
+    pub(crate) dragging: Option<Drag>,
+    /// When the app last read an event, or drew; the scrollbars fade by it.
+    pub(crate) now: Instant,
+    /// When each list's scrollbar was last in use, in the order of
+    /// [`Focus::LISTS`].
+    fades: [Fade; 4],
+    /// The scrollbars the last frame drew.
+    tracks: Vec<Track>,
 }
 
 /// A list's place in [`App::scrolls`].
@@ -461,6 +496,9 @@ impl App {
             outside: None,
             cols: 0,
             dragging: None,
+            now: Instant::now(),
+            fades: [Fade::default(); 4],
+            tracks: Vec::new(),
         }
     }
 
@@ -497,12 +535,14 @@ impl App {
     }
 
     /// Keeps where the last frame scrolled each list to.
-    pub(crate) fn settle(&mut self, tops: &[(Focus, u16)], anchor: Option<Anchor>) {
+    pub(crate) fn settle(&mut self, tops: &[(Focus, u16)], anchor: Option<Anchor>, bars: &[Track]) {
+        self.tracks = bars.to_vec();
         for (list, top) in tops {
             *self.scroll_mut(*list) = Scroll {
                 top: *top,
                 follow: false,
                 anchor: None,
+                seek: None,
             };
         }
         // Only a frame that drew the session list knows where it stands.
@@ -1134,6 +1174,7 @@ impl App {
                     top: 0,
                     follow: true,
                     anchor: None,
+                    seek: None,
                 },
             );
         }
@@ -1208,7 +1249,14 @@ impl App {
                     || mouse.row == 0
                     || mouse.column + 1 >= width
                     || mouse.row + 1 >= height;
+                let was = self.hover;
                 self.hover = if edge { None } else { under.target };
+                // The bar's last moment of use is the pointer leaving it.
+                if let Some(Target::Bar(list)) = was
+                    && self.hover != was
+                {
+                    self.fades[slot(list)].touch(self.now);
+                }
                 // A folded column draws out while the pointer is on it, and
                 // goes back when the pointer leaves it.
                 if self.focus != Focus::Search {
@@ -1217,15 +1265,20 @@ impl App {
                 Action::None
             }
             MouseEventKind::Drag(MouseButton::Left) => {
-                if let Some(grip) = self.dragging {
-                    let wide = if grip.rightward {
-                        mouse.column.saturating_sub(grip.anchor) + 1
-                    } else {
-                        grip.anchor.saturating_sub(mouse.column)
-                    };
-                    self.wants[grip.column.column()] = wide.max(NARROWEST);
-                    // A drag follows the pointer, with nothing easing.
-                    self.moved = None;
+                match self.dragging {
+                    Some(Drag::Edge(grip)) => {
+                        let wide = if grip.rightward {
+                            mouse.column.saturating_sub(grip.anchor) + 1
+                        } else {
+                            grip.anchor.saturating_sub(mouse.column)
+                        };
+                        self.wants[grip.column.column()] = wide.max(NARROWEST);
+                        // A drag follows the pointer, with nothing easing.
+                        self.moved = None;
+                    }
+                    // Only the row counts: the pointer may leave the column.
+                    Some(Drag::Thumb(held)) => self.drag_thumb(held, mouse.row),
+                    None => {}
                 }
                 Action::None
             }
@@ -1241,11 +1294,21 @@ impl App {
             }
             MouseEventKind::Down(MouseButton::Left) => {
                 self.notice = None;
-                under
-                    .target
-                    .map_or(Action::None, |target| self.click(target))
+                match under.target {
+                    // The bar needs the row pressed, which a click does not
+                    // carry.
+                    Some(Target::Bar(list)) => {
+                        self.press_bar(list, mouse.row);
+                        Action::None
+                    }
+                    Some(target) => self.click(target),
+                    None => Action::None,
+                }
             }
             MouseEventKind::Up(_) => {
+                if let Some(Drag::Thumb(held)) = self.dragging {
+                    self.fades[slot(held.list)].touch(self.now);
+                }
                 self.dragging = None;
                 self.hover = under.target;
                 Action::None
@@ -1385,9 +1448,11 @@ impl App {
                 Action::None
             }
             Target::Edge(grip) => {
-                self.dragging = Some(grip);
+                self.dragging = Some(Drag::Edge(grip));
                 Action::None
             }
+            // A press on a bar is taken in [`App::on_mouse`].
+            Target::Bar(_) => Action::None,
             Target::Entry(id) => {
                 // The entry belongs to the session drawn when it was clicked.
                 let transcript = self.current().map(|agent| agent.transcript.clone());
@@ -1429,6 +1494,7 @@ impl App {
     /// Moves `list` by `lines`, leaving its selection where it is. The next
     /// frame clamps it to the list.
     pub(crate) fn scroll_lines(&mut self, list: Focus, lines: i64) {
+        self.fades[slot(list)].touch(self.now);
         if list == Focus::Session {
             self.prefetch.scrolled(lines, Instant::now());
         }
@@ -1574,6 +1640,114 @@ impl App {
             }
         }
         self.scroll_mut(focus).follow = true;
+        self.fades[slot(focus)].touch(self.now);
+    }
+
+    /// A press on the scrollbar of `list`, on screen row `row`: on its thumb
+    /// it takes hold of it, and on its track it pages the list toward the
+    /// press, a view's height.
+    fn press_bar(&mut self, list: Focus, row: u16) {
+        let Some(track) = self.track(list) else {
+            return;
+        };
+        self.fades[slot(list)].touch(self.now);
+        let thumb = track.geometry.thumb();
+        match scrollbar::press(thumb, u32::from(row.saturating_sub(track.area.y))) {
+            Press::Thumb { grab } => {
+                self.dragging = Some(Drag::Thumb(Held {
+                    list,
+                    grab,
+                    top: thumb.0,
+                }));
+            }
+            Press::Track { above } => {
+                let page = i64::from(track.area.height);
+                self.scroll_lines(list, if above { -page } else { page });
+                // The wheel reports waiting for the list move it from where it
+                // was.
+                self.cleared[slot(list)] = true;
+            }
+        }
+    }
+
+    /// The pointer, held on a thumb, is now on screen row `row`: the thumb
+    /// follows it, keeping the row that was grabbed under it, and the list
+    /// goes where the thumb stands.
+    fn drag_thumb(&mut self, held: Held, row: u16) {
+        let Some(track) = self.track(held.list) else {
+            self.dragging = None;
+            return;
+        };
+        let geometry = track.geometry;
+        let pointer = i64::from(row) - i64::from(track.area.y) - i64::from(held.grab);
+        let room = i64::from(geometry.visible.saturating_sub(geometry.thumb().1));
+        self.dragging = Some(Drag::Thumb(Held {
+            top: u32::try_from(pointer.clamp(0, room)).unwrap_or(0),
+            ..held
+        }));
+        self.fades[slot(held.list)].touch(self.now);
+        self.put_offset(held.list, geometry.offset_for_top(pointer));
+    }
+
+    /// Puts the first line in view of `list` at `offset` lines of its bar,
+    /// as no wheel report did, so the reports waiting for it are stale.
+    fn put_offset(&mut self, list: Focus, offset: u32) {
+        let was = self.scroll_of(list);
+        let scroll = if list == Focus::Session && matches!(self.tab, Tab::Prompts | Tab::Activity) {
+            // The bar counts entries that are not held, so the next frame finds
+            // the line among the held ones. Until then the view stays.
+            Scroll {
+                seek: Some(usize::try_from(offset).unwrap_or(usize::MAX)),
+                follow: false,
+                ..was
+            }
+        } else {
+            Scroll {
+                top: u16::try_from(offset).unwrap_or(u16::MAX),
+                follow: false,
+                anchor: None,
+                seek: None,
+            }
+        };
+        self.put_scroll(list, scroll);
+    }
+
+    /// The scrollbar of `list` as the last frame drew it.
+    fn track(&self, list: Focus) -> Option<Track> {
+        self.tracks.iter().find(|track| track.list == list).copied()
+    }
+
+    /// Where the pointer keeps the thumb of `list`, in rows of its track, while
+    /// it holds it.
+    pub(crate) fn held_thumb(&self, list: Focus) -> Option<u32> {
+        match self.dragging {
+            Some(Drag::Thumb(held)) if held.list == list => Some(held.top),
+            Some(Drag::Thumb(_) | Drag::Edge(_)) | None => None,
+        }
+    }
+
+    /// How the scrollbar of `list` draws at `now`.
+    pub(crate) fn bar_shade(&self, list: Focus, now: Instant) -> Shade {
+        self.fades[slot(list)].shade(now, self.bar_lit(list))
+    }
+
+    /// Whether the pointer is on the scrollbar of `list` or holds its thumb.
+    fn bar_lit(&self, list: Focus) -> bool {
+        self.hover == Some(Target::Bar(list)) || self.held_thumb(list).is_some()
+    }
+
+    /// How every scrollbar draws at `now`, in the order of [`Focus::LISTS`].
+    pub(crate) fn bar_shades(&self, now: Instant) -> [Shade; 4] {
+        Focus::LISTS.map(|list| self.bar_shade(list, now))
+    }
+
+    /// When a scrollbar next draws differently with no event: where its hold
+    /// ends, then each step of its fade.
+    pub(crate) fn bars_wake(&self) -> Option<Instant> {
+        Focus::LISTS
+            .into_iter()
+            .filter_map(|list| self.fades[slot(list)].next_change(self.now, self.bar_lit(list)))
+            .min()
     }
 }
 
@@ -1740,6 +1914,8 @@ pub(crate) mod fixtures {
 
 #[cfg(test)]
 mod tests {
+    use ratatui::layout::Rect;
+
     use super::fixtures::pane;
     use super::*;
 
@@ -1775,9 +1951,9 @@ mod tests {
             moved: 0,
         };
         app.scroll_mut(Focus::Session).anchor = Some(anchor);
-        app.settle(&[(Focus::Panes, 0)], None);
+        app.settle(&[(Focus::Panes, 0)], None, &[]);
         assert_eq!(app.scroll_of(Focus::Session).anchor, Some(anchor));
-        app.settle(&[(Focus::Session, 5)], None);
+        app.settle(&[(Focus::Session, 5)], None, &[]);
         assert_eq!(app.scroll_of(Focus::Session).anchor, None);
     }
 
@@ -1970,5 +2146,232 @@ mod tests {
         assert_eq!(app.on_key(key(KeyCode::Esc)), Action::None);
         assert_eq!(app.filter(Focus::Sessions), "");
         assert_eq!(app.on_key(key(KeyCode::Esc)), Action::Quit);
+    }
+
+    /// The scrollbar of `list`, `rows` tall at column 30 from row 4, drawn for
+    /// a view at `offset` of `total` lines.
+    fn track(list: Focus, rows: u16, (offset, total): (usize, usize)) -> Track {
+        Track {
+            list,
+            area: Rect::new(30, 4, 1, rows),
+            geometry: scrollbar::Geometry::new(offset, rows, total),
+        }
+    }
+
+    fn pointer(kind: MouseEventKind, row: u16) -> MouseEvent {
+        MouseEvent {
+            kind,
+            column: 30,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    fn on_bar(list: Focus) -> Under {
+        Under {
+            target: Some(Target::Bar(list)),
+            size: (100, 40),
+            ..Under::default()
+        }
+    }
+
+    const LEFT: MouseButton = MouseButton::Left;
+
+    #[test]
+    fn a_drag_keeps_the_grabbed_row_of_the_thumb_under_the_pointer() {
+        let mut app = App::new(None);
+        let bar = track(Focus::Panes, 20, (0, 100));
+        app.settle(&[(Focus::Panes, 0)], None, &[bar]);
+        // The thumb is 4 rows from the top; the press takes its third row.
+        assert_eq!(bar.geometry.thumb(), (0, 4));
+        app.on_mouse(pointer(MouseEventKind::Down(LEFT), 6), on_bar(Focus::Panes));
+        assert_eq!(app.held_thumb(Focus::Panes), Some(0));
+        app.on_mouse(pointer(MouseEventKind::Drag(LEFT), 11), Under::default());
+        assert_eq!(app.held_thumb(Focus::Panes), Some(5));
+        let offset = bar.geometry.offset_for_top(5);
+        assert_eq!(
+            u32::from(app.scroll_of(Focus::Panes).top),
+            offset,
+            "the list stands where a thumb 5 rows down stands for"
+        );
+        // Past the ends of the track the thumb stops at them.
+        app.on_mouse(pointer(MouseEventKind::Drag(LEFT), 90), Under::default());
+        assert_eq!(app.held_thumb(Focus::Panes), Some(16));
+        assert_eq!(app.scroll_of(Focus::Panes).top, 80);
+        app.on_mouse(pointer(MouseEventKind::Drag(LEFT), 0), Under::default());
+        assert_eq!(app.held_thumb(Focus::Panes), Some(0));
+        assert_eq!(app.scroll_of(Focus::Panes).top, 0);
+        app.on_mouse(pointer(MouseEventKind::Up(LEFT), 0), Under::default());
+        assert_eq!(app.dragging, None);
+    }
+
+    #[test]
+    fn a_drag_or_a_page_drops_the_wheel_reports_waiting_for_the_list() {
+        let mut app = App::new(None);
+        app.settle(
+            &[(Focus::Panes, 0)],
+            None,
+            &[track(Focus::Panes, 20, (0, 100))],
+        );
+        app.on_mouse(pointer(MouseEventKind::Down(LEFT), 4), on_bar(Focus::Panes));
+        assert_eq!(app.take_cleared(), []);
+        app.on_mouse(pointer(MouseEventKind::Drag(LEFT), 8), Under::default());
+        assert_eq!(app.take_cleared(), [Focus::Panes]);
+        app.on_mouse(pointer(MouseEventKind::Up(LEFT), 8), Under::default());
+        app.on_mouse(
+            pointer(MouseEventKind::Down(LEFT), 20),
+            on_bar(Focus::Panes),
+        );
+        assert_eq!(app.take_cleared(), [Focus::Panes]);
+    }
+
+    #[test]
+    fn a_press_on_the_track_pages_the_list_by_its_height_toward_the_press() {
+        let mut app = App::new(None);
+        // A list 20 rows tall, the view at its top.
+        app.settle(
+            &[(Focus::Panes, 0)],
+            None,
+            &[track(Focus::Panes, 20, (0, 100))],
+        );
+        app.on_mouse(
+            pointer(MouseEventKind::Down(LEFT), 14),
+            on_bar(Focus::Panes),
+        );
+        assert_eq!(app.dragging, None);
+        assert_eq!(app.scroll_of(Focus::Panes).top, 20);
+        // The thumb is now 4 rows down, so a press above it pages back.
+        app.settle(
+            &[(Focus::Panes, 20)],
+            None,
+            &[track(Focus::Panes, 20, (20, 100))],
+        );
+        app.on_mouse(pointer(MouseEventKind::Down(LEFT), 5), on_bar(Focus::Panes));
+        assert_eq!(app.scroll_of(Focus::Panes).top, 0);
+    }
+
+    #[test]
+    fn a_press_on_a_bar_the_last_frame_did_not_draw_does_nothing() {
+        let mut app = App::new(None);
+        app.on_mouse(pointer(MouseEventKind::Down(LEFT), 6), on_bar(Focus::Panes));
+        assert_eq!(app.dragging, None);
+        assert_eq!(app.scroll_of(Focus::Panes), Scroll::default());
+        app.settle(
+            &[(Focus::Panes, 0)],
+            None,
+            &[track(Focus::Panes, 20, (0, 100))],
+        );
+        // The next frame draws no bar, as when the list shrinks to fit.
+        app.settle(&[(Focus::Panes, 0)], None, &[]);
+        app.on_mouse(pointer(MouseEventKind::Down(LEFT), 6), on_bar(Focus::Panes));
+        assert_eq!(app.dragging, None);
+    }
+
+    #[test]
+    fn a_bar_shows_while_its_list_scrolls_and_fades_out_after() {
+        let t0 = Instant::now();
+        let ms = Duration::from_millis;
+        let mut app = App::new(None);
+        assert_eq!(app.bar_shade(Focus::Panes, t0), Shade::Hidden);
+        app.now = t0;
+        app.scroll_lines(Focus::Panes, 2);
+        let shades: Vec<Shade> = [0, 799, 800, 850, 999, 1000]
+            .into_iter()
+            .map(|at| app.bar_shade(Focus::Panes, t0 + ms(at)))
+            .collect();
+        assert_eq!(
+            shades,
+            [
+                Shade::Rest,
+                Shade::Rest,
+                Shade::Fading(1),
+                Shade::Fading(2),
+                Shade::Fading(4),
+                Shade::Hidden,
+            ]
+        );
+        // Another list's bar is unaffected.
+        assert_eq!(app.bar_shade(Focus::Sessions, t0), Shade::Hidden);
+    }
+
+    #[test]
+    fn a_key_that_moves_the_selection_shows_the_bar() {
+        let t0 = Instant::now();
+        let mut app = App::new(None);
+        app.set_panes(three_panes(&["Fix checkout"]));
+        app.focus_on(Focus::Panes);
+        app.now = t0;
+        app.on_key(key(KeyCode::Down));
+        assert_eq!(app.bar_shade(Focus::Panes, t0), Shade::Rest);
+    }
+
+    #[test]
+    fn the_pointer_on_a_bar_lights_it_and_leaving_starts_the_fade() {
+        let t0 = Instant::now();
+        let ms = Duration::from_millis;
+        let mut app = App::new(None);
+        app.now = t0;
+        app.on_mouse(
+            pointer(MouseEventKind::Moved, 8),
+            Under {
+                target: Some(Target::Bar(Focus::Panes)),
+                size: (100, 40),
+                ..Under::default()
+            },
+        );
+        // However long it stays, the bar stays lit.
+        assert_eq!(app.bar_shade(Focus::Panes, t0 + ms(60_000)), Shade::Lit);
+        let left = t0 + ms(60_000);
+        app.now = left;
+        app.on_mouse(
+            MouseEvent {
+                column: 10,
+                ..pointer(MouseEventKind::Moved, 8)
+            },
+            Under {
+                size: (100, 40),
+                ..Under::default()
+            },
+        );
+        assert_eq!(app.bar_shade(Focus::Panes, left + ms(799)), Shade::Rest);
+        assert_eq!(app.bar_shade(Focus::Panes, left + ms(1000)), Shade::Hidden);
+    }
+
+    #[test]
+    fn a_held_thumb_keeps_the_bar_lit_and_letting_go_starts_the_fade() {
+        let t0 = Instant::now();
+        let ms = Duration::from_millis;
+        let mut app = App::new(None);
+        app.settle(
+            &[(Focus::Panes, 0)],
+            None,
+            &[track(Focus::Panes, 20, (0, 100))],
+        );
+        app.now = t0;
+        app.on_mouse(pointer(MouseEventKind::Down(LEFT), 4), on_bar(Focus::Panes));
+        assert_eq!(app.bar_shade(Focus::Panes, t0 + ms(60_000)), Shade::Lit);
+        let released = t0 + ms(60_000);
+        app.now = released;
+        app.on_mouse(pointer(MouseEventKind::Up(LEFT), 4), Under::default());
+        assert_eq!(app.bar_shade(Focus::Panes, released + ms(799)), Shade::Rest);
+        assert_eq!(
+            app.bar_shade(Focus::Panes, released + ms(1000)),
+            Shade::Hidden
+        );
+    }
+
+    #[test]
+    fn the_loop_wakes_where_a_bar_changes_and_not_at_rest() {
+        let t0 = Instant::now();
+        let ms = Duration::from_millis;
+        let mut app = App::new(None);
+        app.now = t0;
+        assert_eq!(app.bars_wake(), None);
+        app.scroll_lines(Focus::Panes, 2);
+        assert_eq!(app.bars_wake(), Some(t0 + ms(800)));
+        app.now = t0 + ms(800);
+        assert_eq!(app.bars_wake(), Some(t0 + ms(850)));
+        app.now = t0 + ms(1000);
+        assert_eq!(app.bars_wake(), None);
     }
 }

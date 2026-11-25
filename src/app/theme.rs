@@ -32,6 +32,26 @@ pub(crate) fn line() -> Style {
     Style::new().fg(LINE)
 }
 
+/// A scrollbar's thumb while it fades out, from the first step to the last,
+/// each a step nearer a dark background than the one before and than `LINE`.
+const FADING: [Color; 4] = [
+    Color::Indexed(237),
+    Color::Indexed(236),
+    Color::Indexed(235),
+    Color::Indexed(234),
+];
+
+/// A scrollbar's thumb at fade `step`, counted from 1.
+pub(crate) fn fading(step: u8) -> Style {
+    let at = usize::from(step.saturating_sub(1)).min(FADING.len() - 1);
+    Style::new().fg(FADING[at])
+}
+
+/// A scrollbar's thumb under the pointer or held: a step brighter than rest.
+pub(crate) fn lit() -> Style {
+    Style::new().fg(Color::Indexed(240))
+}
+
 /// A section header in the sidebar, such as `Needs you`.
 pub(crate) fn header() -> Style {
     Style::new().add_modifier(Modifier::DIM | Modifier::BOLD)

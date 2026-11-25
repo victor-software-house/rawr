@@ -17,17 +17,16 @@ use ratatui::buffer::{Buffer, Cell, CellDiffOption};
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{
-    Block, BorderType, Clear, Padding, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
-};
+use ratatui::widgets::{Block, BorderType, Clear, Padding, Paragraph};
 
 use crate::app::facts::{EntryId, Facts, Kind, List, Outcome, Pr, Said};
 use crate::app::feed::Pane;
 use crate::app::history::{Gaps, History, NEAR, Reach, Shape};
 use crate::app::layouts::{Laid, Layouts};
+use crate::app::scrollbar::{self, Geometry, Track};
 use crate::app::state::{
-    self, Anchor, App, Arrangement, Button, FULL, Focus, Grip, Link, RAIL, Scroll, Tab, Target,
-    Under,
+    self, Anchor, App, Arrangement, Button, Drag, FULL, Focus, Grip, Link, RAIL, Scroll, Tab,
+    Target, Under,
 };
 use crate::app::{markup, theme};
 use crate::catalog;
@@ -65,6 +64,8 @@ pub(crate) struct Hits {
     pub(crate) anchor: Option<Anchor>,
     /// Where the view stands among the entries held, when it lists entries.
     pub(crate) reach: Option<Reach>,
+    /// The scrollbars of the lists that do not fit, with where each stands.
+    pub(crate) bars: Vec<Track>,
 }
 
 impl Hits {
@@ -104,6 +105,7 @@ impl Hits {
         self.targets.retain(|(under, _)| !under.intersects(area));
         self.lists.retain(|(under, _)| !under.intersects(area));
         self.rails.retain(|(under, _)| !under.intersects(area));
+        self.bars.retain(|track| !track.area.intersects(area));
     }
 }
 
@@ -145,6 +147,7 @@ fn draw_with(frame: &mut Frame<'_>, app: &App, layouts: &mut Layouts, shown: Sho
     if app.help {
         hits.targets.clear();
         hits.rails.clear();
+        hits.bars.clear();
         hits.cursor = None;
         help(frame, app.is_stand_in());
     }
@@ -296,7 +299,7 @@ fn keep_area(app: &App, area: Rect, rail: Rect, column: Focus) -> Rect {
 /// when `grip` lets it move.
 fn edge_line(frame: &mut Frame<'_>, app: &App, area: Rect, grip: Option<Grip>, hits: &mut Hits) {
     let lit = grip.is_some_and(|grip| {
-        app.dragging.is_some_and(|held| held.column == grip.column)
+        matches!(app.dragging, Some(Drag::Edge(held)) if held.column == grip.column)
             || app.hover == Some(Target::Edge(grip))
     });
     let (glyph, style) = if lit {
@@ -712,7 +715,7 @@ fn panes_list(frame: &mut Frame<'_>, app: &App, list: Rect, hits: &mut Hits) {
         });
     let skip = top_of(app.scroll_of(Focus::Panes), total, list.height, selection);
     hits.tops.push((Focus::Panes, skip));
-    scrollbar(frame, list, skip, total);
+    draw_bar(frame, app, hits, Focus::Panes, list, skip, total);
     let list = Rect {
         width: list.width.saturating_sub(u16::from(total > list.height)),
         ..list
@@ -1121,7 +1124,15 @@ fn pane_view(
             hits.add(cell, target);
         }
     }
-    scrollbar(frame, content, body.bar.0, body.bar.1);
+    draw_bar(
+        frame,
+        app,
+        hits,
+        Focus::Session,
+        content,
+        body.bar.0,
+        body.bar.1,
+    );
     frame.render_widget(
         Paragraph::new(body.lines)
             .style(Style::new().fg(theme::TEXT))
@@ -1196,7 +1207,7 @@ fn session_list(frame: &mut Frame<'_>, app: &App, area: Rect, pane: &Pane, hits:
         selection,
     );
     hits.tops.push((Focus::Sessions, skip));
-    scrollbar(frame, list, skip, total);
+    draw_bar(frame, app, hits, Focus::Sessions, list, skip, total);
     let rows = Rect {
         width: list.width.saturating_sub(u16::from(total > list.height)),
         ..list
@@ -1585,22 +1596,33 @@ struct Stand {
 }
 
 /// Where the view of `height` lines stands among the `placed` entries: at the
-/// scroll's anchor entry, or at its line when it has none, and never out of the
-/// run of held entries that entry is in. `tail` is whether the oldest run ends
-/// with one more line.
-fn stand(app: &App, placed: &[Placed], height: u16, tail: bool) -> Stand {
+/// line the scrollbar's thumb asks for, `seek`, as a run and a line of the held
+/// entries, else at the scroll's anchor entry, or at its line when it has none,
+/// and never out of the run of held entries that entry is in. `tail` is whether
+/// the oldest run ends with one more line.
+fn stand(
+    app: &App,
+    placed: &[Placed],
+    height: u16,
+    tail: bool,
+    seek: Option<(usize, usize)>,
+) -> Stand {
     let scroll = app.scroll_of(Focus::Session);
-    let anchored = scroll.anchor.and_then(|anchor| {
-        // The entry itself, else the nearest newer one still listed.
-        let (entry, line) = match placed.iter().find(|entry| entry.id == anchor.id) {
-            Some(entry) => (entry, anchor.line),
-            None => (placed.iter().rfind(|entry| entry.id > anchor.id)?, 0),
-        };
-        // The wheel's steps since the last frame count wherever the view
-        // stands.
-        let line = i64::from(line).saturating_add(i64::from(anchor.moved));
-        Some((entry.run, entry.start, line))
-    });
+    let anchored = seek
+        .map(|(run, line)| (run, 0, i64::try_from(line).unwrap_or(i64::MAX)))
+        .or_else(|| {
+            scroll.anchor.and_then(|anchor| {
+                // The entry itself, else the nearest newer one still listed.
+                let (entry, line) = match placed.iter().find(|entry| entry.id == anchor.id) {
+                    Some(entry) => (entry, anchor.line),
+                    None => (placed.iter().rfind(|entry| entry.id > anchor.id)?, 0),
+                };
+                // The wheel's steps since the last frame count wherever the
+                // view stands.
+                let line = i64::from(line).saturating_add(i64::from(anchor.moved));
+                Some((entry.run, entry.start, line))
+            })
+        });
     let current = anchored
         .map(|(run, ..)| run)
         .or_else(|| placed.first().map(|entry| entry.run))
@@ -1649,7 +1671,12 @@ fn said(
 ) -> Entries {
     let filter = app.filter(Focus::Session);
     let (placed, total) = place(app, layouts, open, (items, shape.gaps), width);
-    let Stand { top, lo, hi, tail } = stand(app, &placed, height, unsearched);
+    let filtered = !filter.is_empty();
+    let seek = app
+        .scroll_of(Focus::Session)
+        .seek
+        .and_then(|at| seek_line(&placed, shape, filtered, (at, total)));
+    let Stand { top, lo, hi, tail } = stand(app, &placed, height, unsearched, seek);
     let anchor = if top == 0 {
         None
     } else {
@@ -1685,7 +1712,6 @@ fn said(
     if tail && bottom == hi {
         lines.push(Line::styled(UNSEARCHED, theme::dim()));
     }
-    let filtered = !filter.is_empty();
     let lead = app.ahead.min(NEAR);
     let reach = shown
         .first()
@@ -1796,6 +1822,42 @@ fn place(
     (placed, total)
 }
 
+/// The run of held entries and the line of the `placed` ones that the
+/// scrollbar's line `at` stands for, among `total` lines held: the inverse of
+/// [`bar`]. `None` when no held entry covers it, because it falls in a gap or
+/// among the older entries not held. A filter counts none that are not held.
+fn seek_line(
+    placed: &[Placed],
+    shape: Shape<'_>,
+    filtered: bool,
+    (at, total): (usize, usize),
+) -> Option<(usize, usize)> {
+    placed.chunk_by(|a, b| a.run == b.run).find_map(|run| {
+        let (first, last) = (run.first()?, run.last()?);
+        let lines = last.start + last.height - first.start;
+        // The gaps above the run's newest entry move it down the bar.
+        let above: usize = if filtered {
+            0
+        } else {
+            shape
+                .gaps
+                .range(first.id..)
+                .map(|(_, missing)| *missing)
+                .sum()
+        };
+        let from = first.start + tall(above, total, placed.len());
+        (from..from + lines)
+            .contains(&at)
+            .then(|| (first.run, first.start + (at - from)))
+    })
+}
+
+/// How many lines `entries` entries not held take: as many as those held take
+/// on average, `held` entries taking `total` lines.
+fn tall(entries: usize, total: usize, held: usize) -> usize {
+    entries * total / held.max(1)
+}
+
 /// The scrollbar's position and length for a view of the held entries that
 /// starts at line `top` of `total` lines, which `held` entries take. The
 /// entries not held count as tall as those held are on average. `reach` is
@@ -1808,7 +1870,6 @@ fn bar(
     let Some(reach) = reach else {
         return (top, total);
     };
-    let tall = |entries: usize| entries * total / held.max(1);
     let not_held = shape.gaps.values().sum::<usize>() + shape.older;
     // The gaps above the view's first entry move the thumb down.
     let above: usize = shape
@@ -1816,7 +1877,10 @@ fn bar(
         .range(reach.first..)
         .map(|(_, missing)| *missing)
         .sum();
-    (top + tall(above), total + tall(not_held))
+    (
+        top + tall(above, total, held),
+        total + tall(not_held, total, held),
+    )
 }
 
 /// Row `row` of an entry laid out as `laid`, with what a frame draws over it:
@@ -2818,7 +2882,7 @@ fn session_rows(
     });
     let skip = top_of(app.scroll_of(list), total, area.height, selection);
     hits.tops.push((list, skip));
-    scrollbar(frame, area, skip, total);
+    draw_bar(frame, app, hits, list, area, skip, total);
     let area = Rect {
         width: area.width.saturating_sub(u16::from(total > area.height)),
         ..area
@@ -3072,27 +3136,42 @@ fn top_of(scroll: Scroll, total: u16, height: u16, selection: Option<(u16, u16)>
     top.min(total.saturating_sub(height))
 }
 
-/// A thin scrollbar down the right edge of `area`, when a list `total` lines
-/// tall does not fit in it.
-fn scrollbar(frame: &mut Frame<'_>, area: Rect, top: impl Into<usize>, total: impl Into<usize>) {
-    let (top, total) = (top.into(), total.into());
-    let height = usize::from(area.height);
-    if total <= height {
+/// The scrollbar of `list` down the last column of `area`, when a list `total`
+/// lines tall does not fit in it, and where it takes the mouse. The column
+/// stays reserved while the bar is hidden. The thumb stands where the pointer
+/// holds it, else where the list stands.
+fn draw_bar(
+    frame: &mut Frame<'_>,
+    app: &App,
+    hits: &mut Hits,
+    list: Focus,
+    area: Rect,
+    top: impl Into<usize>,
+    total: impl Into<usize>,
+) {
+    let geometry = Geometry::new(top.into(), area.height, total.into());
+    if !geometry.shown() {
         return;
     }
-    let mut state = ScrollbarState::new(total - height + 1)
-        .position(top)
-        .viewport_content_length(usize::from(area.height));
-    frame.render_stateful_widget(
-        Scrollbar::new(ScrollbarOrientation::VerticalRight)
-            .begin_symbol(None)
-            .end_symbol(None)
-            .track_symbol(Some(" "))
-            .thumb_symbol("┃")
-            .thumb_style(theme::line()),
-        area,
-        &mut state,
+    let track = Rect {
+        x: area.right().saturating_sub(1),
+        width: 1,
+        ..area
+    };
+    let (start, size) = geometry.thumb();
+    scrollbar::draw(
+        frame.buffer_mut(),
+        track,
+        (app.held_thumb(list).unwrap_or(start), size),
+        app.bar_shade(list, app.now),
     );
+    hits.bars.push(Track {
+        list,
+        area: track,
+        geometry,
+    });
+    // Before the rows, so the bar's own column takes the press.
+    hits.targets.insert(0, (track, Target::Bar(list)));
 }
 
 #[cfg(test)]
@@ -3181,6 +3260,8 @@ mod tests {
         history: History,
         /// Where the last frame left the view.
         reach: Option<Reach>,
+        /// Where the last frame put what takes a click.
+        hits: Hits,
         terminal: Terminal<TestBackend>,
     }
 
@@ -3236,6 +3317,7 @@ mod tests {
                 app,
                 history,
                 reach: None,
+                hits: Hits::default(),
                 terminal: Terminal::new(TestBackend::new(120, 40)).expect("a test terminal"),
             }
         }
@@ -3262,9 +3344,10 @@ mod tests {
                 .draw(|frame| hits = Some(draw(frame, &mut self.app, shown)))
                 .expect("the app draws");
             let hits = hits.expect("a frame was drawn");
-            self.app.settle(&hits.tops, hits.anchor);
+            self.app.settle(&hits.tops, hits.anchor, &hits.bars);
             self.app.cols = hits.width;
             self.reach = hits.reach;
+            self.hits = hits;
         }
 
         /// The entries a frame shows, one text each.
@@ -3649,6 +3732,288 @@ mod tests {
         assert!(rig.entries()[0].contains("file-299.rs"));
         rig.history.facts.activity.push(call(300, "file-new.rs"));
         assert!(rig.entries()[0].contains("file-new.rs"));
+    }
+
+    impl Rig {
+        /// The pointer's report `kind` at `column`, `row`, over what the last
+        /// frame drew there.
+        fn pointer(&mut self, kind: MouseEventKind, column: u16, row: u16) {
+            let under = self.hits.under(column, row);
+            self.app.on_mouse(
+                MouseEvent {
+                    kind,
+                    column,
+                    row,
+                    modifiers: KeyModifiers::NONE,
+                },
+                under,
+            );
+        }
+
+        /// The session list's scrollbar as the last frame drew it.
+        fn track(&self) -> Track {
+            self.hits
+                .bars
+                .iter()
+                .find(|track| track.list == Focus::Session)
+                .copied()
+                .expect("the list does not fit, so a bar is drawn")
+        }
+
+        /// The glyph in each row of the scrollbar's column in the last frame.
+        fn glyphs(&self) -> Vec<String> {
+            let track = self.track();
+            let buffer = self.terminal.backend().buffer();
+            (track.area.y..track.area.bottom())
+                .map(|y| buffer[(track.area.x, y)].symbol().to_owned())
+                .collect()
+        }
+    }
+
+    const LEFT: MouseButton = MouseButton::Left;
+
+    fn at(start: Instant, ms: u64) -> Instant {
+        start + Duration::from_millis(ms)
+    }
+
+    /// The rows of `glyphs` that hold `glyph`.
+    fn rows_of(glyphs: &[String], glyph: &str) -> Vec<usize> {
+        (0..glyphs.len())
+            .filter(|row| glyphs[*row] == glyph)
+            .collect()
+    }
+
+    #[test]
+    fn dragging_the_thumb_five_rows_down_moves_it_and_the_list_with_it() {
+        let mut rig = Rig::new(300);
+        rig.draw();
+        let track = rig.track();
+        let (top, size) = track.geometry.thumb();
+        assert_eq!(top, 0);
+        let (x, y) = (track.area.x, track.area.y);
+        rig.pointer(MouseEventKind::Down(LEFT), x, y);
+        rig.pointer(MouseEventKind::Drag(LEFT), x, y + 5);
+        let shown = rig.entries();
+        let size = usize::try_from(size).expect("a small number");
+        assert_eq!(
+            rows_of(&rig.glyphs(), "█"),
+            (5..5 + size).collect::<Vec<_>>()
+        );
+        assert_eq!(rig.track().geometry.thumb().0, 5);
+        let offset = usize::try_from(track.geometry.offset_for_top(5)).expect("a small number");
+        assert!(
+            shown[0].contains(&format!("file-{}.rs", 299 - offset)),
+            "{shown:?}"
+        );
+    }
+
+    #[test]
+    fn a_drag_goes_on_when_the_pointer_leaves_the_bar_column() {
+        let mut rig = Rig::new(300);
+        rig.draw();
+        let track = rig.track();
+        let (x, y) = (track.area.x, track.area.y);
+        rig.pointer(MouseEventKind::Down(LEFT), x, y);
+        rig.pointer(MouseEventKind::Drag(LEFT), x - 30, y + 5);
+        rig.draw();
+        assert_eq!(rig.track().geometry.thumb().0, 5);
+        rig.pointer(MouseEventKind::Up(LEFT), x - 30, y + 5);
+        assert_eq!(rig.app.held_thumb(Focus::Session), None);
+    }
+
+    #[test]
+    fn a_press_on_the_track_below_the_thumb_pages_down_by_the_lists_height() {
+        let mut rig = Rig::new(300);
+        rig.draw();
+        let track = rig.track();
+        let height = usize::from(track.area.height);
+        rig.pointer(
+            MouseEventKind::Down(LEFT),
+            track.area.x,
+            track.area.bottom() - 1,
+        );
+        let shown = rig.entries();
+        assert!(
+            shown[0].contains(&format!("file-{}.rs", 299 - height)),
+            "{shown:?}"
+        );
+        // The wheel reports read before the press are stale.
+        assert_eq!(rig.app.take_cleared(), [Focus::Session]);
+        // A press above the thumb pages back to the top.
+        let thumb = rig.track().geometry.thumb().0;
+        assert!(thumb > 0);
+        rig.pointer(MouseEventKind::Down(LEFT), track.area.x, track.area.y);
+        assert!(rig.entries()[0].contains("file-299.rs"));
+    }
+
+    #[test]
+    fn a_bar_is_drawn_only_when_the_list_does_not_fit() {
+        let mut rig = Rig::new(5);
+        rig.draw();
+        assert_eq!(rig.hits.bars.len(), 0);
+        let mut rig = Rig::new(300);
+        rig.draw();
+        assert_eq!(rig.hits.bars.len(), 1);
+    }
+
+    #[test]
+    fn the_bar_column_takes_a_press_before_the_column_it_is_in() {
+        let mut rig = Rig::new(300);
+        rig.draw();
+        let track = rig.track();
+        for y in track.area.y..track.area.bottom() {
+            assert_eq!(
+                rig.hits.target(track.area.x, y),
+                Some(Target::Bar(Focus::Session)),
+                "row {y}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_bar_shows_while_the_list_scrolls_and_is_gone_a_second_after() {
+        let mut rig = Rig::new(300);
+        let t0 = Instant::now();
+        rig.app.now = t0;
+        rig.draw();
+        assert!(rig.glyphs().iter().all(|glyph| glyph == " "));
+        rig.scroll(10);
+        let mut seen = Vec::new();
+        let mut first_rows: Option<Vec<String>> = None;
+        for ms in [0, 799, 800, 899, 999, 1000, 1500] {
+            rig.app.now = at(t0, ms);
+            let rows = rig.draw();
+            let track = rig.track();
+            let top = u16::try_from(track.geometry.thumb().0).expect("a small number");
+            let cell = &rig.terminal.backend().buffer()[(track.area.x, track.area.y + top)];
+            // A blank cell has no colour of its own to compare.
+            let ink = (cell.symbol() != " ").then(|| cell.style().fg).flatten();
+            seen.push((cell.symbol().to_owned(), ink));
+            // The text keeps its columns whether the bar shows or not.
+            let column = usize::from(track.area.x);
+            let first = first_rows.get_or_insert_with(|| rows.clone());
+            assert!(
+                rows.iter()
+                    .zip(first.iter())
+                    .all(|(now, then)| now.chars().take(column).eq(then.chars().take(column))),
+                "at {ms} ms the text moved"
+            );
+        }
+        let want = |glyph: &str, style: Option<Style>| {
+            (glyph.to_owned(), style.and_then(|style| style.fg))
+        };
+        assert_eq!(
+            seen,
+            [
+                want("┃", Some(theme::line())),
+                want("┃", Some(theme::line())),
+                want("┃", Some(theme::fading(1))),
+                want("┃", Some(theme::fading(2))),
+                want("┃", Some(theme::fading(4))),
+                want(" ", None),
+                want(" ", None),
+            ]
+        );
+    }
+
+    #[test]
+    fn hovering_the_last_column_shows_the_bar_with_the_thumb_a_full_cell() {
+        let mut rig = Rig::new(300);
+        let t0 = Instant::now();
+        rig.app.now = t0;
+        rig.draw();
+        let track = rig.track();
+        assert!(rig.glyphs().iter().all(|glyph| glyph == " "));
+        rig.pointer(MouseEventKind::Moved, track.area.x, track.area.bottom() - 1);
+        rig.draw();
+        let (top, size) = track.geometry.thumb();
+        let (top, size) = (
+            usize::try_from(top).expect("a small number"),
+            usize::try_from(size).expect("a small number"),
+        );
+        assert_eq!(
+            rows_of(&rig.glyphs(), "█"),
+            (top..top + size).collect::<Vec<_>>()
+        );
+        // The pointer going off it leaves the thumb a line again, for a while.
+        rig.app.now = at(t0, 50);
+        rig.pointer(MouseEventKind::Moved, 10, 10);
+        rig.draw();
+        assert_eq!(
+            rows_of(&rig.glyphs(), "┃"),
+            (top..top + size).collect::<Vec<_>>()
+        );
+        rig.app.now = at(t0, 1100);
+        rig.draw();
+        assert!(rig.glyphs().iter().all(|glyph| glyph == " "));
+    }
+
+    #[test]
+    fn a_drag_past_the_held_entries_keeps_the_view_where_it_was() {
+        // The newest 300 of 5,800 calls.
+        let mut rig = Rig::with(calls(5500..5800, 5800));
+        rig.draw();
+        let track = rig.track();
+        let (x, y) = (track.area.x, track.area.y);
+        rig.pointer(MouseEventKind::Down(LEFT), x, y);
+        // One row down stands for a place among the 300 held.
+        rig.pointer(MouseEventKind::Drag(LEFT), x, y + 1);
+        // The rows, less the thumb at their end.
+        let text = |rig: &mut Rig| -> Vec<String> {
+            rig.entries()
+                .iter()
+                .map(|row| row.trim_end_matches(['█', '┃', ' ']).to_owned())
+                .collect()
+        };
+        let held = text(&mut rig);
+        assert!(!held[0].contains("file-5799.rs"), "{held:?}");
+        for row in 2..track.area.height {
+            rig.pointer(MouseEventKind::Drag(LEFT), x, y + row);
+            assert_eq!(text(&mut rig), held, "row {row}");
+        }
+        // The thumb is at the bottom of the track all the same.
+        assert_eq!(rig.glyphs().last().map(String::as_str), Some("█"));
+    }
+
+    #[test]
+    fn a_seek_lands_on_the_run_that_covers_it_and_on_none_in_a_gap() {
+        let placed = |run: usize, start: usize, id: u64| Placed {
+            index: 0,
+            id: EntryId { line: id, index: 0 },
+            open: false,
+            run,
+            start,
+            height: 1,
+        };
+        // Two runs of two lines, and 10 entries not held between them.
+        let held = [
+            placed(0, 0, 900),
+            placed(0, 1, 800),
+            placed(1, 2, 300),
+            placed(1, 3, 200),
+        ];
+        let gaps = Gaps::from([(
+            EntryId {
+                line: 300,
+                index: 0,
+            },
+            10,
+        )]);
+        let shape = Shape {
+            gaps: &gaps,
+            older: 0,
+        };
+        let seek = |at| seek_line(&held, shape, false, (at, 4));
+        // 4 lines held by 4 entries: each entry not held takes a line.
+        assert_eq!(seek(0), Some((0, 0)));
+        assert_eq!(seek(1), Some((0, 1)));
+        assert_eq!(seek(2), None);
+        assert_eq!(seek(11), None);
+        assert_eq!(seek(12), Some((1, 2)));
+        assert_eq!(seek(13), Some((1, 3)));
+        assert_eq!(seek(14), None);
+        // A filter counts none that are not held.
+        assert_eq!(seek_line(&held, shape, true, (2, 4)), Some((1, 2)));
     }
 
     /// The time of the frame at the 99th percentile of `times`.
