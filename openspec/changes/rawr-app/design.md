@@ -98,21 +98,6 @@ The `gh` CLI is the counter-example: dozens of verbs, each printing once, and no
     - Rule 3 names `rawr` and `rawr --startup` in place of `pick` and `find`, and keeps the rest: draw through stderr, nothing on stdout, become `claude` on a choice.
     - Rule 4 names the three programs rawr starts: its own daemon, `claude` on a resume, and `/usr/bin/open` for a file the user clicks.
 
-11. **A stand-in in each restored pane, and one floating app.**
-    The maintainer separated the two after every stand-in rose to the top of Rex's Activity list at once (operator, 2026-11-23).
-    - `rawr --startup` opens a stand-in: only the sessions recorded for its own pane, newest first, with the selected one in detail.
-      It draws no panes column and no search, so `ctrl+f`, `1`, `g` and the panes drawer do nothing, and `esc` with no filter set quits.
-      `r` resumes in the pane, as before.
-    - Bare `rawr` is the full app: every pane, its sessions and the search.
-      Rex opens it floating over the window in view on `cmd+alt+r`, through an `init.lua` action the README gives.
-    - `main.rs` decides the mode once, and the stand-in's title with it: the newest resumable session's title, or its folder's name when it has none.
-    - Each window reports only its own state through OSC 7501, under `id=rawr` and `app=rawr`, so a change in another pane sends nothing.
-      A stand-in reports `idle` once, before its first frame, with its session's title as the record's title.
-      The full app reports `idle` with a constant line and the title `rawr`, and `blocked` with a constant line and no `kind` while any pane needs the user.
-      It sends a report only when that choice flips, so a second waiting pane sends nothing.
-    - Only the origin says rawr (operator, 2026-11-23): a stand-in also sets its pane's terminal title (OSC 2) to its session's title, and the full app leaves the title alone.
-      Rex shows that title for the tab; it supports no title stack, and a new shell starts with an empty title, so the guard that gives the terminal back writes an empty title, beside the status clear.
-
 ## Verified
 
 1. Asking the Rex app to show a pane sends `client.perform` with action `session.select`, the session and the window, to the app attached to the window's session, else the first app connected; `session.focus_block` focuses the block in a split tab (`src/rex/control.rs`).

@@ -18,9 +18,7 @@ Nobody learns four verbs to answer two questions: which Claude needs me, and how
 3. The app always draws something.
    With no Rex server it says so and still offers search; with no sessions anywhere it says that.
 4. `rawr pick` and `rawr find` go.
-   The shell line that offers a restored pane's sessions runs `rawr --startup`, which opens a stand-in on that pane's sessions only when one can be resumed, and otherwise prints nothing and exits 0.
-   The full app opens floating over the window in view on `cmd+alt+r`, through an `init.lua` action the README gives.
-   Each window reports only its own state to Rex, and only the full app's status record is titled rawr.
+   The shell line that offers a restored pane's sessions runs `rawr --startup`, which opens the app on the pane's sessions only when one can be resumed, and otherwise prints nothing and exits 0.
 5. `rawr record`, `rawr status --format json`, `rawr setup` and `rawr completion` stay, for hooks and scripts.
 6. The preview built three layouts first, so the maintainer could choose from running code.
    The app ships two columns that fold to rails and draw out as drawers, with one column at a time behind `ctrl+l`.
