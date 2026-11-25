@@ -299,8 +299,10 @@ impl History {
         let held = &self.lists[list.index()];
         let missing: usize = held.gaps.values().sum();
         let have = self.facts.entries(list).len();
+        // The daemon says older entries exist, so the count of them is not 0
+        // however the held ones and the gaps add up.
         let older = if held.older {
-            self.facts.total(list).saturating_sub(have + missing)
+            self.facts.total(list).saturating_sub(have + missing).max(1)
         } else {
             0
         };
@@ -1256,6 +1258,19 @@ mod tests {
         assert_eq!(fresh, 0);
         let (_, fresh) = history.land_around(List::Activity, all[100..200].to_vec(), true);
         assert_eq!(fresh, 100);
+    }
+
+    #[test]
+    fn older_entries_the_daemon_reports_count_as_at_least_one() {
+        // Not every line is read, and the counts so far equal the entries held.
+        let mut history = History::default();
+        history.merge(Facts {
+            activity: world(300),
+            activity_total: 300,
+            whole: false,
+            ..Facts::default()
+        });
+        assert_eq!(history.shape(List::Activity).older, 1);
     }
 
     #[test]
