@@ -236,6 +236,22 @@ queue:
     plan: openspec/changes/scrollbar/proposal.md
     notes:
       - 2026-11-25, the maintainer asked for a draggable scrollbar that is not always visible.
+
+  - id: RAWR-035
+    title: Fold the session header while the list is scrolled
+    scope: app
+    outcome: >-
+      A scrolled Conversation or Activity list gets most of the session column, and
+      the header comes back under the pointer.
+    blocked_by:
+      - RAWR-034
+    acceptance:
+      - Scrolling a tab off its top folds the header into one row, and the list gains about eight rows.
+      - Moving the pointer onto the folded row slides the full header out over the list without moving it.
+      - Back at the top of the list, the full header returns.
+    plan: openspec/changes/compact-header/proposal.md
+    notes:
+      - 2026-11-25, the maintainer asked for the header to fold while scrolled and come back on hover, as the pane rail does.
 archive:
   - id: RAWR-021
     title: Draw the picker search box at the bottom
