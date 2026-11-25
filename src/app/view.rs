@@ -1383,6 +1383,10 @@ fn tab_lines(
     let mut lines = Vec::new();
     let mut rows = Rows::new();
     let mut prs_at = None;
+    // Where the view stands among the held entries even when none is shown, and
+    // whether a filter ended the loading of older ones.
+    let mut reach = None;
+    let mut unsearched = false;
     match app.tab {
         Tab::Overview => {
             let mut first = Vec::new();
@@ -1470,8 +1474,11 @@ fn tab_lines(
                 list,
                 items: facts.entries(list),
                 shape: history.shape(list),
+                unsearched: !filter.is_empty() && history.unsearched(list),
             };
+            unsearched = source.unsearched;
             let entries = said(app, layouts, open, source, width, height);
+            reach = entries.reach;
             if entries.total > 0 {
                 return Body {
                     lines: entries.lines,
@@ -1494,6 +1501,9 @@ fn tab_lines(
             format!("Nothing matches “{filter}”")
         };
         lines.push(Line::styled(text, theme::dim()));
+        if unsearched {
+            lines.push(Line::styled(UNSEARCHED, theme::dim()));
+        }
     }
     let total = lines.len();
     let top = top_of(
@@ -1508,7 +1518,7 @@ fn tab_lines(
         bar: (usize::from(top), total),
         top,
         anchor: None,
-        reach: None,
+        reach,
         prs_at,
         rows,
     }
@@ -1540,6 +1550,8 @@ struct Source<'a> {
     list: List,
     items: &'a [Said],
     shape: Shape<'a>,
+    /// Whether the list stopped loading older entries under a filter.
+    unsearched: bool,
 }
 
 /// An entry of a list, placed by the lines before it.
@@ -1556,24 +1568,27 @@ struct Placed {
     height: usize,
 }
 
-/// The entries of the prompts or the activity, newest first, as Claude
-/// Code draws them. A folded entry shows its first lines with how many it
-/// leaves out; a click opens it.
-///
-/// Each entry is laid out once for the width and its fold state. The rows of
-/// the entries in the view of `height` lines are built from that, and the view
-/// stands where the scroll's anchor entry now lies. It never leaves the run of
-/// held entries that entry is in, so it never draws a line it does not hold.
-fn said(
-    app: &App,
-    layouts: &mut Layouts,
-    open: Option<&HashSet<EntryId>>,
-    Source { list, items, shape }: Source<'_>,
-    width: usize,
-    height: u16,
-) -> Entries {
-    let filter = app.filter(Focus::Session);
-    let (placed, total) = place(app, layouts, open, (items, shape.gaps), width);
+/// The line of a tab of entries that ends a filtered list the window stopped
+/// loading.
+const UNSEARCHED: &str = "Older entries are not searched; ctrl+f searches the whole session.";
+
+/// Where the view stands among the lines of the held entries.
+struct Stand {
+    /// The first line on screen.
+    top: usize,
+    /// The lines of the run of held entries the view is in.
+    lo: usize,
+    hi: usize,
+    /// Whether the run ends with the line that says older entries are not
+    /// searched, which `hi` counts.
+    tail: bool,
+}
+
+/// Where the view of `height` lines stands among the `placed` entries: at the
+/// scroll's anchor entry, or at its line when it has none, and never out of the
+/// run of held entries that entry is in. `tail` is whether the oldest run ends
+/// with one more line.
+fn stand(app: &App, placed: &[Placed], height: u16, tail: bool) -> Stand {
     let scroll = app.scroll_of(Focus::Session);
     let anchored = scroll.anchor.and_then(|anchor| {
         // The entry itself, else the nearest newer one still listed.
@@ -1598,16 +1613,43 @@ fn said(
                 .saturating_add(line)
         },
     );
-    // The lines of the run the view is in.
     let mut in_run = placed.iter().filter(|entry| entry.run == current);
     let lo = in_run.next().map_or(0, |entry| entry.start);
-    let hi = in_run
+    let end = in_run
         .next_back()
         .map_or(lo, |entry| entry.start + entry.height);
-    let hi = hi.max(lo);
+    let tail = tail && placed.last().is_some_and(|last| last.run == current);
+    let hi = end.max(lo) + usize::from(tail);
     let top = usize::try_from(wanted.max(0))
         .unwrap_or(0)
         .clamp(lo, hi.saturating_sub(usize::from(height)).max(lo));
+    Stand { top, lo, hi, tail }
+}
+
+/// The entries of the prompts or the activity, newest first, as Claude
+/// Code draws them. A folded entry shows its first lines with how many it
+/// leaves out; a click opens it.
+///
+/// Each entry is laid out once for the width and its fold state. The rows of
+/// the entries in the view of `height` lines are built from that, and the view
+/// stands where the scroll's anchor entry now lies. It never leaves the run of
+/// held entries that entry is in, so it never draws a line it does not hold.
+fn said(
+    app: &App,
+    layouts: &mut Layouts,
+    open: Option<&HashSet<EntryId>>,
+    Source {
+        list,
+        items,
+        shape,
+        unsearched,
+    }: Source<'_>,
+    width: usize,
+    height: u16,
+) -> Entries {
+    let filter = app.filter(Focus::Session);
+    let (placed, total) = place(app, layouts, open, (items, shape.gaps), width);
+    let Stand { top, lo, hi, tail } = stand(app, &placed, height, unsearched);
     let anchor = if top == 0 {
         None
     } else {
@@ -1640,18 +1682,37 @@ fn said(
             }
         }
     }
+    if tail && bottom == hi {
+        lines.push(Line::styled(UNSEARCHED, theme::dim()));
+    }
+    let filtered = !filter.is_empty();
     let reach = shown
         .first()
         .zip(shown.last())
-        .map(|(newest, oldest)| Reach {
+        .map(|(newest, oldest)| {
+            (
+                newest.id,
+                oldest.id,
+                hi.saturating_sub(top + usize::from(height)),
+                top - lo,
+            )
+        })
+        // With no entry shown, the view stands at the oldest held entry, so a
+        // filter that shows nothing still loads pages.
+        .or_else(|| {
+            let oldest = items.first()?;
+            filtered.then_some((oldest.id, oldest.id, 0, 0))
+        })
+        .map(|(first, last, below, above)| Reach {
             list,
-            first: newest.id,
-            last: oldest.id,
-            below: hi.saturating_sub(top + usize::from(height)),
-            above: top - lo,
+            first,
+            last,
+            below,
+            above,
+            filtered,
         });
     // A filter shows held entries only, so it counts none that are not held.
-    let counted = if filter.is_empty() { reach } else { None };
+    let counted = if filtered { None } else { reach };
     Entries {
         lines,
         rows,
@@ -1659,7 +1720,11 @@ fn said(
         top: u16::try_from(top).unwrap_or(u16::MAX),
         anchor,
         reach,
-        bar: bar(shape, counted, (top, total, placed.len())),
+        bar: bar(
+            shape,
+            counted,
+            (top, total + usize::from(tail), placed.len()),
+        ),
     }
 }
 
@@ -3307,6 +3372,79 @@ mod tests {
         );
     }
 
+    /// Draws a frame and answers the page the view asks for from `all`, as the
+    /// daemon does. Whether it asked for one.
+    fn load_older(rig: &mut Rig, all: &[Said]) -> bool {
+        rig.frame();
+        let Some(reach) = rig.reach else {
+            return false;
+        };
+        let Some(ask) = rig.history.settle(reach, 200) else {
+            return false;
+        };
+        let end = all.partition_point(|said| said.id < ask.at);
+        let from = end.saturating_sub(ask.count);
+        rig.history
+            .land(List::Activity, all[from..end].to_vec(), from > 0);
+        true
+    }
+
+    #[test]
+    fn a_filter_without_a_match_pages_to_the_bound_and_then_says_so() {
+        let all: Vec<Said> = (0..5000)
+            .map(|place| call(place, &format!("file-{place}.rs")))
+            .collect();
+        let mut rig = Rig::with(calls(4700..5000, 5000));
+        rig.app.filters[Focus::Session.index()] = "nothing".to_owned();
+        let mut pages = 0;
+        while load_older(&mut rig, &all) {
+            pages += 1;
+            assert!(rig.history.facts.activity.len() <= 3000);
+            assert!(pages < 100, "pages keep coming");
+        }
+        // 2,700 entries more than the newest 300, a page of 100 at a time.
+        assert_eq!(pages, 27);
+        let rows = rig.draw();
+        assert!(
+            rows.iter().any(|row| row.contains("Nothing matches")),
+            "{rows:?}"
+        );
+        assert!(
+            rows.iter()
+                .any(|row| row.contains("ctrl+f searches the whole session")),
+            "{rows:?}"
+        );
+    }
+
+    #[test]
+    fn a_filter_whose_matches_are_the_newest_stops_at_the_bound() {
+        let all: Vec<Said> = (0..5000)
+            .map(|place| call(place, &format!("file-{place}.rs")))
+            .collect();
+        let mut rig = Rig::with(calls(4700..5000, 5000));
+        // The calls 4900 to 4999 match, and nothing older that is held.
+        rig.app.filters[Focus::Session.index()] = "file-49".to_owned();
+        let mut pages = 0;
+        while load_older(&mut rig, &all) {
+            pages += 1;
+            assert!(rig.history.facts.activity.len() <= 3000);
+            assert!(pages < 100, "pages keep coming");
+        }
+        assert_eq!(pages, 27);
+        assert_eq!(rig.history.facts.activity.len(), 3000);
+        rig.scroll(100_000);
+        let rows = rig.draw();
+        assert!(
+            rows.iter()
+                .any(|row| row.contains("ctrl+f searches the whole session")),
+            "{rows:?}"
+        );
+        assert!(
+            rows.iter().any(|row| row.contains("file-4900.rs")),
+            "{rows:?}"
+        );
+    }
+
     #[test]
     fn the_scrollbar_counts_the_entries_not_held_as_tall_as_those_held() {
         let mut rig = Rig::with(calls(1000..1300, 2400));
@@ -3318,6 +3456,7 @@ mod tests {
                 list: List::Activity,
                 items: &rig.history.facts.activity,
                 shape: rig.history.shape(List::Activity),
+                unsearched: false,
             };
             said(&rig.app, layouts, None, source, 100, 20).bar
         };

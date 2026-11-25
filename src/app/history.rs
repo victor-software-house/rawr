@@ -71,6 +71,8 @@ pub(crate) struct Reach {
     /// edges of the run of held entries it is in.
     pub(crate) below: usize,
     pub(crate) above: usize,
+    /// Whether a filter hides entries, so only the ones shown count.
+    pub(crate) filtered: bool,
 }
 
 /// A page the window asks the daemon for.
@@ -186,7 +188,10 @@ impl History {
             Some(newest) => mine.get(mine.partition_point(|said| said.id <= newest)),
             None => mine.first(),
         }?;
-        let ask = if reach.below <= lead && (below.is_some() || held.older) {
+        // A filter at the bound loads no more: a page that landed would only
+        // push another out, and the entries older than the bound go unsearched.
+        let room = !reach.filtered || mine.len() < HELD;
+        let ask = if reach.below <= lead && room && (below.is_some() || held.older) {
             Ask {
                 way: Way::Older,
                 list: reach.list,
@@ -237,6 +242,12 @@ impl History {
         for held in &mut self.lists {
             held.flight = None;
         }
+    }
+
+    /// Whether `list` has older entries than the held ones, which a filter does
+    /// not search because the window holds as many as it may.
+    pub(crate) fn unsearched(&self, list: List) -> bool {
+        self.lists[list.index()].older && self.facts.entries(list).len() >= HELD
     }
 
     /// What the view needs to know of the entries of `list` not held.
@@ -311,7 +322,7 @@ impl Held {
             self.gaps.insert(newest_held, 0);
         }
         let mut merged: Vec<Said> = all.into_values().collect();
-        self.trim(&mut merged, Way::Newer, stale);
+        self.trim(&mut merged, Way::Newer, None, stale);
         merged
     }
 
@@ -371,15 +382,22 @@ impl Held {
         }
         mine.extend(added);
         mine.sort_by_key(|said| said.id);
-        self.trim(mine, ask.way, &mut stale);
+        self.trim(mine, ask.way, first.zip(last), &mut stale);
         stale
     }
 
     /// Drops entries from `mine` while it holds more than [`HELD`], the ones
     /// farthest from the view first, and on the side the view leaves, which is
     /// the one opposite the page that `landed`. The view and the lead past it
-    /// stay, and so do the newest [`KEEP`].
-    fn trim(&mut self, mine: &mut Vec<Said>, landed: Way, stale: &mut Vec<EntryId>) {
+    /// stay, and so do the newest [`KEEP`] and the `page` that just landed,
+    /// from its first entry to its last.
+    fn trim(
+        &mut self,
+        mine: &mut Vec<Said>,
+        landed: Way,
+        page: Option<(EntryId, EntryId)>,
+        stale: &mut Vec<EntryId>,
+    ) {
         let len = mine.len();
         let excess = len.saturating_sub(HELD);
         if excess == 0 {
@@ -404,8 +422,13 @@ impl Held {
             Way::Older => newer_side.rev().chain(older_side).collect(),
             Way::Newer => older_side.chain(newer_side.rev()).collect(),
         };
+        let page = page.map(|(first, last)| index(first)..=index(last));
         let mut gone = vec![false; len];
-        for at in order.into_iter().take(excess) {
+        for at in order
+            .into_iter()
+            .filter(|at| !page.as_ref().is_some_and(|page| page.contains(at)))
+            .take(excess)
+        {
             gone[at] = true;
         }
         // The entries left, and a gap after the newest of those below each run
@@ -502,6 +525,7 @@ mod tests {
             last: mine[from].id,
             below,
             above,
+            filtered: false,
         }
     }
 
@@ -618,6 +642,39 @@ mod tests {
             .expect("history of A");
         let ask = a.settle(view(a, (0, 39), (0, 1000)), LEAD_MIN);
         assert_eq!(ask.map(|ask| ask.way), Some(Way::Older));
+    }
+
+    #[test]
+    fn a_filter_at_the_bound_neither_asks_for_a_page_again_nor_holds_more() {
+        let all = world(5000);
+        let mut history = History::default();
+        history.merge(facts_of(&all, 4700..5000));
+        let mut asked = Vec::new();
+        // Every match is among the newest entries, as the view shows.
+        loop {
+            let newest = held(&history) - 1;
+            let seen = Reach {
+                filtered: true,
+                ..view(&history, (newest - 9, newest), (0, 0))
+            };
+            let Some(ask) = history.settle(seen, LEAD_MIN) else {
+                break;
+            };
+            assert!(!asked.contains(&ask.at), "asked twice for {:?}", ask.at);
+            asked.push(ask.at);
+            let (entries, more) = answer(&all, ask);
+            let page = (entries[0].id, entries[entries.len() - 1].id);
+            history.land(List::Activity, entries, more);
+            assert!(held(&history) <= HELD);
+            // The page that landed stays.
+            let mine = &history.facts.activity;
+            assert!(mine.iter().any(|said| said.id == page.0));
+            assert!(mine.iter().any(|said| said.id == page.1));
+            assert!(asked.len() < 100);
+        }
+        assert_eq!(asked.len(), 27);
+        assert_eq!(held(&history), HELD);
+        assert!(history.unsearched(List::Activity));
     }
 
     #[test]

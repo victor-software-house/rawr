@@ -51,6 +51,11 @@
 5. **The `/` filter covers the entries held.**
    - A filter shows the matching entries among those held.
      Pages keep loading as the view nears the oldest match held, so older matches appear as the reader scrolls.
+     With no match shown, the view stands at the oldest entry held, so pages keep loading until a match comes.
+   - Pages stop once the list holds 3,000 entries.
+     A page that landed would only push another out, and the window would ask for it again at every frame.
+     The tab then ends with one dim line that says older entries are not searched and that `ctrl+f` searches the whole session.
+   - The trim never drops the page that just landed.
    - Searching the whole transcript stays with `ctrl+f`, whose results already come from the daemon.
 
 [smooth-scroll]: ../smooth-scroll/proposal.md
