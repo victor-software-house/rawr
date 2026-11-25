@@ -366,6 +366,12 @@ const AWAY: Duration = Duration::from_millis(600);
 /// long move and a short one go at the same speed.
 const SPEED: f32 = 320.0;
 
+/// How long the session header takes to fold, unfold or slide out: about
+/// as long as the panes drawer takes to open at its usual width. A row is
+/// twice a column's height, so [`SPEED`] would make the fold a jump, and a
+/// span taken from the drawer's width would change with the window.
+const FOLD: Duration = Duration::from_millis(150);
+
 /// How long a move of `columns` takes: at [`SPEED`], kept between a
 /// glance and a quarter second.
 fn span(columns: u16) -> Duration {
@@ -896,20 +902,10 @@ impl App {
         });
     }
 
-    /// How long the header takes to fold or unfold: as long as the panes
-    /// drawer takes, so the two move alike. A row is twice a column's
-    /// height, so the drawer's speed in columns would make it a jump.
-    fn header_span(&self) -> Duration {
-        self.drawer_span(Focus::Panes)
-    }
-
     /// How far the session header is folded to one row, from 0 to 1, eased.
     pub(crate) fn folded(&self) -> f32 {
         let to = if self.fold.folded { 1.0 } else { 0.0 };
-        let (t, eased) = eased(
-            self.now.saturating_duration_since(self.fold.at),
-            self.header_span(),
-        );
+        let (t, eased) = eased(self.now.saturating_duration_since(self.fold.at), FOLD);
         if t >= 1.0 {
             to
         } else {
@@ -933,20 +929,11 @@ impl App {
         }
     }
 
-    /// How long the folded header takes to slide out or back: as long as
-    /// the panes drawer takes.
-    fn peek_span(&self) -> Duration {
-        self.drawer_span(Focus::Panes)
-    }
-
     /// How far the folded header is drawn out over the list, from 0 to 1,
     /// eased; none once it has slid back.
     pub(crate) fn peeked(&self) -> Option<f32> {
         let peek = self.peek?;
-        let (t, eased) = eased(
-            self.now.saturating_duration_since(peek.at),
-            self.peek_span(),
-        );
+        let (t, eased) = eased(self.now.saturating_duration_since(peek.at), FOLD);
         if peek.open {
             Some(eased)
         } else if t < 1.0 {
@@ -972,10 +959,7 @@ impl App {
         } else {
             1.0 - out.cbrt()
         };
-        let at = self
-            .now
-            .checked_sub(self.peek_span().mul_f32(t))
-            .unwrap_or(self.now);
+        let at = self.now.checked_sub(FOLD.mul_f32(t)).unwrap_or(self.now);
         self.peek = Some(Peek { at, open });
     }
 
@@ -1280,10 +1264,10 @@ impl App {
             || self
                 .drawer
                 .is_some_and(|drawer| drawer.at.elapsed() < self.drawer_span(drawer.column))
-            || self.now.saturating_duration_since(self.fold.at) < self.header_span()
+            || self.now.saturating_duration_since(self.fold.at) < FOLD
             || self
                 .peek
-                .is_some_and(|peek| self.now.saturating_duration_since(peek.at) < self.peek_span())
+                .is_some_and(|peek| self.now.saturating_duration_since(peek.at) < FOLD)
     }
 
     /// The session `r` resumes: the one shown, or the selected pane's newest
@@ -2872,20 +2856,18 @@ mod tests {
     }
 
     #[test]
-    fn the_header_folds_over_as_long_as_the_drawer_opens() {
-        let mut app = App::new(None);
-        app.cols = 120;
-        app.note_header(Some(12));
-        let span = app.drawer_span(Focus::Panes);
-        assert_eq!(app.header_span(), span);
-        assert_eq!(app.peek_span(), span);
-        assert!(span > Duration::from_millis(100), "{span:?}");
-        app.fold_to(true);
-        app.now += span / 2;
-        let mid = app.folded();
-        assert!(mid > 0.0 && mid < 1.0, "{mid}");
-        app.now += span;
-        assert!((app.folded() - 1.0).abs() < f32::EPSILON);
+    fn the_header_folds_over_a_fixed_span_whatever_its_height_or_the_width() {
+        for (cols, rows) in [(120, 12), (300, 4)] {
+            let mut app = App::new(None);
+            app.cols = cols;
+            app.note_header(Some(rows));
+            app.fold_to(true);
+            app.now += FOLD / 2;
+            let mid = app.folded();
+            assert!(mid > 0.0 && mid < 1.0, "{mid}");
+            app.now += FOLD;
+            assert!((app.folded() - 1.0).abs() < f32::EPSILON);
+        }
     }
 
     #[test]
