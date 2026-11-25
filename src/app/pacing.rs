@@ -195,6 +195,11 @@ impl WheelQueue {
         !self.reports.is_empty()
     }
 
+    /// Drops the reports waiting for a frame.
+    pub(crate) fn clear(&mut self) {
+        self.reports.clear();
+    }
+
     /// The reports waiting for a frame.
     pub(crate) fn queued(&self) -> usize {
         self.reports.len()
@@ -437,15 +442,36 @@ pub(crate) struct Wake<'a> {
     pub(crate) now: Instant,
     /// The wheel reports read since the last wake, oldest first.
     pub(crate) reports: &'a [Report],
-    /// Something other than the wheel asks for a frame at once: a key, a
-    /// click, a message from the daemon.
+    /// A key or a click asks for a frame at once.
     pub(crate) urgent: bool,
-    /// Something other than the wheel moves, such as focus, so the clock runs
-    /// and each tick draws.
+    /// Something changed that the next frame shows, such as a message from
+    /// the daemon, the pointer's hover or a spinner's turn. It draws on the
+    /// clock's next tick: at once when the clock rests, since its tick is
+    /// then due.
+    pub(crate) dirty: bool,
+    /// Focus or a drawer is on the move. Each wake draws, and the wake after
+    /// the move ends draws its last frame.
     pub(crate) moving: bool,
-    /// A spinner turned since the last frame. It draws at once while the clock
-    /// rests, and on the tick while it runs.
-    pub(crate) spun: bool,
+}
+
+/// How long a frame that moves focus or a drawer waits for the next.
+const MOVE_FRAME: Duration = Duration::from_millis(16);
+
+/// A frame the wheel moves sleeps until this long before its tick, then spins
+/// to the tick, so it draws on the beat whatever the sleep overshoots by.
+pub(crate) const SPIN_LEAD: Duration = Duration::from_micros(1400);
+
+/// A sleep shorter than this costs more than it saves, so the loop spins
+/// instead.
+pub(crate) const MIN_SLEEP: Duration = Duration::from_micros(200);
+
+/// When the loop next wakes with nothing to read, and how.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Wait {
+    pub(crate) at: Instant,
+    /// Whether to sleep until [`SPIN_LEAD`] before then and spin the rest. Only
+    /// a frame the wheel moves does; every other frame only sleeps.
+    pub(crate) spin: bool,
 }
 
 /// The loop's pacing decisions: when it wakes, whether a wake draws, and how
@@ -456,9 +482,14 @@ pub(crate) struct Pacer {
     beat: WheelBeat,
     queues: [WheelQueue; LISTS],
     /// When the last frame drew.
-    drew: Option<Instant>,
+    drew: Instant,
     /// When the last frame that moved a list drew.
     moved: Option<Instant>,
+    /// Whether something changed since the last frame, which waits for the
+    /// clock's tick.
+    dirty: bool,
+    /// Whether focus or a drawer was on the move at the last wake.
+    was_moving: bool,
 }
 
 impl Pacer {
@@ -467,8 +498,10 @@ impl Pacer {
             clock: Clock::new(FPS, now),
             beat: WheelBeat::default(),
             queues: Default::default(),
-            drew: None,
+            drew: now,
             moved: None,
+            dirty: false,
+            was_moving: false,
         }
     }
 
@@ -477,27 +510,38 @@ impl Pacer {
         self.queues.iter().any(WheelQueue::pending)
     }
 
-    /// When the loop must wake for the clock: while a report waits or
-    /// something else moves (`moving`). At rest, never.
-    pub(crate) fn due(&self, moving: bool) -> Option<Instant> {
-        if self.pending() || moving {
-            Some(self.clock.next())
-        } else {
-            None
-        }
+    /// Drops the wheel reports waiting to scroll `list`, because its scroll was
+    /// set another way.
+    pub(crate) fn clear(&mut self, list: Focus) {
+        self.queues[state::slot(list)].clear();
+    }
+
+    /// When the loop must wake next, and how: at the clock's tick while a
+    /// report waits or a change waits for it, a frame of a move on from the
+    /// last frame while `moving`, and at each of `others`, such as the
+    /// spinner's next turn. At rest, never.
+    pub(crate) fn wait(&self, moving: bool, others: &[Option<Instant>]) -> Option<Wait> {
+        let tick = (self.pending() || self.dirty).then(|| self.clock.next());
+        let frame = moving.then(|| self.drew + MOVE_FRAME);
+        let other = others.iter().flatten().copied().min();
+        let soonest = [tick, frame, other].into_iter().flatten().min()?;
+        Some(Wait {
+            at: soonest,
+            spin: self.pending() && tick == Some(soonest),
+        })
     }
 
     /// The loop woke: queue the wheel reports it read, and decide whether to
     /// draw. A frame comes with the lines each list moves in it.
     ///
-    /// A report that ends a rest, and anything urgent, draws at once; a
-    /// frame drawn outside the clock moves its beat. Reports that come
-    /// while the clock runs wait for its next tick, which draws when a report
-    /// waits or something moves or changed.
+    /// A report that ends a rest, and a key or a click, draw at once; a frame
+    /// drawn outside the clock moves its beat. Reports that come while the
+    /// clock runs wait for its next tick, which draws when a report waits.
+    /// So does a change, such as a message from the daemon.
     pub(crate) fn wake(&mut self, wake: &Wake<'_>) -> Option<Moves> {
         let now = wake.now;
         let period = self.clock.period();
-        let clock_resting = !self.pending() && !wake.moving;
+        let clock_resting = !self.pending();
         let mut restarted = false;
         for report in wake.reports {
             let resting = !self.pending()
@@ -518,30 +562,31 @@ impl Pacer {
         // held wheel, and every report read before it waited, spinning, for
         // the latest read so far.
         if clock_resting {
-            if let Some(drew) = self
-                .drew
-                .filter(|_| self.queues.iter().any(|queue| queue.joins_batch(TOGETHER)))
-            {
-                self.clock.rephase(drew);
+            if self.queues.iter().any(|queue| queue.joins_batch(TOGETHER)) {
+                self.clock.rephase(self.drew);
             } else if self.queues.iter().map(WheelQueue::queued).sum::<usize>() >= 2 {
                 self.clock.wake(now);
             }
         }
+        // The move that ends has one more frame, which shows where it stopped.
+        self.dirty |= wake.dirty || wake.moving || self.was_moving;
+        self.was_moving = wake.moving;
         // A tick due now is taken whether or not it draws.
         let tick = self.clock.peek(now);
-        let on_clock = tick.is_some() && (self.pending() || wake.moving);
-        let at_once = wake.urgent || restarted || (wake.spun && !self.pending() && !wake.moving);
+        let on_clock = tick.is_some() && (self.pending() || self.dirty);
+        let at_once = wake.urgent || restarted;
         if let Some(after) = tick {
             self.clock.take(after);
         }
-        if !(on_clock || at_once) {
+        if !on_clock && !at_once {
             return None;
         }
         let mut moves = Moves::default();
         for (queue, rows) in self.queues.iter_mut().zip(&mut moves) {
             *rows = queue.step(CATCH_UP_FRAMES, TOGETHER, period, now);
         }
-        self.drew = Some(now);
+        self.drew = now;
+        self.dirty = false;
         let scrolled = moves.iter().any(|rows| *rows != 0);
         if scrolled {
             self.moved = Some(now);

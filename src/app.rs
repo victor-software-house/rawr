@@ -23,12 +23,12 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
-use std::{env, io, thread};
+use std::{env, hint, io, thread};
 
 use anyhow::{Context, Result};
-use pacing::{Moves, Pacer, Report as Wheel, Wake};
+use pacing::{MIN_SLEEP, Moves, Pacer, Report as Wheel, SPIN_LEAD, Wait, Wake};
 use ratatui::crossterm::cursor::SetCursorStyle;
-use ratatui::crossterm::event::{self, Event};
+use ratatui::crossterm::event::{self, Event, MouseEventKind};
 use ratatui::crossterm::execute;
 use report::{Report, Reporter, State};
 use state::{Action, App, Focus, Link};
@@ -169,39 +169,33 @@ pub(crate) fn run(view: Option<u64>, mode: &Mode) -> Result<Option<Agent>> {
                 Pointer::Default
             })?;
         }
-        // The clock runs while a report waits or something moves. Otherwise
-        // the loop sleeps until input, until the spinner turns, or until a
-        // pointer past the window's edge has been away long enough to shut the
-        // drawer.
+        // The clock runs while a report waits. Focus on the move wakes the
+        // loop every frame of the move. Otherwise the loop sleeps until
+        // input, until the spinner turns, or until a pointer past the
+        // window's edge has been away long enough to shut the drawer.
         let spinner = app.animating().then(|| {
             started + SPIN * u32::try_from(spin_at(started, Instant::now()) + 1).unwrap_or(u32::MAX)
         });
-        let wait = [pacer.due(app.moving()), spinner, app.wake_at()]
-            .into_iter()
-            .flatten()
-            .min()
-            .map(|at| at.saturating_duration_since(Instant::now()));
-        let first = match wait {
-            Some(wait) => match receive.recv_timeout(wait) {
-                Ok(msg) => Some(msg),
-                Err(mpsc::RecvTimeoutError::Timeout) => None,
-                Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    anyhow::bail!("the app's inputs closed")
-                }
-            },
+        let first = match pacer.wait(app.moving(), &[spinner, app.wake_at()]) {
+            Some(wait) => wait_until(&receive, wait)?,
             None => Some(receive.recv().context("the app's inputs closed")?),
         };
         let woke = Instant::now();
-        // What reads between frames: the wheel waits for the clock, and
-        // anything else draws at once.
+        // What reads between frames: the wheel waits for the clock, a key or
+        // a click draws at once, and anything else that changes what is on
+        // screen draws at once while the clock rests, and on its next tick
+        // while it runs.
         let mut reports = Vec::new();
         let mut urgent = false;
+        let mut dirty = false;
         for msg in first.into_iter().chain(receive.try_iter()) {
             let mut wheel = false;
+            let mut calm = matches!(msg, Msg::Daemon(_));
             let action = match msg {
                 Msg::Input(Event::Key(key), _) => app.on_key(key),
                 Msg::Input(Event::Mouse(mouse), at) => {
                     let action = app.on_mouse(mouse, hits.under(mouse.column, mouse.row));
+                    calm = mouse.kind == MouseEventKind::Moved;
                     if let Action::Wheel(list, rows) = action {
                         wheel = true;
                         reports.push(Wheel { list, rows, at });
@@ -282,7 +276,11 @@ pub(crate) fn run(view: Option<u64>, mode: &Mode) -> Result<Option<Agent>> {
                     }
                 },
             };
-            urgent |= !wheel;
+            if calm {
+                dirty = true;
+            } else {
+                urgent |= !wheel;
+            }
             match action {
                 Action::None | Action::Wheel(..) => {}
                 Action::Quit => return Ok(None),
@@ -345,16 +343,49 @@ pub(crate) fn run(view: Option<u64>, mode: &Mode) -> Result<Option<Agent>> {
         // stayed away a moment.
         if app.wake_at().is_some_and(|at| at <= woke) {
             app.tick();
-            urgent = true;
+            dirty = true;
+        }
+        // A list whose scroll was set another way has no wheel report left to
+        // move it.
+        for list in app.take_cleared() {
+            pacer.clear(list);
         }
         due = pacer.wake(&Wake {
             now: woke,
             reports: &reports,
             urgent,
+            dirty: dirty || (app.animating() && spin_at(started, woke) != drawn_spin),
             moving: app.moving(),
-            spun: app.animating() && spin_at(started, woke) != drawn_spin,
         });
     }
+}
+
+/// Waits for the next message until `wait.at`. A wait that spins sleeps until
+/// shortly before then and polls for the rest, unless the sleep would be too
+/// short to pay; any other sleeps the whole way.
+fn wait_until(receive: &mpsc::Receiver<Msg>, wait: Wait) -> Result<Option<Msg>> {
+    let lead = if wait.spin { SPIN_LEAD } else { Duration::ZERO };
+    let sleep = wait
+        .at
+        .saturating_duration_since(Instant::now())
+        .saturating_sub(lead);
+    if !wait.spin || sleep >= MIN_SLEEP {
+        match receive.recv_timeout(sleep) {
+            Ok(msg) => return Ok(Some(msg)),
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                anyhow::bail!("the app's inputs closed")
+            }
+        }
+    }
+    while wait.spin && Instant::now() < wait.at {
+        match receive.try_recv() {
+            Ok(msg) => return Ok(Some(msg)),
+            Err(mpsc::TryRecvError::Empty) => hint::spin_loop(),
+            Err(mpsc::TryRecvError::Disconnected) => anyhow::bail!("the app's inputs closed"),
+        }
+    }
+    Ok(None)
 }
 
 /// The spinner's frame at `now`: it turns every [`SPIN`], whatever the

@@ -14,14 +14,21 @@
 
 ## Decisions
 
-1. **A fixed frame clock while anything moves.**
-   - While a wheel report waits or a list moves, the loop draws on a clock of 125 frames a second, a frame every 8 ms.
+1. **A fixed frame clock while a list scrolls.**
+   - While a wheel report waits, the loop draws on a clock of 125 frames a second, a frame every 8 ms.
      125 Hz is the polling rate of a USB mouse, so a held wheel never outruns the clock.
    - The clock keeps an even beat: a frame a key draws outside it moves the next tick one period on, and a wake after a rest takes the next tick no sooner than a period after the last.
-   - A spinner turns on its own 100 ms cadence, as now.
-     With nothing else moving, the loop wakes for its next frame and draws it at once.
-     While the clock runs, that frame is drawn on the clock's next tick.
+   - A key or a click draws at once, and moves the beat.
+     Anything else that changes the screen, such as a message from the daemon, the pointer's hover or a spinner's turn, draws on the clock's next tick.
+     At rest that tick is due, so it draws at once.
+   - A spinner turns on its own 100 ms cadence, as now, and a move of focus or of a drawer redraws every 16 ms, as now, with one more frame once it stops.
+     Each frame of a drawer's move changes the width and lays every entry out again, and 3,000 entries held make that frame cost milliseconds, so those frames stay off the 125 Hz clock.
+   - A frame the wheel moves sleeps until 1.4 ms before its tick, then spins to the tick, so it draws on the beat whatever the sleep overshoots by.
+     A sleep under 0.2 ms is spun instead.
+     Every other frame only sleeps.
    - At rest the loop sleeps until input, as now.
+   - Task 1.2's loop test plays timed inputs through the `Pacer` struct, so frame times and moves are tested over synthetic instants.
+     Frame spacing on a real terminal is not measured.
    - Alternative: draw as soon as input arrives, as now.
      It lost: frames then land wherever the reports land, so their spacing follows the trackpad's jitter.
 2. **Wheel reports wait in a queue and are spread over frames.**
