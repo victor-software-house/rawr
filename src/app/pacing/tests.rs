@@ -2,8 +2,7 @@ use std::mem;
 use std::time::{Duration, Instant};
 
 use super::{
-    BEAT_REPORTS, BEAT_STEP, Clock, FPS, Focus, Motion, Pacer, Report, Wake, WheelBeat, WheelQueue,
-    state,
+    BEAT_REPORTS, BEAT_STEP, Clock, FPS, Focus, Pacer, Report, Wake, WheelBeat, WheelQueue, state,
 };
 
 /// Lines one wheel report moves in these tests.
@@ -148,7 +147,7 @@ fn play(pacer: &mut Pacer, reads: &[(Instant, i32)]) -> Vec<(Instant, i64)> {
     let mut frames = Vec::new();
     for _ in 0..100_000 {
         let next = reads.peek().map(|read| read.0);
-        let (now, by_read) = match (next, pacer.due(Motion::Still)) {
+        let (now, by_read) = match (next, pacer.due(false)) {
             (Some(at), Some(due)) if at >= due => (due, false),
             (Some(at), _) => (at, true),
             (None, Some(due)) => (due, false),
@@ -166,7 +165,8 @@ fn play(pacer: &mut Pacer, reads: &[(Instant, i32)]) -> Vec<(Instant, i64)> {
             now,
             reports: &batch,
             urgent: false,
-            motion: Motion::Still,
+            moving: false,
+            spun: false,
         };
         if let Some(moves) = pacer.wake(&wake) {
             frames.push((now, moves[state::slot(Focus::Session)]));
@@ -217,7 +217,7 @@ fn a_gesture_draws_evenly_spaced_frames() {
             "{gap:?}"
         );
     }
-    assert_eq!(pacer.due(Motion::Still), None);
+    assert_eq!(pacer.due(false), None);
 }
 
 /// A batch of 6 reports every 16 ms moves 6 lines on each of the 2 frames

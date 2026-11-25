@@ -440,22 +440,12 @@ pub(crate) struct Wake<'a> {
     /// Something other than the wheel asks for a frame at once: a key, a
     /// click, a message from the daemon.
     pub(crate) urgent: bool,
-    /// What else keeps the clock running.
-    pub(crate) motion: Motion,
-}
-
-/// What on screen other than a wheel keeps the clock running.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Motion {
-    /// Nothing: the clock rests when no report waits.
-    Still,
-    /// Something turns, such as a spinner, but nothing changed since the last
-    /// frame.
-    Turning,
-    /// Something turned since the last frame, so the next tick draws.
-    Changed,
-    /// Something moves, such as focus, so each tick draws.
-    Moving,
+    /// Something other than the wheel moves, such as focus, so the clock runs
+    /// and each tick draws.
+    pub(crate) moving: bool,
+    /// A spinner turned since the last frame. It draws at once while the clock
+    /// rests, and on the tick while it runs.
+    pub(crate) spun: bool,
 }
 
 /// The loop's pacing decisions: when it wakes, whether a wake draws, and how
@@ -488,9 +478,9 @@ impl Pacer {
     }
 
     /// When the loop must wake for the clock: while a report waits or
-    /// something else keeps the clock running (`motion`). At rest, never.
-    pub(crate) fn due(&self, motion: Motion) -> Option<Instant> {
-        if self.pending() || motion != Motion::Still {
+    /// something else moves (`moving`). At rest, never.
+    pub(crate) fn due(&self, moving: bool) -> Option<Instant> {
+        if self.pending() || moving {
             Some(self.clock.next())
         } else {
             None
@@ -507,7 +497,7 @@ impl Pacer {
     pub(crate) fn wake(&mut self, wake: &Wake<'_>) -> Option<Moves> {
         let now = wake.now;
         let period = self.clock.period();
-        let clock_resting = !self.pending() && wake.motion == Motion::Still;
+        let clock_resting = !self.pending() && !wake.moving;
         let mut restarted = false;
         for report in wake.reports {
             let resting = !self.pending()
@@ -539,9 +529,8 @@ impl Pacer {
         }
         // A tick due now is taken whether or not it draws.
         let tick = self.clock.peek(now);
-        let on_clock = tick.is_some()
-            && (self.pending() || matches!(wake.motion, Motion::Changed | Motion::Moving));
-        let at_once = wake.urgent || restarted;
+        let on_clock = tick.is_some() && (self.pending() || wake.moving);
+        let at_once = wake.urgent || restarted || (wake.spun && !self.pending() && !wake.moving);
         if let Some(after) = tick {
             self.clock.take(after);
         }

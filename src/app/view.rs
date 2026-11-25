@@ -5,6 +5,7 @@
 //! cells, and records where each thing that takes a click landed, so a
 //! click never disagrees with the screen.
 
+use std::collections::HashSet;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::num::NonZeroU16;
 use std::ops::Range;
@@ -20,10 +21,12 @@ use ratatui::widgets::{
     Block, BorderType, Clear, Padding, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
 };
 
-use crate::app::facts::{Facts, Kind, Outcome, Pr, Said};
+use crate::app::facts::{EntryId, Facts, Kind, Outcome, Pr, Said};
 use crate::app::feed::Pane;
+use crate::app::layouts::{Laid, Layouts};
 use crate::app::state::{
-    self, App, Arrangement, Button, FULL, Focus, Grip, Link, RAIL, Scroll, Tab, Target, Under,
+    self, Anchor, App, Arrangement, Button, FULL, Focus, Grip, Link, RAIL, Scroll, Tab, Target,
+    Under,
 };
 use crate::app::{markup, theme};
 use crate::catalog;
@@ -57,6 +60,8 @@ pub(crate) struct Hits {
     pub(crate) cursor: Option<Position>,
     /// Where this frame scrolled each list to, for the next to start from.
     pub(crate) tops: Vec<(Focus, u16)>,
+    /// The entry the session list's first line is in, when it lists entries.
+    pub(crate) anchor: Option<Anchor>,
 }
 
 impl Hits {
@@ -102,7 +107,15 @@ impl Hits {
 /// The session the session column shows, with its facts once read.
 pub(crate) type Shown<'a> = Option<(&'a Agent, Option<&'a Facts>)>;
 
-pub(crate) fn draw(frame: &mut Frame<'_>, app: &App, shown: Shown<'_>) -> Hits {
+pub(crate) fn draw(frame: &mut Frame<'_>, app: &mut App, shown: Shown<'_>) -> Hits {
+    // The layouts are the app's, and the drawing reads the rest of it.
+    let mut layouts = mem::take(&mut app.layouts);
+    let hits = draw_with(frame, app, &mut layouts, shown);
+    app.layouts = layouts;
+    hits
+}
+
+fn draw_with(frame: &mut Frame<'_>, app: &App, layouts: &mut Layouts, shown: Shown<'_>) -> Hits {
     let mut hits = Hits {
         width: frame.area().width,
         height: frame.area().height,
@@ -115,11 +128,11 @@ pub(crate) fn draw(frame: &mut Frame<'_>, app: &App, shown: Shown<'_>) -> Hits {
     // A stand-in draws its pane's column across the whole body, with no
     // panes column to fold, in either arrangement.
     if app.is_stand_in() {
-        view(frame, app, Focus::Session, body, shown, &mut hits);
+        view(frame, app, layouts, Focus::Session, body, shown, &mut hits);
     } else {
         match app.arrangement {
-            Arrangement::Rails => rails(frame, app, body, shown, &mut hits),
-            Arrangement::Single => single(frame, app, body, shown, &mut hits),
+            Arrangement::Rails => rails(frame, app, layouts, body, shown, &mut hits),
+            Arrangement::Single => single(frame, app, layouts, body, shown, &mut hits),
         }
     }
     if app.focus == Focus::Search {
@@ -182,7 +195,14 @@ fn rule(frame: &mut Frame<'_>, area: Rect, style: Style) {
 // The rails arrangement.
 
 /// Each column's width when `focus` has settled, of `total` columns.
-fn rails(frame: &mut Frame<'_>, app: &App, area: Rect, shown: Shown<'_>, hits: &mut Hits) {
+fn rails(
+    frame: &mut Frame<'_>,
+    app: &App,
+    layouts: &mut Layouts,
+    area: Rect,
+    shown: Shown<'_>,
+    hits: &mut Hits,
+) {
     let [mut a, mut b] = app.layout();
     // The rail the panes fold to, before a drawer widens it.
     let folded = Rect { width: a, ..area };
@@ -229,7 +249,7 @@ fn rails(frame: &mut Frame<'_>, app: &App, area: Rect, shown: Shown<'_>, hits: &
             rail(frame, app, column, rect, shown, hits);
         } else {
             header(frame, app, column, rect, hits);
-            view(frame, app, column, below(rect, 2), shown, hits);
+            view(frame, app, layouts, column, below(rect, 2), shown, hits);
         }
     }
     // A drawer that has shut keeps its area a moment, so a pointer that
@@ -493,6 +513,7 @@ fn rail_view(
 fn view(
     frame: &mut Frame<'_>,
     app: &App,
+    layouts: &mut Layouts,
     column: Focus,
     area: Rect,
     shown: Shown<'_>,
@@ -500,13 +521,20 @@ fn view(
 ) {
     match column {
         Focus::Panes | Focus::Search => panes_list(frame, app, area, hits),
-        Focus::Sessions | Focus::Session => pane_view(frame, app, area, shown, hits),
+        Focus::Sessions | Focus::Session => pane_view(frame, app, layouts, area, shown, hits),
     }
 }
 
 // The single arrangement.
 
-fn single(frame: &mut Frame<'_>, app: &App, area: Rect, shown: Shown<'_>, hits: &mut Hits) {
+fn single(
+    frame: &mut Frame<'_>,
+    app: &App,
+    layouts: &mut Layouts,
+    area: Rect,
+    shown: Shown<'_>,
+    hits: &mut Hits,
+) {
     if area.height < 4 {
         return;
     }
@@ -514,7 +542,7 @@ fn single(frame: &mut Frame<'_>, app: &App, area: Rect, shown: Shown<'_>, hits: 
     rule(frame, row_at(area, area.y + 1), theme::line());
     let body = below(area, 2);
     let at = app.at();
-    view(frame, app, at, body, shown, hits);
+    view(frame, app, layouts, at, body, shown, hits);
     // The view slides in from the side it came from: deeper from the right,
     // back from the left.
     if let Some(was) = app.moved.map(|moved| moved.was)
@@ -882,7 +910,14 @@ fn session_glyph(app: &App, agent: &Agent, held: bool) -> (&'static str, Style) 
     clippy::too_many_lines,
     reason = "draws the pane's header, sessions and tabs in one pass over the area"
 )]
-fn pane_view(frame: &mut Frame<'_>, app: &App, area: Rect, shown: Shown<'_>, hits: &mut Hits) {
+fn pane_view(
+    frame: &mut Frame<'_>,
+    app: &App,
+    layouts: &mut Layouts,
+    area: Rect,
+    shown: Shown<'_>,
+    hits: &mut Hits,
+) {
     let inner = pad(area, 1, 0);
     let width = usize::from(inner.width);
     let bottom = inner.bottom();
@@ -1044,12 +1079,22 @@ fn pane_view(frame: &mut Frame<'_>, app: &App, area: Rect, shown: Shown<'_>, hit
         width: content.width.saturating_sub(2),
         ..content
     };
-    let (lines, prs_at, rows) = tab_lines(app, facts, &agent.cwd, usize::from(text.width));
-    let total = u16::try_from(lines.len()).unwrap_or(u16::MAX);
+    layouts.show(&agent.transcript, usize::from(text.width));
+    let body = tab_lines(
+        app,
+        layouts,
+        agent,
+        facts,
+        usize::from(text.width),
+        content.height,
+    );
+    let total = u16::try_from(body.total).unwrap_or(u16::MAX);
     hits.lists.push((content, Focus::Session));
-    let skip = top_of(app.scroll_of(Focus::Session), total, content.height, None);
+    let skip = body.top;
     hits.tops.push((Focus::Session, skip));
-    for (at, span, target) in rows {
+    hits.anchor = body.anchor;
+    let prs_at = body.prs_at;
+    for (at, span, target) in body.rows {
         if let Some(row) = u16::try_from(at)
             .ok()
             .and_then(|at| at.checked_sub(skip))
@@ -1067,9 +1112,9 @@ fn pane_view(frame: &mut Frame<'_>, app: &App, area: Rect, shown: Shown<'_>, hit
     }
     scrollbar(frame, content, skip, total);
     frame.render_widget(
-        Paragraph::new(lines)
+        Paragraph::new(body.lines)
             .style(Style::new().fg(theme::TEXT))
-            .scroll((skip, 0)),
+            .scroll((body.offset, 0)),
         text,
     );
     if let Some(at) = prs_at.and_then(|at| u16::try_from(at).ok())
@@ -1279,15 +1324,39 @@ fn tabs(frame: &mut Frame<'_>, app: &App, area: Rect, facts: Option<&Facts>, hit
     }
 }
 
-/// The current tab's lines, which of them holds the pull requests, and
-/// which lines take a click.
+/// What the session column's current tab shows.
+struct Body {
+    /// The lines to draw, from line `offset` of them on.
+    lines: Vec<Line<'static>>,
+    offset: u16,
+    /// How many lines the whole tab has.
+    total: usize,
+    /// The first line of the tab on screen.
+    top: u16,
+    /// The entry that line belongs to, when the tab lists entries.
+    anchor: Option<Anchor>,
+    /// Which line holds the pull requests.
+    prs_at: Option<usize>,
+    /// Which lines take a click.
+    rows: Rows,
+}
+
+/// The current tab's lines, scrolled to `height` lines of room.
+#[expect(
+    clippy::too_many_lines,
+    reason = "draws each of the session column's tabs in one pass"
+)]
 fn tab_lines(
     app: &App,
+    layouts: &mut Layouts,
+    agent: &Agent,
     facts: &Facts,
-    cwd: &str,
     width: usize,
-) -> (Vec<Line<'static>>, Option<usize>, Rows) {
+    height: u16,
+) -> Body {
+    let cwd = agent.cwd.as_str();
     let filter = app.filter(Focus::Session);
+    let open = app.open.get(&agent.transcript);
     let mut lines = Vec::new();
     let mut rows = Rows::new();
     let mut prs_at = None;
@@ -1368,8 +1437,25 @@ fn tab_lines(
                 }
             }
         }
-        Tab::Prompts => said(&mut lines, &mut rows, app, &facts.log, width),
-        Tab::Activity => said(&mut lines, &mut rows, app, &facts.activity, width),
+        Tab::Prompts | Tab::Activity => {
+            let items = if app.tab == Tab::Prompts {
+                &facts.log
+            } else {
+                &facts.activity
+            };
+            let entries = said(app, layouts, open, items, width, height);
+            if entries.total > 0 {
+                return Body {
+                    lines: entries.lines,
+                    offset: 0,
+                    total: entries.total,
+                    top: entries.top,
+                    anchor: entries.anchor,
+                    prs_at: None,
+                    rows: entries.rows,
+                };
+            }
+        }
         Tab::Files => files(&mut lines, &mut rows, app, facts, cwd, width),
     }
     if lines.is_empty() {
@@ -1380,167 +1466,300 @@ fn tab_lines(
         };
         lines.push(Line::styled(text, theme::dim()));
     }
-    (lines, prs_at, rows)
+    let total = lines.len();
+    let top = top_of(
+        app.scroll_of(Focus::Session),
+        u16::try_from(total).unwrap_or(u16::MAX),
+        height,
+        None,
+    );
+    Body {
+        lines,
+        offset: top,
+        total,
+        top,
+        anchor: None,
+        prs_at,
+        rows,
+    }
 }
 
-/// The width of the age column before every entry.
+/// The width of the age column and the fold marker before every entry.
 const AGE: usize = 10;
+
+/// An entry of a list, placed by the lines before it.
+struct Placed {
+    /// Its place among the items.
+    index: usize,
+    id: EntryId,
+    open: bool,
+    /// The line of the list its first row is.
+    start: usize,
+    height: usize,
+}
+
+/// What a tab of entries shows: the rows in view, with where the view stands.
+struct Entries {
+    /// The rows in view, from the first line on screen.
+    lines: Vec<Line<'static>>,
+    /// Which line of the list each row that takes a click is.
+    rows: Rows,
+    /// How many lines the whole list has.
+    total: usize,
+    /// The first line on screen.
+    top: u16,
+    /// The entry that line belongs to, unless it is the first line.
+    anchor: Option<Anchor>,
+}
 
 /// The entries of the prompts or the activity, newest first, as Claude
 /// Code draws them. A folded entry shows its first lines with how many it
 /// leaves out; a click opens it.
-#[expect(
-    clippy::too_many_lines,
-    reason = "draws every entry of a prompts or activity tab in one pass"
-)]
-fn said(lines: &mut Vec<Line<'static>>, rows: &mut Rows, app: &App, items: &[Said], width: usize) {
+///
+/// Each entry is laid out once for the width and its fold state. The rows of
+/// the entries in the view of `height` lines are built from that, and the view
+/// stands where the scroll's anchor entry now lies.
+fn said(
+    app: &App,
+    layouts: &mut Layouts,
+    open: Option<&HashSet<EntryId>>,
+    items: &[Said],
+    width: usize,
+    height: u16,
+) -> Entries {
     let filter = app.filter(Focus::Session);
-    for item in items
-        .iter()
-        .rev()
-        .filter(|item| state::passes(filter, &item.searched()))
-    {
-        let key = item.id;
-        let open = app.open.contains(&key);
-        let age = item.at.as_deref().map_or_default(when);
-        let age = format!("{:>7} ", age.trim_end_matches(" ago"));
-        let hovered = app.hover == Some(Target::Entry(key));
-        let (mut lead, close, style) = marks(&item.kind);
-        // A call whose tool reported an error shows its name in red.
-        if item.result.as_ref().is_some_and(|outcome| outcome.error)
-            && let Some(name) = lead.first_mut()
-        {
-            name.style = name.style.fg(theme::ERROR);
+    let mut placed: Vec<Placed> = Vec::with_capacity(items.len());
+    let mut total = 0;
+    for (index, item) in items.iter().enumerate().rev() {
+        if !filter.is_empty() && !state::passes(filter, &item.searched()) {
+            continue;
         }
-        let lead_width = lead.iter().map(Span::width).sum::<usize>();
-        // Open, a message's text starts under its mark rather than after
-        // its sender, so it keeps the width of the tab.
-        let hang = open && lead_width > 6 && !matches!(item.kind, Kind::Tool { .. });
-        let indent = if hang { AGE + 2 } else { AGE + lead_width };
-        let room = width.saturating_sub(indent + close.chars().count()).max(8);
-        let mut body = if hang {
-            let mut body = vec![Line::default()];
-            // A note whose text opens its longer text shows the longer one.
-            let first = item.text.lines().next().unwrap_or_default();
-            if !item
-                .more
-                .as_deref()
-                .is_some_and(|more| more.trim_start().starts_with(first))
-            {
-                body.extend(body_lines(item, style, room));
+        let open = open.is_some_and(|open| open.contains(&item.id));
+        let height = layouts
+            .get(item.id, open, || lay_out(item, open, width))
+            .lines
+            .len();
+        placed.push(Placed {
+            index,
+            id: item.id,
+            open,
+            start: total,
+            height,
+        });
+        total += height;
+    }
+    let scroll = app.scroll_of(Focus::Session);
+    let wanted = scroll
+        .anchor
+        .and_then(|anchor| {
+            let at = placed.iter().find(|entry| entry.id == anchor.id)?.start;
+            Some(
+                i64::try_from(at)
+                    .unwrap_or(i64::MAX)
+                    .saturating_add(i64::from(anchor.line)),
+            )
+        })
+        .unwrap_or_else(|| i64::from(scroll.top));
+    let top = usize::try_from(wanted.max(0))
+        .unwrap_or(0)
+        .min(total.saturating_sub(usize::from(height)));
+    let anchor = if top == 0 {
+        None
+    } else {
+        placed
+            .iter()
+            .rfind(|entry| entry.height > 0 && entry.start <= top)
+            .map(|entry| Anchor {
+                id: entry.id,
+                line: i32::try_from(top - entry.start).unwrap_or(i32::MAX),
+            })
+    };
+    let bottom = top + usize::from(height);
+    let mut lines = Vec::new();
+    let mut rows = Rows::new();
+    for entry in placed
+        .iter()
+        .filter(|entry| entry.start < bottom && entry.start + entry.height > top)
+    {
+        let item = &items[entry.index];
+        let laid = layouts.get(entry.id, entry.open, || lay_out(item, entry.open, width));
+        let hovered = app.hover == Some(Target::Entry(entry.id));
+        let from = top.saturating_sub(entry.start);
+        let to = (bottom - entry.start).min(entry.height);
+        for row in from..to {
+            lines.push(entry_row(item, laid, row, entry.open, hovered));
+            if laid.folds {
+                rows.push((entry.start + row, None, Target::Entry(entry.id)));
             }
-            body
-        } else {
-            body_lines(item, style, room)
-        };
-        let most = match item.kind {
-            Kind::Prompt | Kind::Reply => 3,
-            Kind::Ended { .. } => 2,
-            Kind::Message { .. }
-            | Kind::Idle { .. }
-            | Kind::Relayed { .. }
-            | Kind::Tool { .. }
-            | Kind::Command
-            | Kind::Shell
-            | Kind::Memory
-            | Kind::Interrupted => 1,
-        };
-        let mut more = item
-            .more
-            .as_deref()
-            .map_or_default(|more| markup::markdown(more, width.saturating_sub(indent)));
-        let mut result = item
-            .result
-            .as_ref()
-            .map_or_default(|outcome| result_lines(outcome, width.saturating_sub(indent + 3)));
-        let left = if open {
-            0
-        } else {
-            // Folded, blank lines between paragraphs take no row, and a
-            // one-line entry runs its lines together.
-            body.retain(|line| line.width() > 0);
-            let left = body.len().saturating_sub(most) + more.len() + result.len();
-            if most == 1 && body.len() > 1 {
-                let mut joined: Vec<Span<'static>> = Vec::new();
-                for (index, line) in body.drain(..).enumerate() {
-                    if index > 0 {
-                        joined.push(Span::raw(" "));
-                    }
-                    joined.extend(line.spans);
-                }
-                body.push(Line::from(joined));
-            }
-            body.truncate(most);
-            more.clear();
-            result.clear();
-            left
-        };
-        // What a folded entry leaves out shows at its end, never cut off.
-        let tail = if left > 0 {
-            format!("  +{left}")
-        } else {
-            String::new()
-        };
-        let folds = left > 0 || open;
-        // As a-tui draws a fold: `▸` before a folded entry, `▾` before an
-        // open one under the pointer, and a bar down the rest of its rows.
-        let marker = match (folds, open, hovered) {
+        }
+    }
+    Entries {
+        lines,
+        rows,
+        total,
+        top: u16::try_from(top).unwrap_or(u16::MAX),
+        anchor,
+    }
+}
+
+/// Row `row` of an entry laid out as `laid`, with what a frame draws over it:
+/// the age and the fold marker before the first row, and before the rest a bar
+/// when the pointer is on the entry, as a-tui draws a fold: `▸` before a folded
+/// entry, `▾` before an open one under the pointer.
+fn entry_row(item: &Said, laid: &Laid, row: usize, open: bool, hovered: bool) -> Line<'static> {
+    let mut spans = if row == 0 {
+        let age = item.at.as_deref().map_or_default(when);
+        let marker = match (laid.folds, open, hovered) {
             (true, false, false) => Span::styled("▸ ", theme::dim()),
-            (true, false | true, true) => Span::raw(if open { "▾ " } else { "▸ " }),
+            (true, _, true) => Span::raw(if open { "▾ " } else { "▸ " }),
             _ => Span::raw("  "),
         };
-        let gutter = |hovered: bool| {
-            if hovered {
-                vec![
-                    Span::styled("▏", Style::new().fg(theme::ACCENT)),
-                    Span::raw(" ".repeat(indent.saturating_sub(1))),
-                ]
-            } else {
-                vec![Span::raw(" ".repeat(indent))]
-            }
-        };
-        let start = lines.len();
-        let last = body.len().saturating_sub(1);
-        for (index, part) in body.into_iter().enumerate() {
-            let mut spans = if index == 0 {
-                let mut spans = vec![Span::styled(age.clone(), theme::dim()), marker.clone()];
-                spans.extend(lead.iter().cloned());
-                spans
-            } else {
-                gutter(hovered)
-            };
-            spans.extend(part.spans);
-            if index == last {
-                let end = close.chars().count() + tail.chars().count();
-                let mut line = markup::fit(&Line::from(spans), width.saturating_sub(end));
-                line.spans.push(Span::styled(close, theme::dim()));
-                line.spans.push(Span::styled(
-                    tail.clone(),
-                    if hovered { Style::new() } else { theme::dim() },
-                ));
-                lines.push(line);
-            } else {
-                lines.push(markup::fit(&Line::from(spans), width));
-            }
-        }
-        for part in more {
-            let mut spans = gutter(hovered);
-            spans.extend(part.spans);
-            lines.push(Line::from(spans));
-        }
-        // What the tool gave back, under Claude Code's `⎿`.
-        for (index, part) in result.into_iter().enumerate() {
-            let mut spans = gutter(hovered);
-            spans.push(Span::styled(
-                if index == 0 { "⎿  " } else { "   " },
+        vec![
+            Span::styled(
+                format!("{:>7} ", age.trim_end_matches(" ago")),
                 theme::dim(),
-            ));
-            spans.extend(part.spans);
-            lines.push(Line::from(spans));
+            ),
+            marker,
+        ]
+    } else if hovered {
+        vec![
+            Span::styled("▏", Style::new().fg(theme::ACCENT)),
+            Span::raw(" ".repeat(laid.indent.saturating_sub(1))),
+        ]
+    } else {
+        vec![Span::raw(" ".repeat(laid.indent))]
+    };
+    if let Some(line) = laid.lines.get(row) {
+        spans.extend(line.spans.iter().cloned());
+    }
+    // What a folded entry leaves out shows plain under the pointer.
+    if hovered
+        && laid.tail == Some(row)
+        && let Some(tail) = spans.last_mut()
+    {
+        tail.style = Style::new();
+    }
+    Line::from(spans)
+}
+
+/// An entry laid out for `width` columns, open or folded.
+#[expect(
+    clippy::too_many_lines,
+    reason = "lays out one entry of a prompts or activity tab in one pass"
+)]
+fn lay_out(item: &Said, open: bool, width: usize) -> Laid {
+    let (mut lead, close, style) = marks(&item.kind);
+    // A call whose tool reported an error shows its name in red.
+    if item.result.as_ref().is_some_and(|outcome| outcome.error)
+        && let Some(name) = lead.first_mut()
+    {
+        name.style = name.style.fg(theme::ERROR);
+    }
+    let lead_width = lead.iter().map(Span::width).sum::<usize>();
+    // Open, a message's text starts under its mark rather than after
+    // its sender, so it keeps the width of the tab.
+    let hang = open && lead_width > 6 && !matches!(item.kind, Kind::Tool { .. });
+    let indent = if hang { AGE + 2 } else { AGE + lead_width };
+    let room = width.saturating_sub(indent + close.chars().count()).max(8);
+    let mut body = if hang {
+        let mut body = vec![Line::default()];
+        // A note whose text opens its longer text shows the longer one.
+        let first = item.text.lines().next().unwrap_or_default();
+        if !item
+            .more
+            .as_deref()
+            .is_some_and(|more| more.trim_start().starts_with(first))
+        {
+            body.extend(body_lines(item, style, room));
         }
-        if folds {
-            rows.extend((start..lines.len()).map(|at| (at, None, Target::Entry(key))));
+        body
+    } else {
+        body_lines(item, style, room)
+    };
+    let most = match item.kind {
+        Kind::Prompt | Kind::Reply => 3,
+        Kind::Ended { .. } => 2,
+        Kind::Message { .. }
+        | Kind::Idle { .. }
+        | Kind::Relayed { .. }
+        | Kind::Tool { .. }
+        | Kind::Command
+        | Kind::Shell
+        | Kind::Memory
+        | Kind::Interrupted => 1,
+    };
+    let mut more = item
+        .more
+        .as_deref()
+        .map_or_default(|more| markup::markdown(more, width.saturating_sub(indent)));
+    let mut result = item
+        .result
+        .as_ref()
+        .map_or_default(|outcome| result_lines(outcome, width.saturating_sub(indent + 3)));
+    let left = if open {
+        0
+    } else {
+        // Folded, blank lines between paragraphs take no row, and a
+        // one-line entry runs its lines together.
+        body.retain(|line| line.width() > 0);
+        let left = body.len().saturating_sub(most) + more.len() + result.len();
+        if most == 1 && body.len() > 1 {
+            let mut joined: Vec<Span<'static>> = Vec::new();
+            for (index, line) in body.drain(..).enumerate() {
+                if index > 0 {
+                    joined.push(Span::raw(" "));
+                }
+                joined.extend(line.spans);
+            }
+            body.push(Line::from(joined));
         }
+        body.truncate(most);
+        more.clear();
+        result.clear();
+        left
+    };
+    // What a folded entry leaves out shows at its end, never cut off.
+    let tail = if left > 0 {
+        format!("  +{left}")
+    } else {
+        String::new()
+    };
+    let folds = left > 0 || open;
+    let mut lines = Vec::new();
+    let mut tail_row = None;
+    let last = body.len().saturating_sub(1);
+    for (index, part) in body.into_iter().enumerate() {
+        let mut spans = mem::take(&mut lead);
+        spans.extend(part.spans);
+        // The age and the fold marker take the first row's first columns, and
+        // the bar or blanks the others'.
+        let room = width.saturating_sub(if index == 0 { AGE } else { indent });
+        if index == last {
+            let end = close.chars().count() + tail.chars().count();
+            let mut line = markup::fit(&Line::from(spans), room.saturating_sub(end));
+            line.spans.push(Span::styled(close, theme::dim()));
+            line.spans.push(Span::styled(tail.clone(), theme::dim()));
+            tail_row = Some(lines.len());
+            lines.push(line);
+        } else {
+            lines.push(markup::fit(&Line::from(spans), room));
+        }
+    }
+    lines.extend(more.into_iter().map(|part| Line::from(part.spans)));
+    // What the tool gave back, under Claude Code's `⎿`.
+    for (index, part) in result.into_iter().enumerate() {
+        let mut spans = vec![Span::styled(
+            if index == 0 { "⎿  " } else { "   " },
+            theme::dim(),
+        )];
+        spans.extend(part.spans);
+        lines.push(Line::from(spans));
+    }
+    Laid {
+        lines,
+        indent,
+        folds,
+        tail: tail_row,
     }
 }
 
@@ -2659,8 +2878,11 @@ fn scrollbar(frame: &mut Frame<'_>, area: Rect, top: u16, total: u16) {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Instant;
+
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+    use ratatui::crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 
     use super::*;
     use crate::app::state::fixtures::pane;
@@ -2668,7 +2890,7 @@ mod tests {
     const OWN: &str = "block-own";
 
     /// The text of `app` drawn on a 100 by 40 screen, one line a row.
-    fn screen(app: &App) -> String {
+    fn screen(app: &mut App) -> String {
         let agent = app.current().cloned();
         let shown = agent.as_ref().map(|agent| (agent, None));
         let mut terminal = Terminal::new(TestBackend::new(100, 40)).expect("a test terminal");
@@ -2702,7 +2924,7 @@ mod tests {
         app.set_panes(panes());
         for arrangement in [Arrangement::Rails, Arrangement::Single] {
             app.arrangement = arrangement;
-            let text = screen(&app);
+            let text = screen(&mut app);
             for shown in ["Fix checkout", "work/shell"] {
                 assert!(
                     text.contains(shown),
@@ -2729,6 +2951,252 @@ mod tests {
     fn the_full_app_points_to_the_search() {
         let mut app = App::new(None);
         app.set_panes(panes());
-        assert!(screen(&app).contains("ctrl+f search every session"));
+        assert!(screen(&mut app).contains("ctrl+f search every session"));
+    }
+
+    /// A session's activity of `count` calls, oldest first, shown on a screen
+    /// the tests resize.
+    struct Rig {
+        app: App,
+        facts: Facts,
+        terminal: Terminal<TestBackend>,
+    }
+
+    /// The tool call number `place`, one line folded.
+    fn call(place: usize, text: &str) -> Said {
+        Said {
+            id: EntryId {
+                line: u64::try_from(place).expect("a small number") * 100,
+                index: 0,
+            },
+            at: None,
+            text: text.to_owned(),
+            kind: Kind::Tool {
+                name: "Read".to_owned(),
+            },
+            more: None,
+            call: None,
+            result: None,
+        }
+    }
+
+    impl Rig {
+        fn new(count: usize) -> Self {
+            let mut app = App::new(None);
+            app.set_panes(vec![pane(
+                "block-a",
+                "alpha/one",
+                Status::Idle,
+                &["Fix login"],
+            )]);
+            app.tab = Tab::Activity;
+            app.cols = 120;
+            let facts = Facts {
+                activity: (0..count)
+                    .map(|place| call(place, &format!("file-{place}.rs")))
+                    .collect(),
+                whole: true,
+                ..Facts::default()
+            };
+            Self {
+                app,
+                facts,
+                terminal: Terminal::new(TestBackend::new(120, 40)).expect("a test terminal"),
+            }
+        }
+
+        /// Draws a frame, as the loop does, and returns what it shows.
+        fn draw(&mut self) -> Vec<String> {
+            self.frame();
+            let buffer = self.terminal.backend().buffer();
+            (0..buffer.area.height)
+                .map(|y| {
+                    (0..buffer.area.width)
+                        .map(|x| buffer[(x, y)].symbol())
+                        .collect::<String>()
+                })
+                .collect()
+        }
+
+        /// Draws a frame and keeps where it scrolled to.
+        fn frame(&mut self) {
+            let agent = self.app.current().cloned();
+            let shown = agent.as_ref().map(|agent| (agent, Some(&self.facts)));
+            let mut hits = None;
+            self.terminal
+                .draw(|frame| hits = Some(draw(frame, &mut self.app, shown)))
+                .expect("the app draws");
+            let hits = hits.expect("a frame was drawn");
+            self.app.settle(&hits.tops, hits.anchor);
+            self.app.cols = hits.width;
+        }
+
+        /// The entries a frame shows, one text each.
+        fn entries(&mut self) -> Vec<String> {
+            self.draw()
+                .into_iter()
+                .filter(|line| line.contains("Read("))
+                .map(|line| line.trim().to_owned())
+                .collect()
+        }
+
+        /// How many entries have been laid out.
+        fn laid(&self) -> usize {
+            self.app.layouts.laid()
+        }
+
+        fn scroll(&mut self, lines: i64) {
+            self.app.scroll_lines(Focus::Session, lines);
+        }
+    }
+
+    #[test]
+    fn hovering_and_scrolling_lay_nothing_out_again() {
+        let mut rig = Rig::new(3000);
+        rig.draw();
+        assert_eq!(rig.laid(), 3000);
+        for place in [2999, 2000, 17] {
+            rig.app.hover = Some(Target::Entry(rig.facts.activity[place].id));
+            rig.draw();
+        }
+        rig.scroll(40);
+        rig.draw();
+        rig.scroll(-10);
+        rig.draw();
+        assert_eq!(rig.laid(), 3000);
+    }
+
+    #[test]
+    fn opening_an_entry_lays_out_that_entry() {
+        let mut rig = Rig::new(3000);
+        rig.draw();
+        let click = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 20,
+            row: 20,
+            modifiers: KeyModifiers::NONE,
+        };
+        let under = Under {
+            target: Some(Target::Entry(rig.facts.activity[2990].id)),
+            ..Under::default()
+        };
+        rig.app.on_mouse(click, under);
+        rig.draw();
+        assert_eq!(rig.laid(), 3001);
+        rig.draw();
+        assert_eq!(rig.laid(), 3001);
+    }
+
+    #[test]
+    fn a_width_change_lays_out_every_entry_again_once() {
+        let mut rig = Rig::new(3000);
+        rig.draw();
+        rig.terminal.backend_mut().resize(100, 40);
+        rig.app.cols = 100;
+        rig.draw();
+        assert_eq!(rig.laid(), 6000);
+        rig.draw();
+        assert_eq!(rig.laid(), 6000);
+    }
+
+    #[test]
+    fn a_changed_entry_is_laid_out_again_and_a_kept_one_is_not() {
+        let mut rig = Rig::new(300);
+        rig.draw();
+        let before = rig.facts.clone();
+        rig.facts.activity[299].result = Some(Outcome {
+            text: "ok".to_owned(),
+            error: false,
+        });
+        let path = rig.app.current().expect("a session").transcript.clone();
+        rig.app.layouts.refresh(&path, &before, &rig.facts);
+        rig.draw();
+        assert_eq!(rig.laid(), 301);
+    }
+
+    #[test]
+    fn a_new_entry_above_the_view_moves_nothing() {
+        let mut still = Rig::new(300);
+        let mut busy = Rig::new(300);
+        for rig in [&mut still, &mut busy] {
+            rig.scroll(40);
+            rig.draw();
+        }
+        // The same wheel step, with and without a call arriving in its frame.
+        still.scroll(2);
+        busy.scroll(2);
+        busy.facts.activity.push(call(300, "file-new.rs"));
+        let shown = still.entries();
+        assert!(shown[0].contains("file-257.rs"), "{shown:?}");
+        assert_eq!(busy.entries(), shown);
+    }
+
+    #[test]
+    fn an_unscrolled_list_follows_the_newest_entry() {
+        let mut rig = Rig::new(300);
+        assert!(rig.entries()[0].contains("file-299.rs"));
+        rig.facts.activity.push(call(300, "file-new.rs"));
+        assert!(rig.entries()[0].contains("file-new.rs"));
+    }
+
+    /// The time of the frame at the 99th percentile of `times`.
+    fn p99(times: &mut [Duration]) -> Duration {
+        times.sort();
+        times[times.len() * 99 / 100]
+    }
+
+    /// Frame times with 3,000 entries held, at 120 columns, in a release build:
+    /// `cargo test --release -- --ignored frame_time --nocapture`. A frame that
+    /// scrolls and a frame after the width changed, which lays every entry out
+    /// again.
+    #[test]
+    #[ignore = "a timing run, in a release build"]
+    fn frame_time_with_three_thousand_entries() {
+        let mut rig = Rig::new(3000);
+        // Some entries open to a longer text, and some have a result.
+        for (place, call) in rig.facts.activity.iter_mut().enumerate() {
+            if place % 3 == 0 {
+                call.more = Some(format!(
+                    "# Step {place}\n\nRead the file, then change the total\nand the tax code in it.\n\n- first\n- second"
+                ));
+            }
+            if place % 5 == 0 {
+                call.result = Some(Outcome {
+                    text: format!("line one of {place}\nline two\nline three"),
+                    error: place % 10 == 0,
+                });
+            }
+        }
+        rig.frame();
+        let mut scrolling = Vec::new();
+        for step in 0..2000 {
+            rig.scroll(if step % 800 < 400 { 2 } else { -2 });
+            rig.app.hover = Some(Target::Entry(rig.facts.activity[step % 3000].id));
+            let began = Instant::now();
+            rig.frame();
+            scrolling.push(began.elapsed());
+        }
+        let mut resized = Vec::new();
+        for step in 0..40_u16 {
+            let wide = if step % 2 == 0 { 90 } else { 120 };
+            rig.terminal.backend_mut().resize(wide, 40);
+            rig.app.cols = wide;
+            let began = Instant::now();
+            rig.frame();
+            resized.push(began.elapsed());
+        }
+        assert_eq!(
+            rig.laid(),
+            3000 * 41,
+            "each width change lays out every entry"
+        );
+        let first = resized[0];
+        let (scroll, resize) = (p99(&mut scrolling), p99(&mut resized));
+        eprintln!(
+            "scrolling: p99 {scroll:?}, max {:?}; after a width change: first {first:?}, p99 {resize:?}, max {:?}",
+            scrolling.last().expect("frames"),
+            resized.last().expect("frames"),
+        );
+        assert!(scroll < Duration::from_millis(2), "p99 {scroll:?}");
     }
 }
