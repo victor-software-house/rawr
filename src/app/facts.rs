@@ -1215,23 +1215,24 @@ type Shown = (Kind, String, Option<String>);
 const TEXT_CHARS: usize = 4000;
 
 /// `text` with its line breaks, without control characters, cut to
-/// [`TEXT_CHARS`].
-fn clean(text: &str) -> String {
-    let mut out: String = text
-        .trim()
-        .chars()
-        .filter_map(|c| match c {
-            '\t' => Some(' '),
-            '\n' => Some('\n'),
-            c if c.is_control() => None,
-            c => Some(c),
-        })
-        .take(TEXT_CHARS)
-        .collect();
-    if text.chars().count() > TEXT_CHARS {
+/// `most` characters and ended with `…` when more was left.
+fn cut(text: &str, most: usize) -> String {
+    let mut chars = text.trim().chars().filter_map(|c| match c {
+        '\t' => Some(' '),
+        '\n' => Some('\n'),
+        c if c.is_control() => None,
+        c => Some(c),
+    });
+    let mut out: String = chars.by_ref().take(most).collect();
+    if chars.next().is_some() {
         out.push('…');
     }
     out
+}
+
+/// `text` cut to [`TEXT_CHARS`].
+fn clean(text: &str) -> String {
+    cut(text, TEXT_CHARS)
 }
 
 /// Puts each tool result in `content` with its call, or keeps it for a
@@ -1245,7 +1246,7 @@ fn results(stretch: &mut Stretch, content: &RawValue) {
             continue;
         };
         let text = part.content.map_or_default(result_text);
-        let mut text: String = clean(&text).chars().take(RESULT_CHARS).collect();
+        let mut text = cut(&text, RESULT_CHARS);
         if text.is_empty() {
             "(No output)".clone_into(&mut text);
         }
@@ -1756,11 +1757,12 @@ mod tests {
     use std::time::{Duration, Instant};
     use std::{env, process, thread};
 
+    use serde_json::value::RawValue;
     use serde_json::{Value, json};
 
     use super::{
-        AHEAD, EntryId, Facts, KEEP, LINE_MOST, List, Reading, Said, Way, around, page,
-        read_forward, tasks,
+        AHEAD, EntryId, Facts, KEEP, LINE_MOST, List, RESULT_CHARS, Reading, Said, Stretch,
+        TEXT_CHARS, Way, around, clean, page, read_forward, results, tasks,
     };
     use crate::daemon::{FromDaemon, ToDaemon};
 
@@ -1802,6 +1804,28 @@ mod tests {
             text.push('\n');
         }
         text
+    }
+
+    #[test]
+    fn text_that_fits_once_cleaned_gets_no_ellipsis() {
+        let text = format!("{}{}", "a".repeat(TEXT_CHARS), "\u{1}".repeat(10));
+        assert_eq!(clean(&text), "a".repeat(TEXT_CHARS));
+    }
+
+    #[test]
+    fn a_long_tool_result_ends_with_an_ellipsis() {
+        let content = json!([{
+            "type": "tool_result",
+            "tool_use_id": "call-1",
+            "content": "x".repeat(RESULT_CHARS + 5),
+        }]);
+        let content = RawValue::from_string(content.to_string()).expect("a raw value");
+        let mut stretch = Stretch::default();
+        results(&mut stretch, &content);
+        let (call, outcome) = stretch.results.pop().expect("a result");
+        assert_eq!(call, "call-1");
+        assert_eq!(outcome.text.chars().count(), RESULT_CHARS + 1);
+        assert!(outcome.text.ends_with('…'));
     }
 
     fn file(name: &str, text: &str) -> PathBuf {
