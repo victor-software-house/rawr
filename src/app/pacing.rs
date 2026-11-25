@@ -449,8 +449,8 @@ pub(crate) struct Wake<'a> {
     /// clock's next tick: at once when the clock rests, since its tick is
     /// then due.
     pub(crate) dirty: bool,
-    /// Focus or a drawer is on the move. Each wake draws, and the wake after
-    /// the move ends draws its last frame.
+    /// Focus or a drawer is on the move. It draws every 16 ms, a change waits
+    /// for those frames, and the wake after the move ends draws its last frame.
     pub(crate) moving: bool,
 }
 
@@ -510,10 +510,15 @@ impl Pacer {
         self.queues.iter().any(WheelQueue::pending)
     }
 
-    /// Drops the wheel reports waiting to scroll `list`, because its scroll was
-    /// set another way.
-    pub(crate) fn clear(&mut self, list: Focus) {
-        self.queues[state::slot(list)].clear();
+    /// A scroll was set another way, so the wheel reports read before it, for
+    /// the lists whose scroll it was, no longer apply: those in the queues and
+    /// those in `reports`, which this wake has yet to queue. Reports read
+    /// after it stay.
+    pub(crate) fn reset(&mut self, lists: &[Focus], reports: &mut Vec<Report>) {
+        for list in lists {
+            self.queues[state::slot(*list)].clear();
+        }
+        reports.retain(|report| !lists.contains(&report.list));
     }
 
     /// When the loop must wake next, and how: at the clock's tick while a
@@ -521,7 +526,8 @@ impl Pacer {
     /// last frame while `moving`, and at each of `others`, such as the
     /// spinner's next turn. At rest, never.
     pub(crate) fn wait(&self, moving: bool, others: &[Option<Instant>]) -> Option<Wait> {
-        let tick = (self.pending() || self.dirty).then(|| self.clock.next());
+        // A change waits for a move's own frames while one runs.
+        let tick = (self.pending() || (self.dirty && !moving)).then(|| self.clock.next());
         let frame = moving.then(|| self.drew + MOVE_FRAME);
         let other = others.iter().flatten().copied().min();
         let soonest = [tick, frame, other].into_iter().flatten().min()?;
@@ -568,12 +574,16 @@ impl Pacer {
                 self.clock.wake(now);
             }
         }
-        // The move that ends has one more frame, which shows where it stopped.
-        self.dirty |= wake.dirty || wake.moving || self.was_moving;
+        // A move draws every `MOVE_FRAME`, and once more when it ends, which
+        // shows where it stopped. Until then a change waits for those frames.
+        let move_frame = wake.moving && now >= self.drew + MOVE_FRAME;
+        let settled = self.was_moving && !wake.moving;
         self.was_moving = wake.moving;
+        self.dirty |= wake.dirty || move_frame || settled;
+        let changed = self.dirty && (!wake.moving || move_frame);
         // A tick due now is taken whether or not it draws.
         let tick = self.clock.peek(now);
-        let on_clock = tick.is_some() && (self.pending() || self.dirty);
+        let on_clock = tick.is_some() && (self.pending() || changed);
         let at_once = wake.urgent || restarted;
         if let Some(after) = tick {
             self.clock.take(after);
