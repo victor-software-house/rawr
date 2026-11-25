@@ -1816,6 +1816,8 @@ mod tests {
             100,
         )
         .expect("a page");
+        // Counted from the newest of 1,000 calls, the newest 300 are held, and
+        // the page is calls 301 to 400.
         let texts: Vec<_> = got.entries.iter().map(|said| said.text.as_str()).collect();
         assert_eq!(texts.first(), Some(&"echo 600"));
         assert_eq!(texts.last(), Some(&"echo 699"));
@@ -2004,6 +2006,7 @@ mod tests {
                         list,
                         entries: got.entries,
                         more: got.more,
+                        failed: None,
                     })
                     .expect("an answer");
                     answer.push(b'\n');

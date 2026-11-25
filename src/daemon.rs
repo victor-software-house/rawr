@@ -124,6 +124,9 @@ pub(crate) enum FromDaemon {
         list: List,
         entries: Vec<Said>,
         more: bool,
+        /// Why the transcript could not be read, when it could not. The
+        /// entries and `more` then say nothing.
+        failed: Option<String>,
     },
     /// A batch of matches for search `id`, after `read` of `total`
     /// transcripts. The first batch, with `read` 0, replaces the results.
