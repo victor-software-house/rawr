@@ -7,7 +7,7 @@
 - [x] 1.2 `older` and `page` join the daemon protocol; the daemon reads a page back from the given entry, reads forward past its end for results, and keeps nothing; proved by tests of the "Older entries load in pages" and "Results across a page's edge" scenarios on fixture transcripts, in CI.
 - [x] 1.3 A window merges pages into its held lists, asks ahead by the lead, holds at most 3,000 entries a list and loads dropped entries again; proved by state tests of the "Pages load ahead of the view", "The view never draws what it does not hold", "Held entries are bounded" and "The filter covers held entries" scenarios, in CI.
 - [x] 1.4 A page of 100 entries answers within 20 ms at p95 on a transcript of 50 MB; proved by a release-build timing test run on a Mac, with the figures recorded under this task.
-  - 2026-11-25 (UTC), release build in a 4 CPU, 8 GiB box on a Mac with an M4 Pro, `page_round_trip_on_a_transcript_of_fifty_megabytes`, three runs.
+  - 2026-11-25 (UTC), release build on a Mac with an M4 Pro, 4 CPUs and 8 GiB given to the run, `page_round_trip_on_a_transcript_of_fifty_megabytes`, three runs.
   - Each run made 400 requests for the 100 entries before an entry of either list, at pseudo-random places past the first 150 turns.
     It timed each from the request written to the `Page` decoded, over a socket pair to a thread that reads the page from disk.
   - The invented transcript has 9,491 turns of 50 MiB: a prompt, a reply with one call, and the call's result, whose size is 120 KB every 50th turn, 12 KB for 5 of the next 49 and 1.5 KB for the rest.
