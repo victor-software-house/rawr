@@ -1554,13 +1554,16 @@ fn shown_path(path: &str, cwd: Option<&str>) -> String {
 mod tests {
     use std::fmt::Write as _;
     use std::fs::{self, File, OpenOptions};
-    use std::io::Write as _;
+    use std::io::{BufRead, BufReader, Write as _};
+    use std::os::unix::net::UnixStream;
     use std::path::PathBuf;
-    use std::{env, process};
+    use std::time::{Duration, Instant};
+    use std::{env, process, thread};
 
     use serde_json::{Value, json};
 
     use super::{AHEAD, EntryId, Facts, KEEP, List, Reading, Said, Way, page, read_forward, tasks};
+    use crate::daemon::{FromDaemon, ToDaemon};
 
     /// A transcript of `turns` turns: a prompt, then a reply that creates
     /// a task, edits a file and, every fifth turn, carries a long text, so
@@ -1933,6 +1936,133 @@ mod tests {
         let path = env::temp_dir().join("rawr-facts-gone.jsonl");
         let id = EntryId { line: 0, index: 0 };
         assert_eq!(page(&path, Way::Older, List::Log, id, 100), None);
+    }
+
+    /// The size of the result of tool call `turn` of the timing transcript: a
+    /// few calls give long results, as a build or a file read does.
+    const fn result_size(turn: usize) -> usize {
+        match turn % 50 {
+            0 => 120_000,
+            1..=5 => 12_000,
+            _ => 1_500,
+        }
+    }
+
+    /// The time at the 95th percentile of `times`.
+    fn p95(times: &mut [Duration]) -> Duration {
+        times.sort();
+        times[times.len() * 95 / 100]
+    }
+
+    /// Round trips of a page of 100 entries of each list, over a socket pair as
+    /// the daemon and a window talk, on an invented transcript of 50 MB, in a
+    /// release build:
+    /// `cargo test --release -- --ignored page_round_trip --nocapture`.
+    #[test]
+    #[ignore = "a timing run, in a release build"]
+    fn page_round_trip_on_a_transcript_of_fifty_megabytes() {
+        // Turns of a prompt, a reply with a call, and its result, until the
+        // transcript is 50 MB; the offsets of the lines the pages start at.
+        let mut body = String::new();
+        let mut starts = Vec::new();
+        while body.len() < 50 << 20 {
+            let turn = starts.len();
+            let prompt_at = body.len();
+            body.push_str(&prompt(&format!("prompt {turn}: change the tax code")));
+            let reply_at = body.len();
+            body.push_str(&reply(&[
+                text(&format!("reply {turn}: reading the file first")),
+                bash(&format!("c{turn}"), &format!("grep -rn tax src/part{turn}")),
+            ]));
+            let out = "a line of the output of the command\n".repeat(result_size(turn) / 36);
+            body.push_str(&output(&format!("c{turn}"), &out));
+            starts.push((prompt_at, reply_at));
+        }
+        let path = file("timing", &body);
+        let turns = starts.len();
+        drop(body);
+        let (client, server) = UnixStream::pair().expect("a socket pair");
+        let daemon = {
+            let path = path.clone();
+            thread::spawn(move || {
+                let mut requests = BufReader::new(server.try_clone().expect("a clone"));
+                let mut server = server;
+                let mut line = String::new();
+                while requests.read_line(&mut line).is_ok_and(|read| read > 0) {
+                    let ToDaemon::Older {
+                        list,
+                        before,
+                        count,
+                        ..
+                    } = serde_json::from_str(&line).expect("a request")
+                    else {
+                        panic!("the request is an older");
+                    };
+                    let got = page(&path, Way::Older, list, before, count).expect("a page");
+                    let mut answer = serde_json::to_vec(&FromDaemon::Page {
+                        path: path.clone(),
+                        list,
+                        entries: got.entries,
+                        more: got.more,
+                    })
+                    .expect("an answer");
+                    answer.push(b'\n');
+                    server.write_all(&answer).expect("write the answer");
+                    line.clear();
+                }
+            })
+        };
+        let mut answers = BufReader::new(client.try_clone().expect("a clone"));
+        let mut client = client;
+        let mut times = Vec::new();
+        let mut line = String::new();
+        // A fixed run of pseudo-random places in the transcript, past the first
+        // pages, for both lists.
+        let mut seed: u64 = 7;
+        for round in 0..400 {
+            seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            let turn = 150 + usize::try_from(seed >> 33).expect("a number") % (turns - 150);
+            let (list, line_at, index) = if round % 2 == 0 {
+                (List::Activity, starts[turn].1, 1)
+            } else {
+                (List::Log, starts[turn].0, 0)
+            };
+            let before = EntryId {
+                line: u64::try_from(line_at).expect("an offset"),
+                index,
+            };
+            let began = Instant::now();
+            let mut request = serde_json::to_vec(&ToDaemon::Older {
+                path: path.clone(),
+                list,
+                before,
+                count: 100,
+            })
+            .expect("a request");
+            request.push(b'\n');
+            client.write_all(&request).expect("send the request");
+            line.clear();
+            answers.read_line(&mut line).expect("read the answer");
+            let FromDaemon::Page { entries, .. } = serde_json::from_str(&line).expect("an answer")
+            else {
+                panic!("the answer is a page");
+            };
+            times.push(began.elapsed());
+            assert_eq!(entries.len(), 100);
+        }
+        drop(client);
+        drop(answers);
+        daemon.join().expect("the daemon thread ends");
+        let size = fs::metadata(&path).expect("the file").len();
+        times.sort();
+        let (median, slowest) = (times[times.len() / 2], times[times.len() - 1]);
+        let p95 = p95(&mut times);
+        eprintln!(
+            "{turns} turns, {} MiB; 400 pages of 100 entries: median {median:?}, p95 {p95:?}, max {slowest:?}",
+            size >> 20,
+        );
+        let _ = fs::remove_file(path);
+        assert!(p95 < Duration::from_millis(20), "p95 {p95:?}");
     }
 
     #[test]
