@@ -26,8 +26,9 @@ const LEAD_WINDOW: Duration = Duration::from_millis(250);
 /// The fewest lines the lead is.
 const LEAD_MIN: usize = 200;
 
-/// The most entries each side of the view that are kept from being dropped.
-const NEAR: usize = 1000;
+/// The most lines, and the most entries, each side of the view that are kept
+/// from being dropped.
+pub(crate) const NEAR: usize = 1000;
 
 /// The lines the view moved, either way, in the last [`LEAD_WINDOW`]: how far
 /// ahead of the view a page must be asked for to land before the view reaches
@@ -73,6 +74,9 @@ pub(crate) struct Reach {
     pub(crate) above: usize,
     /// Whether a filter hides entries, so only the ones shown count.
     pub(crate) filtered: bool,
+    /// The oldest and the newest entry held within the lead's lines of the
+    /// view, which the window keeps when it drops entries.
+    pub(crate) keep: (EntryId, EntryId),
 }
 
 /// A page the window asks the daemon for.
@@ -125,11 +129,13 @@ struct Held {
     older: bool,
     /// The page asked for and not yet answered.
     flight: Option<Ask>,
-    /// Where the last frame left the view, and the lead then.
-    view: Option<(Reach, usize)>,
-    /// Where the view stood when the last page failed, so the window asks
-    /// again only once the view has moved.
-    stalled: Option<Reach>,
+    /// Where the last frame left the view.
+    view: Option<Reach>,
+    /// The entries in view when the last page failed, so the window asks again
+    /// only once the view has moved to others.
+    stalled: Option<(EntryId, EntryId)>,
+    /// The entries the facts counted when they were last read whole.
+    seen: Option<usize>,
 }
 
 impl Default for Held {
@@ -140,6 +146,7 @@ impl Default for Held {
             flight: None,
             view: None,
             stalled: None,
+            seen: None,
         }
     }
 }
@@ -149,11 +156,11 @@ impl History {
     pub(crate) fn merge(&mut self, mut read: Facts) -> Vec<EntryId> {
         let mut stale = Vec::new();
         for list in List::BOTH {
-            let older = read.older(list);
+            let (older, total) = (read.older(list), read.whole.then(|| read.total(list)));
             let incoming = mem::take(read.entries_mut(list));
             let kept = mem::take(self.facts.entries_mut(list));
             *read.entries_mut(list) =
-                self.lists[list.index()].take(kept, incoming, older, &mut stale);
+                self.lists[list.index()].take(kept, incoming, (older, total), &mut stale);
         }
         self.facts = read;
         stale
@@ -175,8 +182,8 @@ impl History {
     /// Returns the page to ask for, unless one is in flight already.
     pub(crate) fn settle(&mut self, reach: Reach, lead: usize) -> Option<Ask> {
         let held = &mut self.lists[reach.list.index()];
-        held.view = Some((reach, lead));
-        if held.stalled == Some(reach) {
+        held.view = Some(reach);
+        if held.stalled == Some((reach.first, reach.last)) {
             return None;
         }
         held.stalled = None;
@@ -222,7 +229,7 @@ impl History {
         let held = &mut self.lists[ask.list.index()];
         if held.asked(ask) {
             held.flight = None;
-            held.stalled = held.view.map(|(reach, _)| reach);
+            held.stalled = held.view.map(|reach| (reach.first, reach.last));
         }
     }
 
@@ -279,14 +286,16 @@ impl Held {
 
     /// Joins the facts' `incoming` entries to the `kept` ones, which are the
     /// facts' earlier and the pages'. `older` is whether the facts say entries
-    /// older than theirs exist.
+    /// older than theirs exist, and `total` how many entries they count when
+    /// they are read whole.
     fn take(
         &mut self,
         kept: Vec<Said>,
         incoming: Vec<Said>,
-        older: bool,
+        (older, total): (bool, Option<usize>),
         stale: &mut Vec<EntryId>,
     ) -> Vec<Said> {
+        let before = mem::replace(&mut self.seen, total);
         if kept.is_empty() {
             self.gaps.clear();
             self.older = older;
@@ -313,6 +322,7 @@ impl Held {
             return incoming;
         }
         let oldest_new = incoming.first().map(|said| said.id);
+        let incoming_len = incoming.len();
         let mut all: BTreeMap<EntryId, Said> =
             kept.into_iter().map(|said| (said.id, said)).collect();
         let mut shared = false;
@@ -328,7 +338,12 @@ impl Held {
         // Facts that share no entry with the held ones may leave entries
         // between them, which a page will tell.
         if !shared && oldest_new.is_some_and(|oldest| oldest > newest_held) {
-            self.gaps.insert(newest_held, 0);
+            // Two readings of the whole transcript tell how many are between.
+            let between = before
+                .zip(total)
+                .map_or(0, |(before, total)| total.saturating_sub(before));
+            self.gaps
+                .insert(newest_held, between.saturating_sub(incoming_len));
         }
         let mut merged: Vec<Said> = all.into_values().collect();
         self.trim(&mut merged, Way::Newer, None, stale);
@@ -413,29 +428,41 @@ impl Held {
             return;
         }
         let index = |id: EntryId| mine.partition_point(|said| said.id < id);
-        let ((lo, hi), lead) = match &self.view {
-            Some((reach, lead)) => ((index(reach.last), index(reach.first).min(len - 1)), *lead),
-            None => (
-                match landed {
-                    Way::Older => (0, 0),
-                    Way::Newer => (len - 1, len - 1),
-                },
-                LEAD_MIN,
-            ),
+        // The entries to keep around the view: the lead's lines, as the view
+        // counted them, and at most [`NEAR`] entries past it. Without a view,
+        // the end the page landed at.
+        let (keep_lo, keep_hi) = if let Some(reach) = self.view {
+            (
+                index(reach.keep.0).max(index(reach.last).saturating_sub(NEAR)),
+                index(reach.keep.1)
+                    .min(index(reach.first).saturating_add(NEAR))
+                    .min(len - 1),
+            )
+        } else {
+            let at = match landed {
+                Way::Older => 0,
+                Way::Newer => len - 1,
+            };
+            (
+                at.saturating_sub(LEAD_MIN),
+                at.saturating_add(LEAD_MIN).min(len - 1),
+            )
         };
-        let margin = lead.min(NEAR);
         let pinned = len.saturating_sub(KEEP);
-        let older_side = 0..lo.saturating_sub(margin).min(pinned);
-        let newer_side = (hi.saturating_add(margin) + 1).min(pinned)..pinned;
+        let older_side = 0..keep_lo.min(pinned);
+        let newer_side = (keep_hi + 1).min(pinned)..pinned;
         let order: Vec<usize> = match landed {
             Way::Older => newer_side.rev().chain(older_side).collect(),
             Way::Newer => older_side.chain(newer_side.rev()).collect(),
         };
+        // The page that just landed, and the entry a page in flight reads from.
         let page = page.map(|(first, last)| index(first)..=index(last));
+        let reading = self.flight.map(|ask| index(ask.at));
         let mut gone = vec![false; len];
         for at in order
             .into_iter()
             .filter(|at| !page.as_ref().is_some_and(|page| page.contains(at)))
+            .filter(|at| reading != Some(*at))
             .take(excess)
         {
             gone[at] = true;
@@ -470,7 +497,7 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::time::{Duration, Instant};
 
-    use super::{Ask, HELD, History, LEAD_MIN, Lead, PAGE, Reach, keep_only};
+    use super::{Ask, Gaps, HELD, History, LEAD_MIN, Lead, PAGE, Reach, keep_only};
     use crate::app::facts::{EntryId, Facts, Kind, List, Said, Way};
 
     /// The tool call number `place` of a transcript.
@@ -535,6 +562,11 @@ mod tests {
             below,
             above,
             filtered: false,
+            // The lead's 200 lines of one-line entries, at most.
+            keep: (
+                mine[from.saturating_sub(200)].id,
+                mine[(to + 200).min(mine.len() - 1)].id,
+            ),
         }
     }
 
@@ -697,8 +729,14 @@ mod tests {
         // The same view asks for nothing, and the list has not ended.
         assert_eq!(history.settle(near, LEAD_MIN), None);
         assert_eq!(history.shape(List::Activity).older, 2100);
-        // The view moves, and the page is asked for again.
-        let moved = view(&history, (0, 10), (0, 99));
+        // Lines held past the view change as pages come, and entries do not
+        // move it.
+        assert_eq!(
+            history.settle(view(&history, (0, 10), (0, 99)), LEAD_MIN),
+            None
+        );
+        // The view moves to other entries, and the page is asked for again.
+        let moved = view(&history, (1, 11), (0, 100));
         assert!(history.settle(moved, LEAD_MIN).is_some());
     }
 
@@ -846,6 +884,51 @@ mod tests {
         let mine = &history.facts.activity;
         assert_eq!(mine.last().map(|said| said.id), Some(all[3999].id));
         assert!(mine.iter().any(|said| said.id == all[3700].id));
+    }
+
+    #[test]
+    fn a_gap_between_two_whole_readings_counts_the_entries_missing() {
+        let all = world(1000);
+        let whole = |window: Range<usize>, total: usize| Facts {
+            activity: all[window].to_vec(),
+            activity_total: total,
+            whole: true,
+            ..Facts::default()
+        };
+        let mut history = History::default();
+        history.merge(whole(100..400, 400));
+        history.merge(whole(700..1000, 1000));
+        // 600 came since the first reading, and the second holds 300 of them.
+        assert_eq!(
+            history.shape(List::Activity).gaps,
+            &Gaps::from([(all[399].id, 300)])
+        );
+        // The 100 older entries not held are counted too.
+        assert_eq!(history.shape(List::Activity).older, 100);
+    }
+
+    #[test]
+    fn a_trim_keeps_the_entry_a_page_in_flight_reads_from() {
+        let all = world(5000);
+        let mut history = History::default();
+        history.merge(facts_of(&all, 0..300));
+        let ask = history
+            .settle(view(&history, (0, 9), (0, 1000)), LEAD_MIN)
+            .expect("a page is asked for");
+        assert_eq!(ask.at, all[0].id);
+        // The view moves up the list while the page is in flight, and facts
+        // pile entries on until the oldest ones, far from the view, go.
+        assert_eq!(
+            history.settle(view(&history, (250, 259), (1000, 0)), LEAD_MIN),
+            None
+        );
+        for from in (100..=3000).step_by(100) {
+            history.merge(facts_of(&all, from..from + 300));
+            assert!(held(&history) <= HELD);
+        }
+        let mine = &history.facts.activity;
+        assert_eq!(mine[0].id, all[0].id, "the oldest entry stays");
+        assert!(mine.len() > 2800);
     }
 
     #[test]

@@ -360,6 +360,9 @@ pub(crate) struct App {
     /// The lines the session list moved lately, which set how far ahead of the
     /// view the entries are held.
     pub(crate) prefetch: Lead,
+    /// The lines held ahead of the view, as the loop read them before the
+    /// frame being drawn.
+    pub(crate) ahead: usize,
     /// The pane to select once the feed lists it, by block ID.
     pub(crate) want: Option<String>,
     /// The block of the pane this window stands in for, when it is a
@@ -444,6 +447,7 @@ impl App {
             open: HashMap::new(),
             layouts: Layouts::default(),
             prefetch: Lead::default(),
+            ahead: 0,
             show_scratch_files: false,
             files_shown: Shown::All,
             file_type: None,

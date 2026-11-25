@@ -39,7 +39,10 @@
      So the entries held stay bounded across sessions, and coming back to a session pages again, which takes about 2 ms a page (task 1.4).
    - A gap is recorded after the newest entry held below it, with how many entries it misses.
      Facts that share no entry with the held ones leave a gap too, since ids cannot tell whether entries lie between.
+     Its count is the entries between when both readings cover the whole transcript, and 0 otherwise.
      A `newer` page fills it, and one more page finds the held entries next to its last, so such a gap costs one extra page.
+   - The trim keeps the entries within the lead's lines of the view, at most 1,000 entries each way, and the entry a page in flight reads from.
+   - After a page fails, the window asks again once the view shows other entries, not when the lines held past it change.
    - Alternative: keep every entry a window ever loaded.
      It lost: a session can hold hundreds of thousands of entries.
 4. **The counts and the scrollbar show the whole session.**
