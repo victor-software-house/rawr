@@ -215,9 +215,9 @@ fn startup() -> Result<Outcome> {
 }
 
 /// What a stand-in calls its pane: the title of the newest resumable
-/// session, or its folder's name when the title is empty.
+/// session, or its folder's name when the session is untitled.
 fn stand_in_title(agent: &Agent) -> String {
-    if !agent.title.is_empty() {
+    if !agent.title.is_empty() && agent.title != "Untitled session" {
         return agent.title.clone();
     }
     Path::new(&agent.cwd).file_name().map_or_else(
@@ -310,6 +310,8 @@ mod tests {
         };
         assert_eq!(super::stand_in_title(&agent), "Fix checkout");
         agent.title.clear();
+        assert_eq!(super::stand_in_title(&agent), "shop");
+        agent.title = "Untitled session".to_owned();
         assert_eq!(super::stand_in_title(&agent), "shop");
     }
 
