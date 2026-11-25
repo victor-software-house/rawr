@@ -260,6 +260,10 @@ impl Held {
             stale.extend(kept.iter().map(|said| said.id));
             self.gaps.clear();
             self.older = older;
+            // A page in flight reads the old numbering.
+            self.flight = None;
+            self.view = None;
+            self.stalled = None;
             return incoming;
         }
         let oldest_new = incoming.first().map(|said| said.id);
@@ -721,9 +725,16 @@ mod tests {
         let all = world(400);
         let mut history = History::default();
         history.merge(facts_of(&all, 100..400));
+        let ask = history
+            .settle(view(&history, (0, 10), (0, 100)), LEAD_MIN)
+            .expect("a page is asked for");
         let again = world(50);
         let stale = history.merge(facts_of(&again, 0..50));
         assert_eq!(stale.len(), 300);
+        assert_eq!(held(&history), 50);
+        // The page asked for in the old numbering is nobody's answer now.
+        let (entries, more) = answer(&all, ask);
+        assert_eq!(history.land(List::Activity, entries, more), Vec::new());
         assert_eq!(held(&history), 50);
     }
 
