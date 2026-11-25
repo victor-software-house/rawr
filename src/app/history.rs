@@ -198,10 +198,17 @@ impl History {
 
     /// What the tab labels count, and whether that is only the part read so
     /// far. While a read of the newest part follows a whole read, the labels
-    /// keep the whole read's counts, which the new read has not outgrown.
+    /// keep the whole read's counts, or the new read's where it counts more.
     pub(crate) fn counts(&self) -> (Counts, bool) {
         match self.counts {
-            Some(whole) if !self.facts.whole => (whole, false),
+            Some(whole) if !self.facts.whole => (
+                Counts {
+                    log: whole.log.max(self.facts.log_total),
+                    activity: whole.activity.max(self.facts.activity_total),
+                    files: whole.files.max(self.facts.touched()),
+                },
+                false,
+            ),
             Some(_) | None => (
                 Counts {
                     log: self.facts.log_total,
@@ -1253,6 +1260,10 @@ mod tests {
         // A whole read replaces them.
         history.merge(facts_of(&all, 5501..5801));
         assert_eq!(history.counts().0.activity, 5801);
+        // A read of the newest part that counts more than the whole read
+        // shows its own count.
+        history.merge(partial_of(&all, 5700..5801, 6000));
+        assert_eq!(history.counts().0.activity, 6000);
     }
 
     #[test]
