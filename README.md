@@ -15,7 +15,7 @@ Pick one to resume it, or quit for a plain shell.
 
 rawr works with Claude Code for now; support for other coding agents is planned.
 
-![rawr lists Claude sessions by status, opens one session's conversation and activity, then searches every session](assets/rawr-demo.svg)
+![rawr lists Claude sessions by status, opens a session's conversation and activity, scrolls back through its history, then searches every session](assets/rawr-demo.gif)
 
 The sessions in this demo are made up.
 
