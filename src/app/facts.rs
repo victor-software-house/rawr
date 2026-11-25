@@ -454,6 +454,169 @@ impl Reading {
     }
 }
 
+/// How far past a page's last line the daemon reads for the results of the
+/// page's calls.
+const AHEAD: u64 = 256 << 10;
+
+/// Which way a page reads from the entry it starts at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Way {
+    /// The entries just before it.
+    Older,
+    /// The entries just after it.
+    Newer,
+}
+
+/// Some entries of one list, oldest first.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Page {
+    pub(crate) entries: Vec<Said>,
+    /// Whether the transcript has more entries of the list beyond the page, in
+    /// the way it was read. It is `false` for an older page only once the first
+    /// line is read.
+    pub(crate) more: bool,
+}
+
+/// Up to `count` (at most [`KEEP`]) entries of `list` just before or after the
+/// entry `at`, read from the transcript at `path` and kept nowhere. The ids are
+/// those the whole transcript's reading gives the same lines. A tool call's
+/// result written after the page shows, when it is within [`AHEAD`] of it.
+/// `None` when the transcript cannot be read.
+pub(crate) fn page(path: &Path, way: Way, list: List, at: EntryId, count: usize) -> Option<Page> {
+    let count = count.clamp(1, KEEP);
+    let mut file = fs::File::open(path).ok()?;
+    let len = file.metadata().ok()?.len();
+    match way {
+        Way::Older => older(&mut file, path, len, list, at, count),
+        Way::Newer => newer(&mut file, len, list, at, count),
+    }
+}
+
+/// The entries of `list` in `stretch`.
+fn list_of(stretch: &mut Stretch, list: List) -> &mut Vec<Said> {
+    match list {
+        List::Log => &mut stretch.facts.log,
+        List::Activity => &mut stretch.facts.activity,
+    }
+}
+
+fn older(
+    file: &mut fs::File,
+    path: &Path,
+    len: u64,
+    list: List,
+    before: EntryId,
+    count: usize,
+) -> Option<Page> {
+    // The line `before` is in gives the entries before it on that line too.
+    let mut here = read_lines(&line_at(file, before.line)?, before.line);
+    here.facts.log.retain(|said| said.id < before);
+    here.facts.activity.retain(|said| said.id < before);
+    here.facts.log_total = here.facts.log.len();
+    here.facts.activity_total = here.facts.activity.len();
+    let mut reading = Reading {
+        len,
+        back: before.line,
+        end: before.line,
+        started: true,
+        stretch: here,
+    };
+    while reading.back > 0 && list_of(&mut reading.stretch, list).len() < count {
+        reading.step_back(path)?;
+    }
+    let total = reading.stretch.facts.total(list);
+    let mut entries = mem::take(list_of(&mut reading.stretch, list));
+    entries.drain(..entries.len().saturating_sub(count));
+    if list == List::Activity {
+        reading.stretch.facts.activity = entries;
+        results_after(file, before.line, len, &mut reading.stretch)?;
+        entries = mem::take(&mut reading.stretch.facts.activity);
+    }
+    Some(Page {
+        entries,
+        more: reading.back > 0 || total > count,
+    })
+}
+
+fn newer(file: &mut fs::File, len: u64, list: List, after: EntryId, count: usize) -> Option<Page> {
+    file.seek(SeekFrom::Start(after.line)).ok()?;
+    let mut lines = BufReader::with_capacity(1 << 18, &mut *file);
+    let mut line = Vec::new();
+    let mut stretch = Stretch::default();
+    let mut at = after.line;
+    // Where the lines read so far end, and how many entries of the list are
+    // after `after`.
+    let mut end = at;
+    let mut found = 0;
+    while found < count {
+        line.clear();
+        let read = lines.read_until(b'\n', &mut line).ok()?;
+        if read == 0 || line.last() != Some(&b'\n') {
+            break;
+        }
+        if let Ok(record) = serde_json::from_slice::<Record<'_>>(&line) {
+            add(&mut stretch, record, at);
+        }
+        at += u64::try_from(read).ok()?;
+        end = at;
+        list_of(&mut stretch, list).retain(|said| said.id > after);
+        found = list_of(&mut stretch, list).len();
+    }
+    drop(lines);
+    let entries = list_of(&mut stretch, list);
+    let more = found > count || end < len;
+    entries.truncate(count);
+    if list == List::Activity {
+        results_after(file, end, len, &mut stretch)?;
+    }
+    Some(Page {
+        entries: mem::take(list_of(&mut stretch, list)),
+        more,
+    })
+}
+
+/// The bytes of the line that starts at `at`, with its line break.
+fn line_at(file: &mut fs::File, at: u64) -> Option<Vec<u8>> {
+    file.seek(SeekFrom::Start(at)).ok()?;
+    let mut line = Vec::new();
+    BufReader::new(file).read_until(b'\n', &mut line).ok()?;
+    (line.last() == Some(&b'\n')).then_some(line)
+}
+
+/// Gives the calls of `stretch`'s activity the results written from byte `from`
+/// on, up to [`AHEAD`] of it and up to `len`, until every call has one.
+fn results_after(file: &mut fs::File, from: u64, len: u64, stretch: &mut Stretch) -> Option<()> {
+    let stop = len.min(from.saturating_add(AHEAD));
+    file.seek(SeekFrom::Start(from)).ok()?;
+    let mut lines = BufReader::with_capacity(1 << 18, file);
+    let mut line = Vec::new();
+    let mut at = from;
+    while at < stop
+        && stretch
+            .facts
+            .activity
+            .iter()
+            .any(|said| said.result.is_none())
+    {
+        line.clear();
+        let read = lines.read_until(b'\n', &mut line).ok()?;
+        if read == 0 || line.last() != Some(&b'\n') {
+            break;
+        }
+        at += u64::try_from(read).ok()?;
+        if let Ok(record) = serde_json::from_slice::<Record<'_>>(&line)
+            && record.kind == "user"
+            && !record.is_meta
+            && !record.summary
+            && !record.sidechain
+            && let Some(content) = record.message.and_then(|message| message.content)
+        {
+            results(stretch, content);
+        }
+    }
+    Some(())
+}
+
 /// The task list Claude Code keeps for the session whose transcript is
 /// at `transcript`, one file per task under `~/.claude/tasks`: in the
 /// folder of the session's team, `session-` and the first 8 characters
@@ -1374,7 +1537,9 @@ mod tests {
     use std::path::PathBuf;
     use std::{env, process};
 
-    use super::{EntryId, Facts, KEEP, List, Reading, read_forward, tasks};
+    use serde_json::{Value, json};
+
+    use super::{AHEAD, EntryId, Facts, KEEP, List, Reading, Said, Way, page, read_forward, tasks};
 
     /// A transcript of `turns` turns: a prompt, then a reply that creates
     /// a task, edits a file and, every fifth turn, carries a long text, so
@@ -1541,6 +1706,212 @@ mod tests {
         assert_eq!(facts.activity_total, 40);
         assert!(!facts.older(List::Log) && !facts.older(List::Activity));
         let _ = fs::remove_file(path);
+    }
+
+    /// One line of a transcript.
+    fn line(value: &Value) -> String {
+        format!("{value}\n")
+    }
+
+    fn prompt(text: &str) -> String {
+        line(&json!({
+            "type": "user",
+            "timestamp": "2026-01-01T00:00:00Z",
+            "message": {"content": text},
+        }))
+    }
+
+    /// A reply with `parts`, such as text and tool calls.
+    fn reply(parts: &[Value]) -> String {
+        line(&json!({
+            "type": "assistant",
+            "timestamp": "2026-01-01T00:00:01Z",
+            "message": {"model": "m", "content": parts},
+        }))
+    }
+
+    fn text(text: &str) -> Value {
+        json!({"type": "text", "text": text})
+    }
+
+    fn bash(id: &str, command: &str) -> Value {
+        json!({"type": "tool_use", "id": id, "name": "Bash", "input": {"command": command}})
+    }
+
+    /// What the call `id` gave back.
+    fn output(id: &str, out: &str) -> String {
+        line(&json!({
+            "type": "user",
+            "timestamp": "2026-01-01T00:00:02Z",
+            "message": {"content": [{"type": "tool_result", "tool_use_id": id, "content": out}]},
+        }))
+    }
+
+    /// `count` turns, each of three lines: a prompt, a reply with a call, and
+    /// the call's result.
+    fn turns(count: usize) -> Vec<String> {
+        (0..count)
+            .map(|turn| {
+                [
+                    prompt(&format!("prompt {turn}")),
+                    reply(&[
+                        text(&format!("reply {turn}")),
+                        bash(&format!("c{turn}"), &format!("echo {turn}")),
+                    ]),
+                    output(&format!("c{turn}"), &format!("out {turn}")),
+                ]
+                .concat()
+            })
+            .collect()
+    }
+
+    /// What `list` has of a transcript's facts.
+    fn of(facts: &Facts, list: List) -> Vec<Said> {
+        facts.entries(list).to_vec()
+    }
+
+    #[test]
+    fn a_page_holds_the_entries_before_the_one_asked() {
+        let all = turns(1000);
+        let path = file("older", &all.concat());
+        // The same lines, ending where the page ends, read as the daemon reads
+        // them for the facts.
+        let ends = |turns: usize| forward(&file("prefix", &all[..turns].concat()));
+        let window = forward(&path);
+        for (list, ended) in [(List::Activity, 700), (List::Log, 850)] {
+            let first = of(&window, list)[0].id;
+            let got = page(&path, Way::Older, list, first, 100).expect("a page");
+            assert_eq!(got.entries, of(&ends(ended), list)[200..], "{list:?}");
+            assert!(got.more, "{list:?}");
+        }
+        let got = page(
+            &path,
+            Way::Older,
+            List::Activity,
+            of(&window, List::Activity)[0].id,
+            100,
+        )
+        .expect("a page");
+        let texts: Vec<_> = got.entries.iter().map(|said| said.text.as_str()).collect();
+        assert_eq!(texts.first(), Some(&"echo 600"));
+        assert_eq!(texts.last(), Some(&"echo 699"));
+        assert!(got.entries.iter().all(|said| said.result.is_some()));
+        let _ = fs::remove_file(path);
+        let _ = fs::remove_file(
+            env::temp_dir().join(format!("rawr-facts-prefix-{}.jsonl", process::id())),
+        );
+    }
+
+    #[test]
+    fn the_first_entries_of_a_session() {
+        let path = file("first-entries", &turns(3).concat());
+        let all = of(&forward(&path), List::Activity);
+        let got = page(&path, Way::Older, List::Activity, all[1].id, 100).expect("a page");
+        assert_eq!(got.entries, all[..1]);
+        assert!(!got.more);
+        let got = page(&path, Way::Older, List::Activity, all[0].id, 100).expect("a page");
+        assert_eq!((got.entries.len(), got.more), (0, false));
+        let _ = fs::remove_file(path);
+    }
+
+    /// A reply with the calls `one` and `two`, then the result of `one` after
+    /// `between`, then the result of `two`.
+    fn two_calls(between: &str) -> String {
+        [
+            prompt("run both"),
+            reply(&[
+                text("both"),
+                bash("one", "echo one"),
+                bash("two", "echo two"),
+            ]),
+            between.to_owned(),
+            output("one", "one out"),
+            output("two", "two out"),
+        ]
+        .concat()
+    }
+
+    #[test]
+    fn a_result_just_past_the_page() {
+        let path = file("past", &two_calls(""));
+        let both = of(&forward(&path), List::Activity);
+        // The page ends inside the reply that makes both calls, so the result
+        // of the first is on a line after the page's last.
+        let got = page(&path, Way::Older, List::Activity, both[1].id, 100).expect("a page");
+        assert_eq!(got.entries.len(), 1);
+        assert_eq!(got.entries[0].id, both[0].id);
+        assert_eq!(
+            got.entries[0]
+                .result
+                .as_ref()
+                .map(|outcome| outcome.text.as_str()),
+            Some("one out")
+        );
+        assert!(!got.more);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn a_result_far_past_the_page_is_left_out() {
+        let filler = line(&json!({
+            "type": "user",
+            "timestamp": "2026-01-01T00:00:01Z",
+            "message": {"content": [{"type": "text", "text": "x".repeat(usize::try_from(AHEAD).expect("a size"))}]},
+        }));
+        let path = file("far", &two_calls(&filler));
+        let both = of(&forward(&path), List::Activity);
+        let got = page(&path, Way::Older, List::Activity, both[1].id, 100).expect("a page");
+        assert_eq!(got.entries.len(), 1);
+        assert_eq!(got.entries[0].result, None);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn pages_chain_back_to_the_first_line() {
+        let path = file("chain", &turns(1000).concat());
+        let window = of(&forward(&path), List::Activity);
+        let mut at = window[0].id;
+        let mut texts = Vec::new();
+        let mut pages = 0;
+        loop {
+            let got = page(&path, Way::Older, List::Activity, at, 100).expect("a page");
+            pages += 1;
+            texts.splice(0..0, got.entries.iter().map(|said| said.text.clone()));
+            let Some(first) = got.entries.first() else {
+                break;
+            };
+            at = first.id;
+            if !got.more {
+                break;
+            }
+        }
+        assert_eq!(pages, 7);
+        let expected: Vec<String> = (0..700).map(|turn| format!("echo {turn}")).collect();
+        assert_eq!(texts, expected);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn a_newer_page_reloads_what_follows_an_entry() {
+        let path = file("newer", &turns(1000).concat());
+        let window = of(&forward(&path), List::Activity);
+        let got = page(&path, Way::Newer, List::Activity, window[10].id, 50).expect("a page");
+        assert_eq!(got.entries, window[11..61]);
+        assert!(got.more);
+        let end = page(&path, Way::Newer, List::Activity, window[290].id, 50).expect("a page");
+        assert_eq!(end.entries, window[291..]);
+        assert!(!end.more);
+        let log = of(&forward(&path), List::Log);
+        let got = page(&path, Way::Newer, List::Log, log[10].id, 50).expect("a page");
+        assert_eq!(got.entries, log[11..61]);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn a_page_of_a_transcript_that_is_gone_is_none() {
+        let path = env::temp_dir().join("rawr-facts-gone.jsonl");
+        let id = EntryId { line: 0, index: 0 };
+        assert_eq!(page(&path, Way::Older, List::Log, id, 100), None);
     }
 
     #[test]
