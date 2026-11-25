@@ -2991,6 +2991,7 @@ fn help(frame: &mut Frame<'_>, stand_in: bool) {
             ("↑ ↓ j k", "move the selection, or scroll the session"),
             ("enter", "go to the pane; open the session; resume it"),
             ("g  r", "go to the pane; resume the session here"),
+            ("x", "close an opened pane"),
             ("[  ]", "the session's tabs"),
             ("/", "filter what has focus; esc clears it"),
             ("ctrl+f", "search every session; esc closes it"),
