@@ -221,6 +221,21 @@ queue:
     plan: openspec/changes/history-pages/proposal.md
     notes:
       - 2026-11-25, the maintainer chose load on demand for the history past 300 entries, and asked that the loading go unnoticed.
+
+  - id: RAWR-034
+    title: Drag the scrollbar, and show it only while in use
+    scope: app
+    outcome: >-
+      Every list in rawr scrolls by dragging its scrollbar, and the bar stays out of
+      sight until the list scrolls or the pointer reaches it.
+    blocked_by: []
+    acceptance:
+      - Dragging the Activity thumb moves the list with the pointer, and dragging it to the bottom of a long session shows its first calls without loading every page between.
+      - A press on the track pages the list by one view toward the press.
+      - A bar shows while its list scrolls, under the pointer and while held, and is gone 1 s after.
+    plan: openspec/changes/scrollbar/proposal.md
+    notes:
+      - 2026-11-25, the maintainer asked for a draggable scrollbar that is not always visible.
 archive:
   - id: RAWR-021
     title: Draw the picker search box at the bottom
