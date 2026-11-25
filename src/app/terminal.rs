@@ -21,6 +21,8 @@ use ratatui::crossterm::terminal::{
 };
 use ratatui::crossterm::{execute, queue};
 
+use super::report::{TITLE_BYTES, one_line};
+
 /// How long input is read and dropped after mouse reporting stops, so reports
 /// already on their way are not typed into the shell.
 const DRAIN: Duration = Duration::from_millis(50);
@@ -36,9 +38,23 @@ type Out = CrosstermBackend<BufWriter<Stderr>>;
 /// terminal is, and lets the panic hook and the guard give it back once.
 static HELD: AtomicBool = AtomicBool::new(false);
 
+/// Whether the app set the pane's terminal title, which the guard then
+/// empties as it gives the terminal back. The panic hook reads it too.
+static TITLED: AtomicBool = AtomicBool::new(false);
+
 /// Clears the Program Status Protocol (OSC 7501) record the app reports
 /// under `id=rawr`, so the pane shows no status once the app is gone.
 const STATUS_CLEAR: &[u8] = b"\x1b]7501;state=clear:id=rawr\x1b\\";
+
+/// Empties the terminal title (OSC 2), as a new shell leaves it: Rex keeps no
+/// title stack to pop.
+const TITLE_CLEAR: &[u8] = b"\x1b]2;\x07";
+
+/// The OSC 2 sequence that sets the terminal title to `title`, with control
+/// characters turned into spaces so the title cannot end the sequence.
+fn title_sequence(title: &str) -> Vec<u8> {
+    format!("\x1b]2;{}\x07", one_line(title, TITLE_BYTES)).into_bytes()
+}
 
 /// The pointer shapes the app asks for with OSC 22.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,14 +92,16 @@ impl fmt::Debug for Screen {
 
 impl Screen {
     /// Takes the terminal: raw mode, the alternate screen, mouse reporting
-    /// with motion for hover, and a hidden cursor. A panic gives it back
-    /// first, since the release build aborts and runs no destructor.
+    /// with motion for hover, and a hidden cursor; with `title`, it also sets
+    /// the pane's terminal title, which giving the terminal back empties. A
+    /// panic gives it back first, since the release build aborts and runs no
+    /// destructor.
     ///
     /// # Errors
     ///
     /// Fails when the terminal refuses raw mode or a write to stderr fails;
     /// whatever was already set is undone.
-    pub(crate) fn enter() -> Result<Self> {
+    pub(crate) fn enter(title: Option<&str>) -> Result<Self> {
         let previous = panic::take_hook();
         panic::set_hook(Box::new(move |info| {
             leave();
@@ -91,6 +109,7 @@ impl Screen {
         }));
         enable_raw_mode().context("enter raw mode")?;
         HELD.store(true, Ordering::Release);
+        TITLED.store(title.is_some(), Ordering::Release);
         let mut err = io::stderr();
         let taken = execute!(
             err,
@@ -102,6 +121,11 @@ impl Screen {
         )
         .context("take the screen")
         .and_then(|()| {
+            if let Some(title) = title {
+                io::stderr()
+                    .write_all(&title_sequence(title))
+                    .context("set the pane's title")?;
+            }
             Terminal::new(CrosstermBackend::new(BufWriter::with_capacity(
                 FRAME_BYTES,
                 io::stderr(),
@@ -170,6 +194,9 @@ fn leave() {
     let mut err = io::stderr();
     let _ = err.write_all(Pointer::Default.sequence());
     let _ = err.write_all(STATUS_CLEAR);
+    if TITLED.swap(false, Ordering::AcqRel) {
+        let _ = err.write_all(TITLE_CLEAR);
+    }
     let _ = execute!(
         err,
         DisableBracketedPaste,
@@ -193,10 +220,21 @@ fn leave() {
 
 #[cfg(test)]
 mod tests {
-    use super::STATUS_CLEAR;
+    use super::{STATUS_CLEAR, TITLE_CLEAR, title_sequence};
 
     #[test]
     fn the_clear_record_matches_the_protocol() {
         assert_eq!(STATUS_CLEAR, b"\x1b]7501;state=clear:id=rawr\x1b\\");
+    }
+
+    #[test]
+    fn the_title_sequences_match_osc_2() {
+        assert_eq!(title_sequence("Fix checkout"), b"\x1b]2;Fix checkout\x07");
+        assert_eq!(TITLE_CLEAR, b"\x1b]2;\x07");
+    }
+
+    #[test]
+    fn a_title_cannot_end_its_own_sequence() {
+        assert_eq!(title_sequence("a\u{7}\u{1b}]0;b"), b"\x1b]2;a  ]0;b\x07");
     }
 }
