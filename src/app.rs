@@ -282,10 +282,16 @@ pub(crate) fn run(view: Option<u64>, mode: &Mode) -> Result<Option<Agent>> {
                                 list,
                                 entries,
                                 more,
+                                failed,
                             } => {
                                 if let Some(history) = histories.get_mut(&path) {
-                                    let stale = history.land(list, entries, more);
-                                    app.layouts.forget(&path, &stale);
+                                    if let Some(reason) = failed {
+                                        history.fail(list);
+                                        app.notice = Some(reason);
+                                    } else {
+                                        let stale = history.land(list, entries, more);
+                                        app.layouts.forget(&path, &stale);
+                                    }
                                 }
                             }
                             FromDaemon::Hits {

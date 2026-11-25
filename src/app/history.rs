@@ -113,6 +113,9 @@ struct Held {
     flight: Option<Ask>,
     /// Where the last frame left the view, and the lead then.
     view: Option<(Reach, usize)>,
+    /// Where the view stood when the last page failed, so the window asks
+    /// again only once the view has moved.
+    stalled: Option<Reach>,
 }
 
 impl Default for Held {
@@ -122,6 +125,7 @@ impl Default for Held {
             older: true,
             flight: None,
             view: None,
+            stalled: None,
         }
     }
 }
@@ -156,6 +160,10 @@ impl History {
     pub(crate) fn settle(&mut self, reach: Reach, lead: usize) -> Option<Ask> {
         let held = &mut self.lists[reach.list.index()];
         held.view = Some((reach, lead));
+        if held.stalled == Some(reach) {
+            return None;
+        }
+        held.stalled = None;
         if held.flight.is_some() {
             return None;
         }
@@ -187,6 +195,15 @@ impl History {
         };
         held.flight = Some(ask);
         Some(ask)
+    }
+
+    /// The page asked for in `list` could not be read. The list stays open, and
+    /// the page is asked for again when the view moves.
+    pub(crate) fn fail(&mut self, list: List) {
+        let held = &mut self.lists[list.index()];
+        if held.flight.take().is_some() {
+            held.stalled = held.view.map(|(reach, _)| reach);
+        }
     }
 
     /// The daemon connection was lost, and with it the pages in flight.
@@ -535,6 +552,22 @@ mod tests {
                 .settle(view(&history, (0, 10), (0, 100)), LEAD_MIN)
                 .is_some()
         );
+    }
+
+    #[test]
+    fn a_page_that_failed_leaves_the_list_open_until_the_view_moves() {
+        let all = world(2400);
+        let mut history = History::default();
+        history.merge(facts_of(&all, 2100..2400));
+        let near = view(&history, (0, 10), (0, 100));
+        assert!(history.settle(near, LEAD_MIN).is_some());
+        history.fail(List::Activity);
+        // The same view asks for nothing, and the list has not ended.
+        assert_eq!(history.settle(near, LEAD_MIN), None);
+        assert_eq!(history.shape(List::Activity).older, 2100);
+        // The view moves, and the page is asked for again.
+        let moved = view(&history, (0, 10), (0, 99));
+        assert!(history.settle(moved, LEAD_MIN).is_some());
     }
 
     #[test]

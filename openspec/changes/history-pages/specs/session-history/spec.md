@@ -10,12 +10,23 @@ It SHALL read them from the transcript on disk and keep none of them.
 #### Scenario: A page of older activity
 
 - **WHEN** a session has 1,000 tool calls and a window that holds the newest 300 asks `older` before the oldest of them, with a count of 100
-- **THEN** the daemon answers with calls 601 to 700 counted from the newest, oldest first, and that older ones remain
+- **THEN** the daemon answers with calls 301 to 400 counted from the newest, oldest first, and that older ones remain
 
 #### Scenario: The first entries of a session
 
 - **WHEN** a window asks `older` before the second tool call of a session, with a count of 100
 - **THEN** the daemon answers with the first call and that no older ones remain
+
+### Requirement: A page that cannot be read
+
+The daemon SHALL answer `older` or `newer` for a transcript it cannot read with a failure that names the reason, never with an empty page.
+The window SHALL show the reason as a notice and keep the list open, and SHALL ask again only when the view moves.
+
+#### Scenario: An unreadable transcript
+
+- **WHEN** the transcript is gone when a window asks for a page
+- **THEN** the daemon answers with a failure and its reason, and the window shows it
+- **AND** the list does not end, and the window asks again only after the view moves
 
 ### Requirement: Results across a page's edge
 

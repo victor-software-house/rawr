@@ -478,23 +478,30 @@ struct Job {
 
 /// A thread that answers every page request, in order. It drops none, unlike
 /// [`worker`], since a window waits for the answer to each. A transcript that
-/// cannot be read is answered with an empty page that ends the list, so no
-/// request goes unanswered.
+/// cannot be read is answered with a failure, so no request goes unanswered and
+/// none looks like the start of the session.
 fn pager(send: SyncSender<FromDaemon>) -> mpsc::Sender<Job> {
     let (jobs, inbox) = mpsc::channel::<Job>();
     thread::spawn(move || {
         for job in inbox {
-            let page = facts::page(&job.path, job.way, job.list, job.at, job.count).unwrap_or(
-                facts::Page {
-                    entries: Vec::new(),
-                    more: false,
+            let answer = match facts::page(&job.path, job.way, job.list, job.at, job.count) {
+                Some(page) => FromDaemon::Page {
+                    list: job.list,
+                    entries: page.entries,
+                    more: page.more,
+                    failed: None,
+                    path: job.path,
                 },
-            );
-            let answer = FromDaemon::Page {
-                path: job.path,
-                list: job.list,
-                entries: page.entries,
-                more: page.more,
+                None => FromDaemon::Page {
+                    failed: Some(format!(
+                        "could not read the transcript {}",
+                        job.path.display()
+                    )),
+                    list: job.list,
+                    entries: Vec::new(),
+                    more: true,
+                    path: job.path,
+                },
             };
             if send.send(answer).is_err() {
                 break;
@@ -631,5 +638,38 @@ fn search(
         {
             return;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::env;
+
+    use super::*;
+
+    #[test]
+    fn a_transcript_that_cannot_be_read_is_answered_with_a_failure() {
+        let (send, receive) = mpsc::sync_channel(4);
+        let jobs = pager(send);
+        let path = env::temp_dir().join(format!("rawr-pager-gone-{}.jsonl", process::id()));
+        jobs.send(Job {
+            path,
+            way: Way::Older,
+            list: List::Activity,
+            at: EntryId { line: 0, index: 0 },
+            count: 100,
+        })
+        .expect("the pager takes the job");
+        let FromDaemon::Page {
+            entries, failed, ..
+        } = receive.recv().expect("the pager answers")
+        else {
+            panic!("the answer is a page");
+        };
+        assert_eq!(entries.len(), 0);
+        assert!(
+            failed.is_some_and(|reason| reason.contains("could not read the transcript")),
+            "a failure names its reason"
+        );
     }
 }
