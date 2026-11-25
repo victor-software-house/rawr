@@ -731,9 +731,12 @@ fn complete_line_start(file: &mut fs::File, byte: u64, len: u64) -> Option<u64> 
     }
     // The line is the last and not yet whole: the one before it, if any. When
     // that is longer than the most read back too, the entries before it are
-    // the nearest, so the place is where it ends.
+    // the nearest, so the place is where the last whole line ends.
     match start.checked_sub(1) {
-        Some(before) => line_start(file, before).ok()?.or(Some(start)),
+        Some(before) => match line_start(file, before).ok()? {
+            Some(found) => Some(found),
+            None => last_line_end(file, len),
+        },
         None => Some(0),
     }
 }
@@ -2274,6 +2277,23 @@ mod tests {
         let got = around(&path, List::Activity, at, 100).expect("a page, not an error");
         assert_eq!(got.entries, calls);
         assert_eq!(got.place, Some(calls[99].id));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn a_page_around_a_place_in_a_last_line_over_the_cap_not_yet_whole_stops_before_it() {
+        let whole = turns(100).concat();
+        let long = prompt(&"x".repeat(usize::try_from(LINE_MOST).expect("a size") + (1 << 20)));
+        // The line has no line break yet.
+        let text = [whole.as_str(), long.trim_end()].concat();
+        let path = file("around-last-partial", &text);
+        // A prompt and a reply for each turn.
+        let said = of(&forward(&path), List::Log);
+        assert_eq!(said.len(), 200);
+        let at = u64::try_from(text.len() - (512 << 10)).expect("a size");
+        let got = around(&path, List::Log, at, 100).expect("a page, not an error");
+        assert_eq!(got.entries, said[100..]);
+        assert_eq!(got.place, Some(said[199].id));
         let _ = fs::remove_file(path);
     }
 
