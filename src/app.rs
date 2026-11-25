@@ -567,6 +567,29 @@ fn launches(path: &Path) -> bool {
             })
 }
 
+/// The command that opens `path`, a canonical path, or reveals it when
+/// opening could run it: `open` on macOS, `xdg-open` elsewhere, which can
+/// only show the folder.
+fn opener(path: &Path) -> Command {
+    let reveal = launches(path);
+    if cfg!(target_os = "macos") {
+        let mut command = Command::new("/usr/bin/open");
+        if reveal {
+            command.arg("-R");
+        }
+        command.arg(path);
+        command
+    } else {
+        let mut command = Command::new("xdg-open");
+        command.arg(if reveal {
+            path.parent().unwrap_or(path)
+        } else {
+            path
+        });
+        command
+    }
+}
+
 /// Opens `file` in its default app, as a click on a `file://` link would,
 /// or reveals it when opening could run it, so a click never runs a file a
 /// session wrote; a file gone since the session touched it says so in the
@@ -576,11 +599,7 @@ fn open_file(file: &Path, app: &mut App) {
         app.notice = Some(format!("{} is gone", file.display()));
         return;
     };
-    let mut command = Command::new("/usr/bin/open");
-    if launches(&path) {
-        command.arg("-R");
-    }
-    match command.arg(&path).spawn() {
+    match opener(&path).spawn() {
         Ok(mut child) => {
             // The opener ends at once; its exit is collected off the loop.
             thread::spawn(move || child.wait());
