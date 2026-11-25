@@ -50,13 +50,36 @@ struct State {
     /// The sessions written lately whose pane was closed, newest first.
     closed: Vec<Agent>,
     link: (Reach, Option<String>),
-    clients: HashMap<u64, SyncSender<FromDaemon>>,
+    clients: HashMap<u64, Client>,
     next: u64,
     /// Hand-offs waiting for their new window to draw, by view.
     handoffs: HashMap<u64, Handoff>,
     /// The clients with a go-to under way, which take no other until it
     /// ends, so clicks in a row start one copy, not one each.
     going: HashSet<u64>,
+}
+
+/// One connected window: the queue its writer drains, and its socket, which
+/// the daemon shuts to make the window reconnect.
+struct Client {
+    send: SyncSender<FromDaemon>,
+    socket: UnixStream,
+}
+
+impl State {
+    /// A daemon that has seen no feed and no client yet.
+    fn new() -> Self {
+        Self {
+            panes: Vec::new(),
+            open: Vec::new(),
+            closed: Vec::new(),
+            link: (Reach::Stale, Some("reading Rex".to_owned())),
+            clients: HashMap::new(),
+            next: 0,
+            handoffs: HashMap::new(),
+            going: HashSet::new(),
+        }
+    }
 }
 
 /// A floating window going to a pane in another tab: the copy the daemon
@@ -104,16 +127,7 @@ pub(crate) fn run() -> Result<()> {
         .with_context(|| format!("restrict {}", path.display()))?;
     let hub = Arc::new(Hub {
         build: Build::current()?,
-        state: Mutex::new(State {
-            panes: Vec::new(),
-            open: Vec::new(),
-            closed: Vec::new(),
-            link: (Reach::Stale, Some("reading Rex".to_owned())),
-            clients: HashMap::new(),
-            next: 0,
-            handoffs: HashMap::new(),
-            going: HashSet::new(),
-        }),
+        state: Mutex::new(State::new()),
         facts: Mutex::new(HashMap::new()),
         catalog: Mutex::new(None),
     });
@@ -211,12 +225,22 @@ fn set_link(hub: &Hub, reach: Reach, why: String) {
 }
 
 /// Queues `message` for every client, and drops a client whose queue is full.
+///
+/// The queue itself never closes while the client's workers and pager hold
+/// its sender, so a full queue also shuts the client's socket. That ends the
+/// window's reader, and its link reconnects with the same view. On connecting
+/// the app asks for its facts again and runs its search again, so nothing is
+/// lost.
 fn broadcast(state: &mut State, message: &FromDaemon) {
     state
         .clients
-        .retain(|_, client| match client.try_send(message.clone()) {
+        .retain(|_, client| match client.send.try_send(message.clone()) {
             Ok(()) => true,
-            Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) => false,
+            Err(TrySendError::Full(_)) => {
+                let _ = client.socket.shutdown(Shutdown::Both);
+                false
+            }
+            Err(TrySendError::Disconnected(_)) => false,
         });
 }
 
@@ -227,6 +251,9 @@ fn broadcast(state: &mut State, message: &FromDaemon) {
 )]
 fn serve(hub: &Arc<Hub>, stream: UnixStream, socket: &Path) {
     let Ok(writer) = stream.try_clone() else {
+        return;
+    };
+    let Ok(closer) = stream.try_clone() else {
         return;
     };
     let mut lines = BufReader::new(stream);
@@ -272,7 +299,13 @@ fn serve(hub: &Arc<Hub>, stream: UnixStream, socket: &Path) {
             state: reach,
             reason,
         });
-        state.clients.insert(id, send.clone());
+        state.clients.insert(
+            id,
+            Client {
+                send: send.clone(),
+                socket: closer,
+            },
+        );
         (id, view)
     };
     // The transcript this window asked for last; a read of another stops.
@@ -711,8 +744,36 @@ fn search(
 #[cfg(test)]
 mod tests {
     use std::env;
+    use std::io::Read;
 
     use super::*;
+
+    #[test]
+    fn a_full_queue_drops_the_client_and_closes_its_socket() {
+        let mut state = State::new();
+        let (send, _queue) = mpsc::sync_channel(1);
+        send.try_send(FromDaemon::Notice {
+            text: "waiting".to_owned(),
+        })
+        .expect("the queue takes one message");
+        let (socket, mut window) = UnixStream::pair().expect("a socket pair");
+        // A socket left open fails the read by timeout instead of hanging.
+        window
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("a read timeout");
+        state.clients.insert(7, Client { send, socket });
+        broadcast(
+            &mut state,
+            &FromDaemon::Notice {
+                text: "one too many".to_owned(),
+            },
+        );
+        assert!(state.clients.is_empty(), "the client is dropped");
+        // The window's end reads the end of the stream, as its reader does
+        // when the daemon shuts the socket.
+        let mut buffer = [0_u8; 8];
+        assert_eq!(window.read(&mut buffer).expect("the socket reads"), 0);
+    }
 
     #[test]
     fn a_transcript_that_cannot_be_read_is_answered_with_a_failure() {
