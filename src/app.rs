@@ -8,6 +8,7 @@
 
 pub(crate) mod facts;
 pub(crate) mod feed;
+mod layouts;
 mod markup;
 mod pacing;
 mod report;
@@ -25,7 +26,7 @@ use std::time::{Duration, Instant};
 use std::{env, io, thread};
 
 use anyhow::{Context, Result};
-use pacing::{Motion, Moves, Pacer, Report as Wheel, Wake};
+use pacing::{Moves, Pacer, Report as Wheel, Wake};
 use ratatui::crossterm::cursor::SetCursorStyle;
 use ratatui::crossterm::event::{self, Event};
 use ratatui::crossterm::execute;
@@ -143,8 +144,8 @@ pub(crate) fn run(view: Option<u64>, mode: &Mode) -> Result<Option<Agent>> {
                     app.scroll_lines(list, lines);
                 }
             }
-            // The spinner follows the clock, so input arriving between ticks
-            // never holds it still.
+            // The spinner follows its own cadence, so input arriving between
+            // its turns never holds it still.
             app.frame = spin_at(started, Instant::now());
             drawn_spin = app.frame;
             let known = agent
@@ -152,9 +153,9 @@ pub(crate) fn run(view: Option<u64>, mode: &Mode) -> Result<Option<Agent>> {
                 .and_then(|agent| facts.get(&agent.transcript));
             let shown = agent.as_ref().map(|agent| (agent, known));
             screen
-                .draw(|frame| hits = view::draw(frame, &app, shown))
+                .draw(|frame| hits = view::draw(frame, &mut app, shown))
                 .context("draw the app")?;
-            app.settle(&hits.tops);
+            app.settle(&hits.tops, hits.anchor);
             app.cols = hits.width;
             // The window this one replaces stays on screen until this one has
             // drawn the panes; then the daemon swaps them.
@@ -168,10 +169,14 @@ pub(crate) fn run(view: Option<u64>, mode: &Mode) -> Result<Option<Agent>> {
                 Pointer::Default
             })?;
         }
-        // The clock runs while a report waits or something moves; at rest the
-        // loop sleeps until input, or until a pointer past the window's edge
-        // has been away long enough to shut the drawer.
-        let wait = [pacer.due(motion(&app, started, drawn_spin)), app.wake_at()]
+        // The clock runs while a report waits or something moves. Otherwise
+        // the loop sleeps until input, until the spinner turns, or until a
+        // pointer past the window's edge has been away long enough to shut the
+        // drawer.
+        let spinner = app.animating().then(|| {
+            started + SPIN * u32::try_from(spin_at(started, Instant::now()) + 1).unwrap_or(u32::MAX)
+        });
+        let wait = [pacer.due(app.moving()), spinner, app.wake_at()]
             .into_iter()
             .flatten()
             .min()
@@ -248,6 +253,9 @@ pub(crate) fn run(view: Option<u64>, mode: &Mode) -> Result<Option<Agent>> {
                                 };
                             }
                             FromDaemon::Facts { path, facts: read } => {
+                                if let Some(before) = facts.get(&path) {
+                                    app.layouts.refresh(&path, before, &read);
+                                }
                                 facts.insert(path, read);
                             }
                             FromDaemon::Hits {
@@ -343,22 +351,9 @@ pub(crate) fn run(view: Option<u64>, mode: &Mode) -> Result<Option<Agent>> {
             now: woke,
             reports: &reports,
             urgent,
-            motion: motion(&app, started, drawn_spin),
+            moving: app.moving(),
+            spun: app.animating() && spin_at(started, woke) != drawn_spin,
         });
-    }
-}
-
-/// What keeps the clock running besides the wheel: focus on the move, or a
-/// pane at work whose spinner has turned since the frame `drawn` drew.
-fn motion(app: &App, started: Instant, drawn: usize) -> Motion {
-    if app.moving() {
-        Motion::Moving
-    } else if !app.animating() {
-        Motion::Still
-    } else if spin_at(started, Instant::now()) == drawn {
-        Motion::Turning
-    } else {
-        Motion::Changed
     }
 }
 

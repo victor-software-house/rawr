@@ -2,9 +2,9 @@
 //! draws or reads the terminal, so every event is a plain function of the
 //! state.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::env;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use ratatui::crossterm::event::{
@@ -13,6 +13,7 @@ use ratatui::crossterm::event::{
 
 use crate::app::facts::EntryId;
 use crate::app::feed::Pane;
+use crate::app::layouts::Layouts;
 use crate::catalog::Hit;
 use crate::session::Agent;
 use crate::status::Status;
@@ -284,6 +285,20 @@ pub(crate) struct Scroll {
     pub(crate) top: u16,
     /// Whether the next frame brings the selection into view.
     pub(crate) follow: bool,
+    /// For the prompts and the activity: the entry the first line on screen
+    /// belongs to, and how far into it. The view finds the line again by it, so
+    /// entries that arrive above it move nothing on screen. `None` shows `top`,
+    /// which is the newest entry first while it is 0.
+    pub(crate) anchor: Option<Anchor>,
+}
+
+/// A place in a list of entries: a line within an entry. The line may lie
+/// outside the entry, before its first line or after its last, which is how
+/// a scroll reaches the entries around it before the next frame places it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Anchor {
+    pub(crate) id: EntryId,
+    pub(crate) line: i32,
 }
 
 #[derive(Debug)]
@@ -335,8 +350,10 @@ pub(crate) struct App {
     pub(crate) files_shown: Shown,
     /// The one file type the files tab lists, by its chip's key.
     pub(crate) file_type: Option<u64>,
-    /// The entries opened by a click, by id.
-    pub(crate) open: HashSet<EntryId>,
+    /// The entries opened by a click, by id, for each transcript.
+    pub(crate) open: HashMap<PathBuf, HashSet<EntryId>>,
+    /// The entries of the transcript shown, laid out.
+    pub(crate) layouts: Layouts,
     /// The pane to select once the feed lists it, by block ID.
     pub(crate) want: Option<String>,
     /// The block of the pane this window stands in for, when it is a
@@ -416,7 +433,8 @@ impl App {
             hover: None,
             frame: 0,
             show_scratch: false,
-            open: HashSet::new(),
+            open: HashMap::new(),
+            layouts: Layouts::default(),
             show_scratch_files: false,
             files_shown: Shown::All,
             file_type: None,
@@ -465,13 +483,15 @@ impl App {
     }
 
     /// Keeps where the last frame scrolled each list to.
-    pub(crate) fn settle(&mut self, tops: &[(Focus, u16)]) {
+    pub(crate) fn settle(&mut self, tops: &[(Focus, u16)], anchor: Option<Anchor>) {
         for (list, top) in tops {
             *self.scroll_mut(*list) = Scroll {
                 top: *top,
                 follow: false,
+                anchor: None,
             };
         }
+        self.scroll_mut(Focus::Session).anchor = anchor;
     }
 
     pub(crate) fn selected(&self) -> Option<&Pane> {
@@ -1072,6 +1092,7 @@ impl App {
             *self.scroll_mut(list) = Scroll {
                 top: 0,
                 follow: true,
+                anchor: None,
             };
         }
     }
@@ -1319,10 +1340,15 @@ impl App {
                 self.dragging = Some(grip);
                 Action::None
             }
-            Target::Entry(key) => {
+            Target::Entry(id) => {
+                // The entry belongs to the session drawn when it was clicked.
+                let transcript = self.current().map(|agent| agent.transcript.clone());
                 self.focus_here(Focus::Session);
-                if !self.open.remove(&key) {
-                    self.open.insert(key);
+                if let Some(transcript) = transcript {
+                    let open = self.open.entry(transcript).or_default();
+                    if !open.remove(&id) {
+                        open.insert(id);
+                    }
                 }
                 Action::None
             }
@@ -1356,8 +1382,13 @@ impl App {
     /// frame clamps it to the list.
     pub(crate) fn scroll_lines(&mut self, list: Focus, lines: i64) {
         let scroll = self.scroll_mut(list);
-        let lines = i16::try_from(lines).unwrap_or(if lines < 0 { i16::MIN } else { i16::MAX });
-        scroll.top = scroll.top.saturating_add_signed(lines);
+        if let Some(anchor) = &mut scroll.anchor {
+            let lines = i32::try_from(lines).unwrap_or(if lines < 0 { i32::MIN } else { i32::MAX });
+            anchor.line = anchor.line.saturating_add(lines);
+        } else {
+            let lines = i16::try_from(lines).unwrap_or(if lines < 0 { i16::MIN } else { i16::MAX });
+            scroll.top = scroll.top.saturating_add_signed(lines);
+        }
         scroll.follow = false;
     }
 
