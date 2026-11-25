@@ -20,4 +20,4 @@
 - [ ] 2.1 The README and the key help describe scrolling and loading as they now behave; proved by review.
 - [ ] 2.2 The maintainer scrolls back through a long session in Rex and judges whether the loading shows; proved by their review of a preview binary they asked for.
 
-[ci-run]: https://github.com/victor-software-house/rawr/actions/runs/45646806991
+[ci-run]: https://github.com/victor-software-house/rawr/actions/runs/45651550054
