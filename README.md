@@ -298,6 +298,7 @@ files:
 
 By default, images and PDF open in their default app, and text and source files open in a text editor.
 Any other kind, a folder, or a file with an execute bit opens in its folder, so a click never runs a file a session wrote.
+Off macOS, which has no way to open any file as text, text kinds open in their folder too.
 A list you set replaces its default list.
 To let a kind open in its default app, add it to `open`.
 

@@ -569,8 +569,9 @@ fn opener(path: &Path, how: Opening) -> Command {
     } else {
         let mut command = Command::new("xdg-open");
         command.arg(match how {
-            Opening::Open | Opening::Text => path,
-            Opening::Reveal => path.parent().unwrap_or(path),
+            Opening::Open => path,
+            // xdg-open has no text mode: it would start the kind's own handler.
+            Opening::Text | Opening::Reveal => path.parent().unwrap_or(path),
         });
         command
     };
@@ -589,7 +590,11 @@ fn open_file(file: &Path, files: &Files, app: &mut App) {
         app.notice = Some(format!("{} is gone", file.display()));
         return;
     };
-    let how = opening(&path, files);
+    let how = match opening(&path, files) {
+        // Only macOS can open a file as text whatever its kind.
+        Opening::Text if !cfg!(target_os = "macos") => Opening::Reveal,
+        how => how,
+    };
     match opener(&path, how).spawn() {
         Ok(mut child) => {
             // The opener ends at once; its exit is collected off the loop.
