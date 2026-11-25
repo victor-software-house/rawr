@@ -18,7 +18,7 @@ use crate::catalog;
 use crate::index::{self, BlockId, PaneIndex};
 use crate::rex::events::Event;
 use crate::rex::{Block, Client, Endpoint, Session, StatusRecord, session_is_gone};
-use crate::session::{self, Agent};
+use crate::session::{self, Agent, Titles};
 use crate::status::{self, Status};
 
 /// One Rex pane whose index lists a Claude session.
@@ -104,10 +104,14 @@ fn follow(updates: &Sender<Update>) -> Result<()> {
     };
     let dir = index::state_dir()?;
     let mut panes = BTreeMap::new();
+    let mut titles = Titles::default();
     for session in &watch.sessions {
         list_session(&mut lister, session, &mut panes)?;
     }
-    if updates.send(Update::Panes(view(&panes, &dir))).is_err() {
+    if updates
+        .send(Update::Panes(view(&panes, &dir, &mut titles)))
+        .is_err()
+    {
         return Ok(());
     }
     for event in watch.events {
@@ -137,7 +141,11 @@ fn follow(updates: &Sender<Update>) -> Result<()> {
                 true
             }
         };
-        if changed && updates.send(Update::Panes(view(&panes, &dir))).is_err() {
+        if changed
+            && updates
+                .send(Update::Panes(view(&panes, &dir, &mut titles)))
+                .is_err()
+        {
             return Ok(());
         }
     }
@@ -209,13 +217,16 @@ fn relist(
 }
 
 /// The panes whose index lists a session, with each pane's sessions read
-/// again, so a session recorded since the last update shows.
-fn view(panes: &BTreeMap<String, Tracked>, dir: &Path) -> Vec<Pane> {
+/// again, so a session recorded since the last update shows. `titles` keeps
+/// a title from being read again while its transcript is unchanged.
+fn view(panes: &BTreeMap<String, Tracked>, dir: &Path, titles: &mut Titles) -> Vec<Pane> {
     let live = session::live_sessions().unwrap_or_default();
-    panes
+    let listed = panes
         .values()
-        .filter_map(|tracked| pane(tracked, dir, &live))
-        .collect()
+        .filter_map(|tracked| pane(tracked, dir, &live, titles))
+        .collect();
+    titles.sweep();
+    listed
 }
 
 /// The open panes, then a closed pane for each of `closed` that no open
@@ -295,11 +306,16 @@ pub(crate) fn recent() -> Result<Vec<Agent>> {
         .collect())
 }
 
-fn pane(tracked: &Tracked, dir: &Path, live: &HashSet<String>) -> Option<Pane> {
+fn pane(
+    tracked: &Tracked,
+    dir: &Path,
+    live: &HashSet<String>,
+    titles: &mut Titles,
+) -> Option<Pane> {
     let block = BlockId::try_new(&tracked.block.id).ok()?;
     let mut index = PaneIndex::load(dir, &block).ok()?;
     index.prune_missing(index::unix_now());
-    let sessions: Vec<(Agent, bool)> = session::resumable(index.entries(), &HashSet::new())
+    let sessions: Vec<(Agent, bool)> = session::resumable(index.entries(), &HashSet::new(), titles)
         .into_iter()
         .map(|agent| {
             let held = live.contains(&agent.session_id);

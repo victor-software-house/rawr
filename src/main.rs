@@ -195,7 +195,11 @@ fn pane_agents(live: &HashSet<String>) -> Result<Vec<Agent>> {
     };
     let mut pane = PaneIndex::load(&index::state_dir()?, &block)?;
     pane.prune_missing(index::unix_now());
-    Ok(session::resumable(pane.entries(), live))
+    Ok(session::resumable(
+        pane.entries(),
+        live,
+        &mut session::Titles::default(),
+    ))
 }
 
 /// Opens a stand-in on this pane's sessions when one of them can be resumed;

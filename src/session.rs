@@ -1,15 +1,15 @@
 //! What the picker knows about a Claude session: whether a live process holds
 //! it, its title, and how long ago it was active.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::convert::Infallible;
-use std::env;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, ErrorKind, Read, Seek, SeekFrom};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, SystemTime};
+use std::{env, mem};
 
 use anyhow::{Context, Result, bail};
 use memchr::memmem;
@@ -115,22 +115,66 @@ pub(crate) fn live_sessions() -> Result<HashSet<String>> {
     Ok(live)
 }
 
+/// The titles read from transcripts, each kept with the modified time and
+/// length of the transcript it came from, so a title is read again only when
+/// its transcript changed.
+///
+/// Two generations let a transcript that is no longer asked for drop out:
+/// [`Titles::sweep`] keeps what the last round asked for and forgets the rest.
+#[derive(Debug, Default)]
+pub(crate) struct Titles {
+    last: HashMap<PathBuf, (SystemTime, u64, Option<String>)>,
+    next: HashMap<PathBuf, (SystemTime, u64, Option<String>)>,
+}
+
+impl Titles {
+    /// The title of the transcript at `path`, read from the file only when
+    /// `modified` or `len` differ from the ones its last title was read at.
+    pub(crate) fn title(&mut self, path: &Path, modified: SystemTime, len: u64) -> Option<String> {
+        let current =
+            |(seen, size, _): &(SystemTime, u64, Option<String>)| *seen == modified && *size == len;
+        let title = match self
+            .next
+            .remove(path)
+            .filter(current)
+            .or_else(|| self.last.remove(path).filter(current))
+        {
+            Some((_, _, title)) => title,
+            None => transcript_title(path),
+        };
+        self.next
+            .insert(path.to_path_buf(), (modified, len, title.clone()));
+        title
+    }
+
+    /// Ends a round: the titles asked for since the last sweep are the ones
+    /// kept, and the others are forgotten.
+    pub(crate) fn sweep(&mut self) {
+        self.last = mem::take(&mut self.next);
+    }
+}
+
 /// The pane's sessions that still have a transcript and no live process,
-/// newest first.
-pub(crate) fn resumable(entries: &[Entry], live: &HashSet<String>) -> Vec<Agent> {
+/// newest first. `titles` spares the read of a title whose transcript is
+/// unchanged.
+pub(crate) fn resumable(
+    entries: &[Entry],
+    live: &HashSet<String>,
+    titles: &mut Titles,
+) -> Vec<Agent> {
     let now = SystemTime::now();
     entries
         .iter()
         .filter(|entry| !live.contains(&entry.session_id))
         .filter_map(|entry| {
-            let modified = fs::metadata(&entry.transcript)
-                .and_then(|meta| meta.modified())
-                .ok()?;
+            let meta = fs::metadata(&entry.transcript).ok()?;
+            let modified = meta.modified().ok()?;
             let cwd = entry.cwd.to_str()?.to_owned();
             Some(Agent {
                 session_id: entry.session_id.clone(),
                 cwd,
-                title: transcript_title(&entry.transcript)
+                title: titles
+                    .title(&entry.transcript, modified, meta.len())
                     .map_or_else(|| "Untitled session".to_owned(), |title| sanitize(&title)),
                 idle: now.duration_since(modified).ok(),
                 transcript: entry.transcript.clone(),
@@ -410,6 +454,101 @@ mod tests {
         )
         .unwrap();
         assert_eq!(transcript_title(&path).as_deref(), Some("Named later"));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Writes a transcript that names its session `title`, and returns what
+    /// `resumable` stats it as.
+    fn named(path: &Path, title: &str) -> (SystemTime, u64) {
+        fs::write(
+            path,
+            format!("{{\"type\":\"custom-title\",\"customTitle\":\"{title}\"}}\n"),
+        )
+        .unwrap();
+        let meta = fs::metadata(path).unwrap();
+        (meta.modified().unwrap(), meta.len())
+    }
+
+    fn set_modified(path: &Path, modified: SystemTime) {
+        File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(modified)
+            .unwrap();
+    }
+
+    #[test]
+    fn a_title_is_read_again_only_when_its_transcript_changed() {
+        let dir = env::temp_dir().join(format!("rawr-cache-{}", process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("t.jsonl");
+        let (modified, len) = named(&path, "Alpha one");
+        let mut titles = Titles::default();
+        assert_eq!(
+            titles.title(&path, modified, len).as_deref(),
+            Some("Alpha one")
+        );
+
+        // Same length, same modified time: the cached title stands, whether it
+        // sits in this round or the last one.
+        assert_eq!(named(&path, "Bravo two").1, len);
+        set_modified(&path, modified);
+        assert_eq!(
+            titles.title(&path, modified, len).as_deref(),
+            Some("Alpha one")
+        );
+        titles.sweep();
+        assert_eq!(
+            titles.title(&path, modified, len).as_deref(),
+            Some("Alpha one")
+        );
+
+        // A new modified time reads the file again.
+        let later = modified + Duration::from_secs(5);
+        assert_eq!(
+            titles.title(&path, later, len).as_deref(),
+            Some("Bravo two")
+        );
+
+        // So does a new length.
+        let (_, longer) = named(&path, "Charlie three");
+        assert_eq!(
+            titles.title(&path, later, longer).as_deref(),
+            Some("Charlie three")
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_title_not_asked_for_between_two_sweeps_is_forgotten() {
+        let dir = env::temp_dir().join(format!("rawr-sweep-{}", process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let kept = dir.join("kept.jsonl");
+        let dropped = dir.join("dropped.jsonl");
+        let (kept_modified, kept_len) = named(&kept, "Kept one");
+        let (dropped_modified, dropped_len) = named(&dropped, "Gone one");
+        let mut titles = Titles::default();
+        titles.title(&kept, kept_modified, kept_len);
+        titles.title(&dropped, dropped_modified, dropped_len);
+        titles.sweep();
+        titles.title(&kept, kept_modified, kept_len);
+        titles.sweep();
+
+        assert_eq!(named(&dropped, "Gone two").1, dropped_len);
+        set_modified(&dropped, dropped_modified);
+        assert_eq!(
+            titles
+                .title(&dropped, dropped_modified, dropped_len)
+                .as_deref(),
+            Some("Gone two")
+        );
+        assert_eq!(named(&kept, "Kept two").1, kept_len);
+        set_modified(&kept, kept_modified);
+        assert_eq!(
+            titles.title(&kept, kept_modified, kept_len).as_deref(),
+            Some("Kept one")
+        );
         fs::remove_dir_all(&dir).unwrap();
     }
 
