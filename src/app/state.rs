@@ -2018,6 +2018,9 @@ impl App {
         let Some((pane, session)) = self.place_of(&id) else {
             return Action::None;
         };
+        // A pane asked for before would pull the selection away at the next
+        // list.
+        self.want = None;
         self.pane = pane;
         self.session = session;
         // A filter that hides the chosen session would hide what was asked for.
@@ -2706,6 +2709,25 @@ mod tests {
         assert_eq!(app.session, 1);
         assert_eq!(app.focus, Focus::Session);
         assert!(app.query.is_empty() && app.results.is_empty());
+    }
+
+    #[test]
+    fn a_pane_asked_for_earlier_does_not_pull_the_choice_away() {
+        let mut app = listed_app();
+        app.want = Some("block-a".to_owned());
+        search_finds(&mut app, &["block-b-1"]);
+        app.on_key(key(KeyCode::Enter));
+        app.set_panes(vec![
+            pane("block-a", "alpha/one", Status::Working, &["Fix login"]),
+            pane(
+                "block-b",
+                "beta/two",
+                Status::Idle,
+                &["Tune search", "Add coupons"],
+            ),
+        ]);
+        assert_eq!(selected_block(&app), "block-b");
+        assert_eq!(app.session, 1);
     }
 
     #[test]
