@@ -1564,6 +1564,8 @@ fn said(
             )
         })
         .unwrap_or_else(|| i64::from(scroll.top));
+    // The wheel's steps since the last frame count wherever the view stands.
+    let wanted = wanted.saturating_add(i64::from(scroll.anchor.map_or(0, |anchor| anchor.moved)));
     let top = usize::try_from(wanted.max(0))
         .unwrap_or(0)
         .min(total.saturating_sub(usize::from(height)));
@@ -1576,6 +1578,7 @@ fn said(
             .map(|entry| Anchor {
                 id: entry.id,
                 line: i32::try_from(top - entry.start).unwrap_or(i32::MAX),
+                moved: 0,
             })
     };
     let bottom = top + usize::from(height);
@@ -3146,6 +3149,20 @@ mod tests {
         rig.facts.activity.remove(257);
         let shown = rig.entries();
         assert!(shown[0].contains("file-258.rs"), "{shown:?}");
+    }
+
+    #[test]
+    fn a_wheel_step_counts_when_the_anchor_entry_is_gone() {
+        let mut rig = Rig::new(300);
+        rig.scroll(42);
+        let shown = rig.entries();
+        assert!(shown[0].contains("file-257.rs"), "{shown:?}");
+        // The entry goes in the frame the wheel steps 2 lines: the view stays
+        // at the nearest newer entry, 41 lines down, and then moves the 2.
+        rig.facts.activity.remove(257);
+        rig.scroll(2);
+        let shown = rig.entries();
+        assert!(shown[0].contains("file-255.rs"), "{shown:?}");
     }
 
     #[test]

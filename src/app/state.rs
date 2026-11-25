@@ -292,13 +292,15 @@ pub(crate) struct Scroll {
     pub(crate) anchor: Option<Anchor>,
 }
 
-/// A place in a list of entries: a line within an entry. The line may lie
-/// outside the entry, before its first line or after its last, which is how
-/// a scroll reaches the entries around it before the next frame places it.
+/// A place in a list of entries: a line within an entry, and how many lines
+/// the wheel has moved it since a frame placed it. The sum may lie outside the
+/// entry, before its first line or after its last, which is how a scroll
+/// reaches the entries around it before the next frame places it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Anchor {
     pub(crate) id: EntryId,
     pub(crate) line: i32,
+    pub(crate) moved: i32,
 }
 
 #[derive(Debug)]
@@ -1287,15 +1289,20 @@ impl App {
             .map(|since| since + AWAY)
     }
 
-    /// Shuts the drawer once the pointer has stayed past the window's edge.
-    pub(crate) fn tick(&mut self) {
-        if self.outside.is_some_and(|since| since.elapsed() >= AWAY) {
-            self.outside = None;
-            if self.drawer.is_some_and(|drawer| drawer.open) {
-                self.left = Some(Instant::now());
-                self.draw_out(None);
-            }
+    /// Shuts the drawer once the pointer has stayed past the window's edge,
+    /// and returns whether it did. A pointer that has stayed away with the
+    /// drawer shut is forgotten, so a drawer opened later is not shut for it.
+    pub(crate) fn tick(&mut self) -> bool {
+        if self.outside.is_none_or(|since| since.elapsed() < AWAY) {
+            return false;
         }
+        self.outside = None;
+        if !self.drawer.is_some_and(|drawer| drawer.open) {
+            return false;
+        }
+        self.left = Some(Instant::now());
+        self.draw_out(None);
+        true
     }
 
     /// Whether `column` is drawn out over the others.
@@ -1416,7 +1423,7 @@ impl App {
         let scroll = self.scroll_mut(list);
         if let Some(anchor) = &mut scroll.anchor {
             let lines = i32::try_from(lines).unwrap_or(if lines < 0 { i32::MIN } else { i32::MAX });
-            anchor.line = anchor.line.saturating_add(lines);
+            anchor.moved = anchor.moved.saturating_add(lines);
         } else {
             let lines = i16::try_from(lines).unwrap_or(if lines < 0 { i16::MIN } else { i16::MAX });
             scroll.top = scroll.top.saturating_add_signed(lines);
@@ -1753,12 +1760,65 @@ mod tests {
                 index: 0,
             },
             line: 3,
+            moved: 0,
         };
         app.scroll_mut(Focus::Session).anchor = Some(anchor);
         app.settle(&[(Focus::Panes, 0)], None);
         assert_eq!(app.scroll_of(Focus::Session).anchor, Some(anchor));
         app.settle(&[(Focus::Session, 5)], None);
         assert_eq!(app.scroll_of(Focus::Session).anchor, None);
+    }
+
+    #[test]
+    fn a_wheel_step_is_kept_beside_the_anchor_it_moves() {
+        let mut app = App::new(None);
+        app.scroll_lines(Focus::Session, 4);
+        assert_eq!(app.scroll_of(Focus::Session).top, 4);
+        let anchor = Anchor {
+            id: EntryId {
+                line: 100,
+                index: 0,
+            },
+            line: 3,
+            moved: 0,
+        };
+        app.scroll_mut(Focus::Session).anchor = Some(anchor);
+        app.scroll_lines(Focus::Session, 2);
+        app.scroll_lines(Focus::Session, -1);
+        let scroll = app.scroll_of(Focus::Session);
+        assert_eq!(scroll.anchor, Some(Anchor { moved: 1, ..anchor }));
+        assert_eq!(scroll.top, 4);
+    }
+
+    #[test]
+    fn a_drawer_opened_after_the_pointer_left_stays_open() {
+        let mut app = App::new(None);
+        app.set_panes(three_panes(&["Fix checkout"]));
+        // The pointer reports from the window's edge while no drawer is out,
+        // and stays there past the time that shuts a drawer.
+        let edge = MouseEvent {
+            kind: MouseEventKind::Moved,
+            column: 0,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        };
+        let under = Under {
+            size: (100, 40),
+            ..Under::default()
+        };
+        app.on_mouse(edge, under);
+        app.outside = app.outside.and_then(|at| at.checked_sub(AWAY * 2));
+        assert!(app.outside.is_some());
+        // The loop ticks on every wake, so the pointer is forgotten at once.
+        assert!(!app.tick());
+        assert_eq!(app.outside, None);
+        // A window that replaces another opens with the drawer out.
+        let mut carry = app.carry();
+        carry.drawn_out = Some(Focus::Panes);
+        app.restore(carry);
+        assert_eq!(app.wake_at(), None);
+        assert!(!app.tick());
+        assert!(app.out(Focus::Panes));
     }
 
     #[test]
@@ -1771,6 +1831,7 @@ mod tests {
                 index: 0,
             },
             line: 3,
+            moved: 0,
         });
         app.take_cleared();
         let click = MouseEvent {
