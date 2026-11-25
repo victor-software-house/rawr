@@ -1298,14 +1298,7 @@ impl App {
                     || mouse.row == 0
                     || mouse.column + 1 >= width
                     || mouse.row + 1 >= height;
-                let was = self.hover;
-                self.hover = if edge { None } else { under.target };
-                // The bar's last moment of use is the pointer leaving it.
-                if let Some(Target::Bar(list)) = was
-                    && self.hover != was
-                {
-                    self.fades[slot(list)].touch(self.now);
-                }
+                self.hover_over(if edge { None } else { under.target });
                 // A folded column draws out while the pointer is on it, and
                 // goes back when the pointer leaves it.
                 if self.focus != Focus::Search {
@@ -1359,13 +1352,24 @@ impl App {
                     self.fades[slot(held.list)].touch(self.now);
                 }
                 self.dragging = None;
-                self.hover = under.target;
+                self.hover_over(under.target);
                 Action::None
             }
             MouseEventKind::Down(_)
             | MouseEventKind::Drag(_)
             | MouseEventKind::ScrollLeft
             | MouseEventKind::ScrollRight => Action::None,
+        }
+    }
+
+    /// The pointer is now over `target`. The bar's last moment of use is the
+    /// pointer leaving it, so it starts to fade there.
+    fn hover_over(&mut self, target: Option<Target>) {
+        let was = mem::replace(&mut self.hover, target);
+        if let Some(Target::Bar(list)) = was
+            && was != target
+        {
+            self.fades[slot(list)].touch(self.now);
         }
     }
 
@@ -1578,7 +1582,7 @@ impl App {
 
     /// The window lost focus: nothing is hovered.
     pub(crate) fn on_blur(&mut self) {
-        self.hover = None;
+        self.hover_over(None);
         self.draw_out(None);
         // The release of a thumb held when focus went may never come: let go
         // of it as a release does, so a place waiting for its entries is asked.
@@ -2579,5 +2583,42 @@ mod tests {
         assert_eq!(app.scroll_of(Focus::Panes).top, 0);
         assert_eq!(app.take_cleared(), []);
         assert_eq!(app.bar_shade(Focus::Panes, Instant::now()), Shade::Hidden);
+    }
+
+    #[test]
+    fn a_bar_the_pointer_leaves_fades_whichever_way_it_goes() {
+        let ms = Duration::from_millis;
+        let t0 = Instant::now();
+        let onto = Under {
+            target: Some(Target::Bar(Focus::Panes)),
+            size: (100, 40),
+            ..Under::default()
+        };
+        let off = Under {
+            size: (100, 40),
+            ..Under::default()
+        };
+        let bar = |app: &mut App| {
+            app.settle(
+                &[(Focus::Panes, 0)],
+                None,
+                &[track(Focus::Panes, 20, (0, 100))],
+            );
+            app.now = t0;
+            app.on_mouse(pointer(MouseEventKind::Moved, 8), onto);
+            assert_eq!(app.bar_shade(Focus::Panes, t0), Shade::Lit);
+        };
+        // The window loses focus.
+        let mut app = App::new(None);
+        bar(&mut app);
+        app.on_blur();
+        assert_eq!(app.bar_shade(Focus::Panes, t0 + ms(799)), Shade::Rest);
+        assert_eq!(app.bar_shade(Focus::Panes, t0 + ms(1000)), Shade::Hidden);
+        // A release over another target.
+        let mut app = App::new(None);
+        bar(&mut app);
+        app.on_mouse(pointer(MouseEventKind::Up(LEFT), 8), off);
+        assert_eq!(app.bar_shade(Focus::Panes, t0 + ms(799)), Shade::Rest);
+        assert_eq!(app.bar_shade(Focus::Panes, t0 + ms(1000)), Shade::Hidden);
     }
 }
