@@ -106,6 +106,9 @@ pub(crate) fn run(view: Option<u64>, mode: &Mode) -> Result<Option<Agent>> {
     let mut generation: u64 = 0;
     let mut histories: HashMap<PathBuf, History> = HashMap::new();
     let mut asked: Option<PathBuf> = None;
+    // The transcript shown last frame, whose held entries are the only ones
+    // kept.
+    let mut shown_path: Option<PathBuf> = None;
     let title = match mode {
         Mode::Full => None,
         Mode::StandIn { title, .. } => Some(title.as_str()),
@@ -132,6 +135,12 @@ pub(crate) fn run(view: Option<u64>, mode: &Mode) -> Result<Option<Agent>> {
             reporter.send(own_status(&app))?;
         }
         let agent = app.current().cloned();
+        if let Some(agent) = &agent
+            && shown_path.as_ref() != Some(&agent.transcript)
+        {
+            history::keep_only(&mut histories, &agent.transcript);
+            shown_path = Some(agent.transcript.clone());
+        }
         if let Some(agent) = &agent
             && asked.as_ref() != Some(&agent.transcript)
         {
