@@ -366,11 +366,10 @@ const AWAY: Duration = Duration::from_millis(600);
 /// long move and a short one go at the same speed.
 const SPEED: f32 = 320.0;
 
-/// How long the session header takes to fold, unfold or slide out: about
-/// as long as the panes drawer takes to open at its usual width. A row is
-/// twice a column's height, so [`SPEED`] would make the fold a jump, and a
-/// span taken from the drawer's width would change with the window.
-const FOLD: Duration = Duration::from_millis(150);
+/// How long the session header takes to fold, unfold or slide out: the
+/// shortest span a move takes, so the header gets out of the way quickly,
+/// the same at any window size.
+const FOLD: Duration = Duration::from_millis(70);
 
 /// How long a move of `columns` takes: at [`SPEED`], kept between a
 /// glance and a quarter second.
