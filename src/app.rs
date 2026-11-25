@@ -41,6 +41,7 @@ use terminal::{Pointer, Screen};
 use crate::app::facts::Way;
 use crate::app::history::{Ask, History, PAGE};
 use crate::catalog;
+use crate::config::{Config, Files, Opening};
 use crate::daemon::link::{self, Incoming};
 use crate::daemon::{FromDaemon, Reach, ToDaemon};
 use crate::session::Agent;
@@ -81,6 +82,7 @@ pub(crate) enum Mode {
     reason = "one loop that draws, waits and handles every message the window gets"
 )]
 pub(crate) fn run(view: Option<u64>, mode: &Mode) -> Result<Option<Agent>> {
+    let files = Config::load()?.files;
     let (send, receive) = mpsc::channel();
     let input = send.clone();
     thread::spawn(move || {
@@ -415,7 +417,7 @@ pub(crate) fn run(view: Option<u64>, mode: &Mode) -> Result<Option<Agent>> {
                         })
                         .map(|(path, _)| PathBuf::from(path));
                     match (action, file) {
-                        (Action::OpenFile(_), Some(file)) => open_file(&file, &mut app),
+                        (Action::OpenFile(_), Some(file)) => open_file(&file, &files, &mut app),
                         (_, Some(file)) => {
                             let folder = file.parent().map(|folder| folder.display().to_string());
                             app.filters[state::Focus::Session.index()] =
@@ -527,71 +529,48 @@ fn spin_at(started: Instant, now: Instant) -> usize {
         .unwrap_or(0)
 }
 
-/// Extensions of files the system runs, or opens in a program that runs
-/// them, when asked to open them.
-const LAUNCHERS: [&str; 22] = [
-    "app",
-    "command",
-    "tool",
-    "terminal",
-    "workflow",
-    "action",
-    "pkg",
-    "mpkg",
-    "scpt",
-    "scptd",
-    "applescript",
-    "jar",
-    "prefpane",
-    "fileloc",
-    "inetloc",
-    "webloc",
-    "url",
-    "dmg",
-    "mobileconfig",
-    "shortcut",
-    "saver",
-    "desktop",
-];
-
-/// Whether opening `path`, a canonical path, could run it instead of
-/// showing it: a directory (a bundle), a file with an execute bit, or a
-/// file of a kind in [`LAUNCHERS`].
-fn launches(path: &Path) -> bool {
+/// How `path`, a canonical path, opens under `files`, the `files` part of
+/// the config. A file that cannot be read, or whose extension is not valid
+/// UTF-8, is revealed.
+fn opening(path: &Path, files: &Files) -> Opening {
     let Ok(meta) = fs::metadata(path) else {
-        return true;
+        return Opening::Reveal;
     };
-    meta.is_dir()
-        || meta.permissions().mode() & 0o111 != 0
-        || path
-            .extension()
-            .and_then(OsStr::to_str)
-            .is_some_and(|extension| {
-                LAUNCHERS
-                    .iter()
-                    .any(|launcher| extension.eq_ignore_ascii_case(launcher))
-            })
+    if files.reveal_runnable && (meta.is_dir() || meta.permissions().mode() & 0o111 != 0) {
+        return Opening::Reveal;
+    }
+    match path.extension().map(OsStr::to_str) {
+        None => files.kind(None),
+        Some(Some(extension)) => files.kind(Some(extension)),
+        Some(None) => Opening::Reveal,
+    }
 }
 
-/// The command that opens `path`, a canonical path, or reveals it when
-/// `reveal`: `open` on macOS, `xdg-open` elsewhere, which can only show the
-/// folder. Its output goes nowhere, so it never lands on the drawn screen.
-/// A session could still swap the file between the check and the open; the
-/// canonical path narrows that to the moment between the two.
-fn opener(path: &Path, reveal: bool) -> Command {
+/// The command that opens `path`, a canonical path, the way `how` says:
+/// `open` on macOS, with `-t` for text and `-R` to reveal, and `xdg-open`
+/// elsewhere, which reveals by opening the folder. Its output goes nowhere,
+/// so it never lands on the drawn screen. A session could still swap the
+/// file between the check and the open; the canonical path narrows that to
+/// the moment between the two.
+fn opener(path: &Path, how: Opening) -> Command {
     let mut command = if cfg!(target_os = "macos") {
         let mut command = Command::new("/usr/bin/open");
-        if reveal {
-            command.arg("-R");
+        match how {
+            Opening::Open => {}
+            Opening::Text => {
+                command.arg("-t");
+            }
+            Opening::Reveal => {
+                command.arg("-R");
+            }
         }
         command.arg(path);
         command
     } else {
         let mut command = Command::new("xdg-open");
-        command.arg(if reveal {
-            path.parent().unwrap_or(path)
-        } else {
-            path
+        command.arg(match how {
+            Opening::Open | Opening::Text => path,
+            Opening::Reveal => path.parent().unwrap_or(path),
         });
         command
     };
@@ -602,23 +581,22 @@ fn opener(path: &Path, reveal: bool) -> Command {
     command
 }
 
-/// Opens `file` in its default app, as a click on a `file://` link would,
-/// or reveals it when opening could run it, so a click never runs a file a
-/// session wrote; a file gone since the session touched it says so in the
-/// search box.
-fn open_file(file: &Path, app: &mut App) {
+/// Opens `file` the way [`opening`] says, so by default a click never runs
+/// a file a session wrote; a file gone since the session touched it says so
+/// in the search box.
+fn open_file(file: &Path, files: &Files, app: &mut App) {
     let Ok(path) = fs::canonicalize(file) else {
         app.notice = Some(format!("{} is gone", file.display()));
         return;
     };
-    let reveal = launches(&path);
-    match opener(&path, reveal).spawn() {
+    let how = opening(&path, files);
+    match opener(&path, how).spawn() {
         Ok(mut child) => {
             // The opener ends at once; its exit is collected off the loop.
             thread::spawn(move || child.wait());
-            if reveal {
+            if how == Opening::Reveal {
                 app.notice = Some(format!(
-                    "{} could run, so its folder opens instead",
+                    "{} opens in its folder, as the files part of the config says",
                     file.display()
                 ));
             }
@@ -674,41 +652,44 @@ mod tests {
     }
 
     #[test]
-    fn a_folder_launches() {
+    fn a_folder_is_revealed() {
         let dir = env::temp_dir().join(format!("rawr-app-bundle-{}", process::id()));
         fs::create_dir_all(&dir).expect("make the folder");
-        assert!(launches(&dir));
+        assert_eq!(opening(&dir, &Files::default()), Opening::Reveal);
         let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
-    fn a_file_with_an_execute_bit_launches() {
-        let path = file_with("exec", "run.sh", 0o755);
-        assert!(launches(&path));
+    fn a_file_with_an_execute_bit_is_revealed_whatever_its_kind() {
+        let path = file_with("exec", "notes.md", 0o755);
+        assert_eq!(opening(&path, &Files::default()), Opening::Reveal);
+        let files = Files {
+            reveal_runnable: false,
+            ..Files::default()
+        };
+        assert_eq!(opening(&path, &files), Opening::Text);
         let _ = fs::remove_file(path);
     }
 
     #[test]
-    fn a_file_of_a_launching_kind_launches_in_any_case() {
-        let path = file_with("kind", "x.COMMAND", 0o644);
-        assert!(launches(&path));
-        let _ = fs::remove_file(path);
-    }
-
-    #[test]
-    fn a_flat_installer_or_location_file_launches() {
-        for name in ["x.dmg", "x.mobileconfig", "x.url", "x.desktop"] {
-            let path = file_with("flat", name, 0o644);
-            assert!(launches(&path), "{name}");
+    fn only_listed_kinds_open() {
+        for (name, how) in [
+            ("x.COMMAND", Opening::Reveal),
+            ("x.dmg", Opening::Reveal),
+            ("x.jnlp", Opening::Reveal),
+            ("x.term", Opening::Reveal),
+            ("x.desktop", Opening::Reveal),
+            ("x.fileloc", Opening::Reveal),
+            ("notes.rs", Opening::Text),
+            ("script.py", Opening::Text),
+            ("Makefile", Opening::Text),
+            ("shot.PNG", Opening::Open),
+            ("paper.pdf", Opening::Open),
+        ] {
+            let path = file_with("kinds", name, 0o644);
+            assert_eq!(opening(&path, &Files::default()), how, "{name}");
             let _ = fs::remove_file(path);
         }
-    }
-
-    #[test]
-    fn a_plain_file_does_not_launch() {
-        let path = file_with("plain", "notes.rs", 0o644);
-        assert!(!launches(&path));
-        let _ = fs::remove_file(path);
     }
 
     /// A report, then a key that switches the tab, then a report, in one batch:

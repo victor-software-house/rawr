@@ -166,7 +166,7 @@ Entries show a few lines and a `+N` count of the rest; click one to expand it, w
 | Overview | Model, branch, prompts and replies, tokens out, sub-agents, times, tasks |
 | Conversation | What you typed and what Claude answered, newest first |
 | Activity | Every entry, tool calls and results included |
-| Files | Files the session changed and read. Click a file to open it, or a folder to filter the list |
+| Files | Files the session changed and read. Click a file to open it as [Config](#config) sets, or a folder to filter the list |
 
 Enter, or a click, on a search result closes the search and selects the result's session, without resuming it or switching Rex.
 A session no pane lists opens as an Opened pane at the top of the list, with Resume and no Go to pane, until a pane lists it or you close it.
@@ -278,6 +278,28 @@ source <(rawr completion zsh)    # ~/.zshrc, after compinit
 source <(rawr completion bash)   # ~/.bashrc
 rawr completion fish | source    # ~/.config/fish/config.fish
 ```
+
+## Config
+
+rawr reads `$XDG_CONFIG_HOME/rawr/config.yaml`, or `~/.config/rawr/config.yaml`.
+Every key is optional, and a key you leave out keeps its default.
+
+The `files` part sets how a click in the Files tab opens a file.
+A kind is a file extension, in any case.
+
+```yaml
+files:
+  open: [png, jpg, pdf]   # open in their default app
+  text: [md, rs, py, sh]  # open in a text editor, so no handler runs them
+  no_extension: text      # a file with no extension: open, text or reveal
+  other: reveal           # any other kind: open, text or reveal
+  reveal_runnable: true   # show folders and files with an execute bit in their folder
+```
+
+By default, images and PDF open in their default app, and text and source files open in a text editor.
+Any other kind, a folder, or a file with an execute bit opens in its folder, so a click never runs a file a session wrote.
+A list you set replaces its default list.
+To let a kind open in its default app, add it to `open`.
 
 ## Commands
 

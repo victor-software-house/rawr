@@ -9,6 +9,12 @@
 //! drain:
 //!   interrupt: 2m
 //!   grace: 1m
+//! files:
+//!   open: [png, pdf]
+//!   text: [md, rs, py]
+//!   no_extension: text
+//!   other: reveal
+//!   reveal_runnable: true
 //! ```
 //!
 //! Every key is optional, and an absent file holds the defaults. ctl-core's
@@ -46,6 +52,8 @@ pub(crate) struct Config {
     pub(crate) restart: Restart,
     #[garde(skip)]
     pub(crate) drain: Drain,
+    #[garde(skip)]
+    pub(crate) files: Files,
 }
 
 /// How many sessions each pane remembers.
@@ -77,6 +85,85 @@ pub(crate) struct Drain {
     /// settled.
     #[serde(deserialize_with = "positive_duration")]
     pub(crate) grace: Duration,
+}
+
+/// How a click in the Files tab opens a file a session touched. A kind is
+/// matched by its extension, in any case and with or without its dot.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub(crate) struct Files {
+    /// The kinds that open in their default app.
+    pub(crate) open: Vec<String>,
+    /// The kinds that open in a text editor, so that no handler can run
+    /// them, as a `.py` file's would.
+    pub(crate) text: Vec<String>,
+    /// How a file with no extension opens.
+    pub(crate) no_extension: Opening,
+    /// How a kind in neither list opens.
+    pub(crate) other: Opening,
+    /// Whether a folder, which may be a bundle, or a file with an execute
+    /// bit is shown in its folder whatever its kind.
+    pub(crate) reveal_runnable: bool,
+}
+
+/// How a file opens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum Opening {
+    /// In its default app.
+    Open,
+    /// In a text editor.
+    Text,
+    /// Shown in its folder.
+    Reveal,
+}
+
+/// The kinds the system only shows: images and PDF.
+const OPEN: [&str; 11] = [
+    "png", "jpg", "jpeg", "gif", "webp", "heic", "tif", "tiff", "bmp", "ico", "pdf",
+];
+
+/// Text and source kinds.
+const TEXT: [&str; 62] = [
+    "txt", "md", "markdown", "mdx", "rst", "adoc", "log", "csv", "tsv", "json", "jsonl", "yaml",
+    "yml", "toml", "xml", "ini", "cfg", "conf", "lock", "diff", "patch", "rs", "go", "py", "rb",
+    "js", "mjs", "cjs", "ts", "tsx", "jsx", "java", "kt", "swift", "c", "h", "cc", "cpp", "hpp",
+    "m", "mm", "cs", "php", "pl", "lua", "sh", "bash", "zsh", "fish", "sql", "css", "scss", "html",
+    "vue", "svelte", "nix", "tf", "proto", "graphql", "gradle", "dart", "zig",
+];
+
+impl Default for Files {
+    fn default() -> Self {
+        Self {
+            open: OPEN.map(str::to_owned).to_vec(),
+            text: TEXT.map(str::to_owned).to_vec(),
+            no_extension: Opening::Text,
+            other: Opening::Reveal,
+            reveal_runnable: true,
+        }
+    }
+}
+
+impl Files {
+    /// How a file of `extension` opens, `None` for a file with none. A kind
+    /// in both lists opens in its default app.
+    pub(crate) fn kind(&self, extension: Option<&str>) -> Opening {
+        let Some(extension) = extension else {
+            return self.no_extension;
+        };
+        let listed = |kinds: &[String]| {
+            kinds
+                .iter()
+                .any(|kind| kind.trim_start_matches('.').eq_ignore_ascii_case(extension))
+        };
+        if listed(&self.open) {
+            Opening::Open
+        } else if listed(&self.text) {
+            Opening::Text
+        } else {
+            self.other
+        }
+    }
 }
 
 impl Default for History {
@@ -207,6 +294,40 @@ mod tests {
         assert_eq!(config.restart.wait, seconds(300));
         assert_eq!(config.drain.interrupt, seconds(120));
         assert_eq!(config.drain.grace, seconds(60));
+        assert_eq!(config.files.kind(Some("PDF")), Opening::Open);
+        assert_eq!(config.files.kind(Some("py")), Opening::Text);
+        assert_eq!(config.files.kind(Some("command")), Opening::Reveal);
+        assert_eq!(config.files.kind(None), Opening::Text);
+        assert!(config.files.reveal_runnable);
+    }
+
+    #[test]
+    fn a_file_chooses_how_each_kind_opens() {
+        let config = load(
+            "files",
+            indoc! {"
+                files:
+                  open: [.command, png]
+                  text: []
+                  no_extension: reveal
+                  other: open
+                  reveal_runnable: false
+            "},
+        )
+        .unwrap();
+        let files = &config.files;
+        assert_eq!(files.kind(Some("command")), Opening::Open);
+        assert_eq!(files.kind(Some("rs")), Opening::Open);
+        assert_eq!(files.kind(None), Opening::Reveal);
+        assert!(!files.reveal_runnable);
+    }
+
+    #[test]
+    fn an_unknown_opening_names_the_file_and_line() {
+        let error = load("opening", "files:\n  other: run\n")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("config.yaml:2:"), "{error}");
     }
 
     #[test]
