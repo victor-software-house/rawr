@@ -593,7 +593,7 @@ fn open_file(file: &Path, files: &Files, app: &mut App) {
     let how = match opening(&path, files) {
         // Only macOS can open a file as text whatever its kind.
         Opening::Text if !cfg!(target_os = "macos") => Opening::Reveal,
-        how => how,
+        how @ (Opening::Open | Opening::Text | Opening::Reveal) => how,
     };
     match opener(&path, how).spawn() {
         Ok(mut child) => {
