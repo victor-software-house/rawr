@@ -168,10 +168,29 @@ queue:
     outcome: A Rex tab running rawr reads as the work in it, not as rawr.
     blocked_by: []
     acceptance:
-      - While rawr runs in a pane, the Rex tab title is the title of the pane's newest Claude session, or the folder when it has none.
-      - When rawr exits, the shell sets the title as before.
+      - While a stand-in (rawr --startup) runs in a pane, the Rex tab title is the title of its newest resumable Claude session, or the folder name when it has none; the floating app leaves the title alone.
+      - When the stand-in gives the terminal back, the pane title is empty again, as a new shell leaves it.
     notes:
       - 2026-11-23, after rawr --startup, most tabs in the Rex sidebar read rawr plus a folder; the maintainer asked that only the source say rawr, as Claude Code panes say claude.
+    plan: openspec/changes/rawr-app/proposal.md
+
+  - id: RAWR-031
+    title: Split the stand-in from the floating app, and report only own state
+    scope: app
+    outcome: >-
+      A killed pane offers only its own sessions, the full app opens floating on
+      cmd+alt+r, and no rawr window changes its Rex status because another pane changed.
+    blocked_by: []
+    acceptance:
+      - rawr --startup lists only the sessions recorded for its pane, newest first, with the selected one in detail; r resumes there.
+      - The README names cmd+alt+r as the way to open rawr and gives the init.lua action that provides it.
+      - A status change in one pane sends no OSC 7501 report from a stand-in in another pane, and the floating app reports only when it flips between idle and blocked; tests prove both.
+      - A stand-in reports idle once, with app rawr and its session title as the title, never rawr; the floating app reports idle with a constant line and the title rawr, and blocked with a constant line while any agent needs the user.
+    notes:
+      - 2026-11-23, the maintainer saw every rawr stand-in jump to the top of Rex Activity at once, because each one reported counts over all panes.
+      - '2026-11-23, the maintainer chose: stand-in shows this pane sessions only; full app is the floating window; each reports its own state only.'
+      - 2026-11-23, the maintainer restated that only the origin says rawr, as Claude sessions come from claude; RAWR-030 covers the tab title, this row the status record.
+    plan: openspec/changes/rawr-app/proposal.md
 archive:
   - id: RAWR-021
     title: Draw the picker search box at the bottom
