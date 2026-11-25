@@ -61,8 +61,7 @@ const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "�
 
 pub(crate) fn glyph(status: Status, frame: usize) -> &'static str {
     match status {
-        Status::NeedsPermission | Status::NeedsInput => "⚑",
-        Status::NeedsAnswer => "?",
+        Status::NeedsPermission | Status::NeedsInput | Status::NeedsAnswer => "?",
         Status::NeedsLogin => "◆",
         Status::Failed => "✘",
         Status::Done => "✔",

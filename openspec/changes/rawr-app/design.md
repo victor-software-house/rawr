@@ -43,8 +43,7 @@ The `gh` CLI is the counter-example: dozens of verbs, each printing once, and no
 
    | Status | Glyph | Colour role |
    |:--|:--|:--|
-   | Needs permission, Needs input | `⚑` | warning, bold |
-   | Needs an answer | `?` | warning, bold |
+   | Needs permission, Needs input, Needs an answer | `?` | warning, bold |
    | Needs login | `◆` | warning, bold |
    | Failed | `✘` | error |
    | Done | `✔` | |
