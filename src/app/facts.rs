@@ -545,8 +545,9 @@ fn older(
     before: EntryId,
     count: usize,
 ) -> Option<Page> {
-    // The line `before` is in gives the entries before it on that line too.
-    let mut here = read_lines(&line_at(file, before.line)?, before.line);
+    // The line `before` is in gives the entries before it on that line too. At
+    // the end of the transcript, where no line starts whole, it gives none.
+    let mut here = read_lines(&line_at(file, before.line).unwrap_or_default(), before.line);
     here.facts.log.retain(|said| said.id < before);
     here.facts.activity.retain(|said| said.id < before);
     here.facts.log_total = here.facts.log.len();
@@ -656,7 +657,7 @@ pub(crate) fn around(path: &Path, list: List, at: u64, count: usize) -> io::Resu
     let invalid = || io::Error::new(io::ErrorKind::InvalidData, "a line could not be read");
     let start = complete_line_start(&mut file, at.min(len), len).ok_or_else(invalid)?;
     // No line is whole yet.
-    if line_at(&mut file, start).is_none() {
+    if start == 0 && line_at(&mut file, start).is_none() {
         return Ok(Around {
             entries: Vec::new(),
             older: false,
@@ -728,9 +729,11 @@ fn complete_line_start(file: &mut fs::File, byte: u64, len: u64) -> Option<u64> 
     if line_at(file, start).is_some() {
         return Some(start);
     }
-    // The line is the last and not yet whole: the one before it, if any.
+    // The line is the last and not yet whole: the one before it, if any. When
+    // that is longer than the most read back too, the entries before it are
+    // the nearest, so the place is where it ends.
     match start.checked_sub(1) {
-        Some(before) => line_start(file, before).ok()?,
+        Some(before) => line_start(file, before).ok()?.or(Some(start)),
         None => Some(0),
     }
 }
@@ -2255,6 +2258,22 @@ mod tests {
         assert_eq!(got.place, Some(calls[100].id));
         assert_eq!(got.entries, calls[50..150]);
         assert!(got.older && got.newer);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn a_page_around_a_place_in_a_last_line_longer_than_the_cap_gives_the_entries_before_it() {
+        let long = prompt(&"x".repeat(usize::try_from(LINE_MOST).expect("a size") + (1 << 20)));
+        let text = [turns(100).concat().as_str(), long.as_str()].concat();
+        let path = file("around-last-long", &text);
+        let calls = of(&forward(&path), List::Activity);
+        assert_eq!(calls.len(), 100);
+        // A byte in the tail of the last line, more than the cap past its
+        // start.
+        let at = u64::try_from(text.len() - (512 << 10)).expect("a size");
+        let got = around(&path, List::Activity, at, 100).expect("a page, not an error");
+        assert_eq!(got.entries, calls);
+        assert_eq!(got.place, Some(calls[99].id));
         let _ = fs::remove_file(path);
     }
 
