@@ -896,9 +896,11 @@ impl App {
         });
     }
 
-    /// How long the header takes to fold or unfold.
+    /// How long the header takes to fold or unfold: as long as the panes
+    /// drawer takes, so the two move alike. A row is twice a column's
+    /// height, so the drawer's speed in columns would make it a jump.
     fn header_span(&self) -> Duration {
-        span(self.header_rows.saturating_sub(1))
+        self.drawer_span(Focus::Panes)
     }
 
     /// How far the session header is folded to one row, from 0 to 1, eased.
@@ -931,9 +933,10 @@ impl App {
         }
     }
 
-    /// How long the folded header takes to slide out or back.
+    /// How long the folded header takes to slide out or back: as long as
+    /// the panes drawer takes.
     fn peek_span(&self) -> Duration {
-        span(self.header_rows.saturating_add(1))
+        self.drawer_span(Focus::Panes)
     }
 
     /// How far the folded header is drawn out over the list, from 0 to 1,
@@ -2866,6 +2869,23 @@ mod tests {
             },
             under,
         );
+    }
+
+    #[test]
+    fn the_header_folds_over_as_long_as_the_drawer_opens() {
+        let mut app = App::new(None);
+        app.cols = 120;
+        app.note_header(Some(12));
+        let span = app.drawer_span(Focus::Panes);
+        assert_eq!(app.header_span(), span);
+        assert_eq!(app.peek_span(), span);
+        assert!(span > Duration::from_millis(100), "{span:?}");
+        app.fold_to(true);
+        app.now += span / 2;
+        let mid = app.folded();
+        assert!(mid > 0.0 && mid < 1.0, "{mid}");
+        app.now += span;
+        assert!((app.folded() - 1.0).abs() < f32::EPSILON);
     }
 
     #[test]
