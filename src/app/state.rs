@@ -11,7 +11,7 @@ use ratatui::crossterm::event::{
     KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 
-use crate::app::facts::EntryId;
+use crate::app::facts::{EntryId, List};
 use crate::app::feed::Pane;
 use crate::app::history::Lead;
 use crate::app::layouts::Layouts;
@@ -214,6 +214,44 @@ pub(crate) struct Held {
     grab: u32,
     /// The thumb's first row in the track, where the pointer keeps it.
     pub(crate) top: u32,
+}
+
+/// How long a held thumb rests on a place no held entry covers before the
+/// window asks for the entries there.
+const REST: Duration = Duration::from_millis(100);
+
+/// What a frame made of the place the scrollbar's thumb asked the view to
+/// stand at, in the prompts or the activity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Seek {
+    /// A held entry covers it, and the view stands there.
+    Held,
+    /// No held entry covers it: it is `share` millionths of the way into the
+    /// transcript's bytes, and the view stays where it was.
+    Past(List, u32),
+}
+
+/// A place in the session that the thumb rests on or was let go of, and no
+/// held entry covers.
+#[derive(Debug, Clone, Copy)]
+struct Reaching {
+    list: List,
+    share: u32,
+    /// When the thumb came to this place.
+    since: Instant,
+    /// The request for the entries there, with the epoch of the held entries
+    /// when it was sent.
+    ask: Option<(u64, u64)>,
+}
+
+/// A request for the entries of `list` around the place `share` millionths of
+/// the way into the transcript's bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Jump {
+    pub(crate) list: List,
+    pub(crate) share: u32,
+    /// Names the request, so only the answer to the newest one lands.
+    pub(crate) ask: u64,
 }
 
 /// A folded column drawn out over the others while the pointer is on it.
@@ -420,6 +458,11 @@ pub(crate) struct App {
     fades: [Fade; 4],
     /// The scrollbars the last frame drew.
     tracks: Vec<Track>,
+    /// The place past the held entries that the thumb is at, until the entries
+    /// there arrive or the thumb goes to a place that is held.
+    reaching: Option<Reaching>,
+    /// How many requests for the entries around a place were sent.
+    asks: u64,
 }
 
 /// A list's place in [`App::scrolls`].
@@ -499,6 +542,8 @@ impl App {
             now: Instant::now(),
             fades: [Fade::default(); 4],
             tracks: Vec::new(),
+            reaching: None,
+            asks: 0,
         }
     }
 
@@ -554,6 +599,10 @@ impl App {
     /// Puts `list` back at its top, and drops the wheel reports waiting to
     /// scroll it.
     fn reset_scroll(&mut self, list: Focus) {
+        // The place the thumb was going to is in the session left behind.
+        if list == Focus::Session {
+            self.reaching = None;
+        }
         self.put_scroll(list, Scroll::default());
     }
 
@@ -1710,6 +1759,94 @@ impl App {
             }
         };
         self.put_scroll(list, scroll);
+    }
+
+    /// What the last frame made of the thumb's place, when it had one to find.
+    pub(crate) fn found_seek(&mut self, seek: Option<Seek>) {
+        match seek {
+            Some(Seek::Held) => self.reaching = None,
+            Some(Seek::Past(list, share))
+                if self
+                    .reaching
+                    .is_none_or(|reaching| (reaching.list, reaching.share) != (list, share)) =>
+            {
+                self.reaching = Some(Reaching {
+                    list,
+                    share,
+                    since: self.now,
+                    ask: None,
+                });
+            }
+            Some(Seek::Past(..)) | None => {}
+        }
+    }
+
+    /// The request to send now, when the thumb was let go of or has rested on a
+    /// place no held entry covers. `epoch` gives the generation of the held
+    /// entries of a list, which an answer must still be in.
+    pub(crate) fn take_jump(&mut self, epoch: impl FnOnce(List) -> u64) -> Option<Jump> {
+        let held = self.held_thumb(Focus::Session).is_some();
+        // A drag report not yet drawn may put the thumb somewhere else.
+        let pending = self.scroll_of(Focus::Session).seek.is_some();
+        let rested = self.now;
+        let reaching = self.reaching.as_mut()?;
+        if reaching.ask.is_some()
+            || pending
+            || (held && rested.saturating_duration_since(reaching.since) < REST)
+        {
+            return None;
+        }
+        self.asks += 1;
+        reaching.ask = Some((self.asks, epoch(reaching.list)));
+        Some(Jump {
+            list: reaching.list,
+            share: reaching.share,
+            ask: self.asks,
+        })
+    }
+
+    /// When the loop must wake for a held thumb that rests.
+    pub(crate) fn jump_wake(&self) -> Option<Instant> {
+        let reaching = self.reaching?;
+        (reaching.ask.is_none() && self.held_thumb(Focus::Session).is_some())
+            .then(|| reaching.since + REST)
+    }
+
+    /// Whether the answer `ask` about `list`, read in `epoch`, is to the
+    /// request the window is waiting for.
+    pub(crate) fn expects(&self, list: List, ask: u64, epoch: u64) -> bool {
+        self.reaching
+            .is_some_and(|reaching| reaching.list == list && reaching.ask == Some((ask, epoch)))
+    }
+
+    /// The entries around the place have arrived: the view stands at `place`,
+    /// the entry nearest it, with its first line on top.
+    pub(crate) fn arrive(&mut self, place: EntryId) {
+        self.reaching = None;
+        self.put_scroll(
+            Focus::Session,
+            Scroll {
+                top: 0,
+                follow: false,
+                anchor: Some(Anchor {
+                    id: place,
+                    line: 0,
+                    moved: 0,
+                }),
+                seek: None,
+            },
+        );
+    }
+
+    /// The entries around the place are not coming: the view stays.
+    pub(crate) fn drop_jump(&mut self) {
+        self.reaching = None;
+    }
+
+    /// Whether the view is held where it is for a jump, or while the thumb is
+    /// held on the session, so no page is asked for in the meantime.
+    pub(crate) fn holds_view(&self) -> bool {
+        self.reaching.is_some() || self.held_thumb(Focus::Session).is_some()
     }
 
     /// The scrollbar of `list` as the last frame drew it.

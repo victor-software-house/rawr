@@ -172,10 +172,14 @@ pub(crate) fn run(view: Option<u64>, mode: &Mode) -> Result<Option<Agent>> {
                 .draw(|frame| hits = view::draw(frame, &mut app, shown))
                 .context("draw the app")?;
             app.settle(&hits.tops, hits.anchor, &hits.bars);
+            app.found_seek(hits.seek);
             drawn_bars = app.bar_shades(app.now);
             // Entries held past the view toward what is not held, no more than
             // the lead, are asked for before the view reaches them.
+            // None while the thumb is held or on its way to a place, which
+            // would otherwise ask for every page the view passes.
             if let (Some(agent), Some(reach)) = (&agent, hits.reach)
+                && !app.holds_view()
                 && let Some(history) = histories.get_mut(&agent.transcript)
                 && let Some(ask) = history.settle(reach, app.ahead)
             {
@@ -216,7 +220,10 @@ pub(crate) fn run(view: Option<u64>, mode: &Mode) -> Result<Option<Agent>> {
             started + SPIN * u32::try_from(spin_at(started, Instant::now()) + 1).unwrap_or(u32::MAX)
         });
         app.now = Instant::now();
-        let first = match pacer.wait(app.moving(), &[spinner, app.wake_at(), app.bars_wake()]) {
+        let first = match pacer.wait(
+            app.moving(),
+            &[spinner, app.wake_at(), app.bars_wake(), app.jump_wake()],
+        ) {
             Some(wait) => wait_until(&receive, wait)?,
             None => Some(receive.recv().context("the app's inputs closed")?),
         };
@@ -263,6 +270,7 @@ pub(crate) fn run(view: Option<u64>, mode: &Mode) -> Result<Option<Agent>> {
                         for history in histories.values_mut() {
                             history.lost();
                         }
+                        app.drop_jump();
                         if let Some(carry) = carry {
                             replacing = true;
                             app.restore(carry);
@@ -320,6 +328,35 @@ pub(crate) fn run(view: Option<u64>, mode: &Mode) -> Result<Option<Agent>> {
                                     } else {
                                         let stale = history.land(ask, entries, more);
                                         app.layouts.forget(&path, &stale);
+                                    }
+                                }
+                            }
+                            FromDaemon::Around {
+                                path,
+                                list,
+                                ask,
+                                entries,
+                                older,
+                                place,
+                                failed,
+                            } => {
+                                let epoch = histories.get(&path).map(|history| history.epoch(list));
+                                let current =
+                                    app.current().is_some_and(|agent| agent.transcript == path);
+                                if current
+                                    && epoch.is_some_and(|epoch| app.expects(list, ask, epoch))
+                                {
+                                    if let Some(reason) = failed {
+                                        app.notice = Some(reason);
+                                        app.drop_jump();
+                                    } else if let (Some(history), Some(place)) =
+                                        (histories.get_mut(&path), place)
+                                    {
+                                        let stale = history.land_around(list, entries, older);
+                                        app.layouts.forget(&path, &stale);
+                                        app.arrive(place);
+                                    } else {
+                                        app.drop_jump();
                                     }
                                 }
                             }
@@ -413,6 +450,23 @@ pub(crate) fn run(view: Option<u64>, mode: &Mode) -> Result<Option<Agent>> {
             // A list whose scroll this message set another way has no use for
             // the wheel reports read before it, and keeps those read after.
             pacer.reset(&app.take_cleared(), &mut reports);
+        }
+        // A thumb let go of, or at rest, on a place no held entry covers asks
+        // for the entries there.
+        if let Some(agent) = app.current().cloned()
+            && let Some(jump) = app.take_jump(|list| {
+                histories
+                    .get(&agent.transcript)
+                    .map_or(0, |history| history.epoch(list))
+            })
+        {
+            daemon.send(ToDaemon::Around {
+                path: agent.transcript,
+                list: jump.list,
+                at: jump.share,
+                count: PAGE,
+                ask: jump.ask,
+            });
         }
         // A pointer past the window's edge shuts the drawer once it has
         // stayed away a moment.

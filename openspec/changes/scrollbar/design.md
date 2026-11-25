@@ -30,8 +30,14 @@
 4. **A drag past the held entries jumps.**
    - In the Conversation and Activity tabs, the thumb's position stands for a place in the whole session, by the counts the tabs already show.
    - When a drag ends, or rests for 100 ms, on a place no held entry covers, the window asks the daemon `around` with the list and that place as a share of the transcript's bytes.
-   - The daemon reads the 100 entries of that list nearest that byte, as it reads any page, and answers `page`.
-   - The window keeps its view until the page lands, then shows the entry at that place at the top.
-     The page joins the held entries with gaps on both sides, which pages fill as for any gap.
+   - The share is in millionths from the transcript's first byte.
+     The tabs list the newest entry first, so the bottom of the track is share 0, and a drag to the bottom asks for the first calls.
+   - The daemon reads the 100 entries of that list nearest that byte, as it reads any page, and answers `around`, a message of its own that names the request it answers.
+     Each request carries a number, and only the answer to the newest one lands, so a thumb that moved on drops the older answer.
+   - The window keeps its view until the answer lands, then shows the entry at that place at the top.
+     The answer joins the held entries with gaps on both sides, which pages fill as for any gap.
+   - The daemon cannot count the entries it skips, so the window shares the entries not held there between the two new gaps by the bytes each side spans.
+     The counts of the whole session stay as they were.
+   - While the thumb is held, or a place is waiting for its entries, the window asks for no older or newer page, so a drag through the held entries loads nothing on its way.
    - Alternative: load every page between the view and the place.
      It lost: the 3,000-entry bound would drop each page soon after it lands, and a long session would take seconds.

@@ -19,13 +19,13 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Padding, Paragraph};
 
-use crate::app::facts::{EntryId, Facts, Kind, List, Outcome, Pr, Said};
+use crate::app::facts::{EntryId, Facts, Kind, List, MILLION, Outcome, Pr, Said};
 use crate::app::feed::Pane;
 use crate::app::history::{Gaps, History, NEAR, Reach, Shape};
 use crate::app::layouts::{Laid, Layouts};
 use crate::app::scrollbar::{self, Geometry, Track};
 use crate::app::state::{
-    self, Anchor, App, Arrangement, Button, Drag, FULL, Focus, Grip, Link, RAIL, Scroll, Tab,
+    self, Anchor, App, Arrangement, Button, Drag, FULL, Focus, Grip, Link, RAIL, Scroll, Seek, Tab,
     Target, Under,
 };
 use crate::app::{markup, theme};
@@ -66,6 +66,8 @@ pub(crate) struct Hits {
     pub(crate) reach: Option<Reach>,
     /// The scrollbars of the lists that do not fit, with where each stands.
     pub(crate) bars: Vec<Track>,
+    /// What this frame found at the place the session's thumb asked for.
+    pub(crate) seek: Option<Seek>,
 }
 
 impl Hits {
@@ -1107,6 +1109,7 @@ fn pane_view(
     hits.tops.push((Focus::Session, skip));
     hits.anchor = body.anchor;
     hits.reach = body.reach;
+    hits.seek = body.seek;
     let prs_at = body.prs_at;
     for (at, span, target) in body.rows {
         if let Some(row) = u16::try_from(at)
@@ -1368,6 +1371,8 @@ struct Body {
     anchor: Option<Anchor>,
     /// Where the view stands among the entries held, when the tab lists them.
     reach: Option<Reach>,
+    /// What the frame found at the place the scrollbar's thumb asked for.
+    seek: Option<Seek>,
     /// Which line holds the pull requests.
     prs_at: Option<usize>,
     /// Which lines take a click.
@@ -1498,6 +1503,7 @@ fn tab_lines(
                     top: entries.top,
                     anchor: entries.anchor,
                     reach: entries.reach,
+                    seek: entries.seek,
                     prs_at: None,
                     rows: entries.rows,
                 };
@@ -1530,6 +1536,7 @@ fn tab_lines(
         top,
         anchor: None,
         reach,
+        seek: None,
         prs_at,
         rows,
     }
@@ -1554,6 +1561,8 @@ struct Entries {
     reach: Option<Reach>,
     /// The scrollbar's position and length, which count the entries not held.
     bar: (usize, usize),
+    /// What was found at the place the scrollbar's thumb asked for, if it did.
+    seek: Option<Seek>,
 }
 
 /// The entries a tab lists, and what is known of those not held.
@@ -1672,10 +1681,8 @@ fn said(
     let filter = app.filter(Focus::Session);
     let (placed, total) = place(app, layouts, open, (items, shape.gaps), width);
     let filtered = !filter.is_empty();
-    let seek = app
-        .scroll_of(Focus::Session)
-        .seek
-        .and_then(|at| seek_line(&placed, shape, filtered, (at, total)));
+    let asked = app.scroll_of(Focus::Session).seek;
+    let seek = asked.and_then(|at| seek_line(&placed, shape, filtered, (at, total)));
     let Stand { top, lo, hi, tail } = stand(app, &placed, height, unsearched, seek);
     let anchor = if top == 0 {
         None
@@ -1741,6 +1748,18 @@ fn said(
         });
     // A filter shows held entries only, so it counts none that are not held.
     let counted = if filtered { None } else { reach };
+    let bar = bar(
+        shape,
+        counted,
+        (top, total + usize::from(tail), placed.len()),
+    );
+    let seek = asked.map(|at| match seek {
+        Some(_) => Seek::Held,
+        None => Seek::Past(
+            list,
+            place_share(at, bar.1.saturating_sub(usize::from(height))),
+        ),
+    });
     Entries {
         lines,
         rows,
@@ -1748,11 +1767,8 @@ fn said(
         top: u16::try_from(top).unwrap_or(u16::MAX),
         anchor,
         reach,
-        bar: bar(
-            shape,
-            counted,
-            (top, total + usize::from(tail), placed.len()),
-        ),
+        bar,
+        seek,
     }
 }
 
@@ -1850,6 +1866,16 @@ fn seek_line(
             .contains(&at)
             .then(|| (first.run, first.start + (at - from)))
     })
+}
+
+/// How far into the transcript's bytes the scrollbar's line `at` of
+/// `scrollable` stands for, in millionths from its first byte. The list shows
+/// the newest entries first, so the top of the bar is the end of the transcript
+/// and its bottom the start.
+fn place_share(at: usize, scrollable: usize) -> u32 {
+    let far = u128::try_from(at.min(scrollable)).unwrap_or(0) * u128::from(MILLION)
+        / u128::try_from(scrollable.max(1)).unwrap_or(1);
+    MILLION - u32::try_from(far).unwrap_or(MILLION)
 }
 
 /// How many lines `entries` entries not held take: as many as those held take
@@ -3184,6 +3210,8 @@ mod tests {
 
     use super::*;
     use crate::app::facts::Way;
+    use crate::app::history::Ask;
+    use crate::app::state::Jump;
     use crate::app::state::fixtures::pane;
 
     const OWN: &str = "block-own";
@@ -3347,6 +3375,7 @@ mod tests {
             self.app.settle(&hits.tops, hits.anchor, &hits.bars);
             self.app.cols = hits.width;
             self.reach = hits.reach;
+            self.app.found_seek(hits.seek);
             self.hits = hits;
         }
 
@@ -3735,6 +3764,19 @@ mod tests {
     }
 
     impl Rig {
+        /// The pages the loop would ask for after the last frame: none while
+        /// the view is held for a thumb.
+        fn asks(&mut self) -> Vec<Ask> {
+            if self.app.holds_view() {
+                return Vec::new();
+            }
+            let reach = self.reach;
+            reach
+                .and_then(|reach| self.history.settle(reach, 200))
+                .into_iter()
+                .collect()
+        }
+
         /// The pointer's report `kind` at `column`, `row`, over what the last
         /// frame drew there.
         fn pointer(&mut self, kind: MouseEventKind, column: u16, row: u16) {
@@ -3973,6 +4015,146 @@ mod tests {
         }
         // The thumb is at the bottom of the track all the same.
         assert_eq!(rig.glyphs().last().map(String::as_str), Some("█"));
+    }
+
+    #[test]
+    fn dragging_to_the_bottom_of_a_long_session_asks_around_once_and_no_page_between() {
+        // The newest 300 of 5,800 calls, as a window starts.
+        let all: Vec<Said> = (0..5800)
+            .map(|place| call(place, &format!("file-{place}.rs")))
+            .collect();
+        let mut rig = Rig::with(calls(5500..5800, 5800));
+        let t0 = Instant::now();
+        rig.app.now = t0;
+        rig.draw();
+        let mut asked = rig.asks();
+        let track = rig.track();
+        let (x, y) = (track.area.x, track.area.y);
+        rig.pointer(MouseEventKind::Down(LEFT), x, y);
+        for row in 1..track.area.height {
+            rig.pointer(MouseEventKind::Drag(LEFT), x, y + row);
+            rig.draw();
+            asked.extend(rig.asks());
+            // The thumb is moving, so nothing is asked for yet.
+            assert_eq!(rig.app.take_jump(|_| 0), None, "row {row}");
+        }
+        rig.pointer(MouseEventKind::Up(LEFT), x, y + track.area.height - 1);
+        rig.draw();
+        asked.extend(rig.asks());
+        let epoch = rig.history.epoch(List::Activity);
+        let jump = rig.app.take_jump(|_| epoch).expect("a jump on letting go");
+        // The bottom of the track is the start of the transcript.
+        assert_eq!(
+            jump,
+            Jump {
+                list: List::Activity,
+                share: 0,
+                ask: 1,
+            }
+        );
+        assert_eq!(rig.app.take_jump(|_| epoch), None);
+        assert_eq!(asked, [], "no page is asked for on the way");
+        // The daemon's answer: the first 100 calls, and the start of the
+        // transcript among them.
+        assert!(rig.app.expects(List::Activity, jump.ask, epoch));
+        assert!(!rig.app.expects(List::Activity, jump.ask + 1, epoch));
+        rig.history
+            .land_around(List::Activity, all[..100].to_vec(), false);
+        rig.app.arrive(all[0].id);
+        let shown = rig.entries();
+        assert!(
+            shown.last().is_some_and(|row| row.contains("file-0.rs")),
+            "{shown:?}"
+        );
+        assert!(shown.iter().all(|row| !row.contains("file-5799.rs")));
+        // The gaps the page left are filled as any gap is: from the newest
+        // entry of the page, upward.
+        let next = rig.asks();
+        assert_eq!(next.len(), 1);
+        assert_eq!((next[0].way, next[0].at), (Way::Newer, all[99].id));
+    }
+
+    #[test]
+    fn a_thumb_that_rests_on_a_place_not_held_asks_for_it_once() {
+        let mut rig = Rig::with(calls(5500..5800, 5800));
+        let t0 = Instant::now();
+        rig.app.now = t0;
+        rig.draw();
+        let track = rig.track();
+        let (x, y) = (track.area.x, track.area.y);
+        rig.pointer(MouseEventKind::Down(LEFT), x, y);
+        rig.pointer(MouseEventKind::Drag(LEFT), x, y + track.area.height / 2);
+        rig.draw();
+        let epoch = rig.history.epoch(List::Activity);
+        rig.app.now = at(t0, 99);
+        assert_eq!(rig.app.take_jump(|_| epoch), None);
+        assert_eq!(rig.app.jump_wake(), Some(at(t0, 100)));
+        rig.app.now = at(t0, 100);
+        let jump = rig.app.take_jump(|_| epoch).expect("a jump after the rest");
+        // About half way: the middle of the transcript's bytes.
+        assert!(jump.share.abs_diff(500_000) < 50_000, "{}", jump.share);
+        assert_eq!(rig.app.take_jump(|_| epoch), None);
+        assert_eq!(rig.app.jump_wake(), None);
+        // The thumb moving on asks again, and the first answer is dropped.
+        rig.pointer(MouseEventKind::Drag(LEFT), x, y + track.area.height - 1);
+        rig.draw();
+        rig.app.now = at(t0, 300);
+        let again = rig
+            .app
+            .take_jump(|_| epoch)
+            .expect("a jump to the new place");
+        assert_eq!((again.ask, again.share), (2, 0));
+        assert!(!rig.app.expects(List::Activity, jump.ask, epoch));
+        assert!(rig.app.expects(List::Activity, again.ask, epoch));
+        // An answer read before the connection was lost is dropped.
+        assert!(!rig.app.expects(List::Activity, again.ask, epoch + 1));
+    }
+
+    #[test]
+    fn a_thumb_that_comes_back_to_held_entries_asks_for_nothing() {
+        let mut rig = Rig::with(calls(5500..5800, 5800));
+        rig.draw();
+        let track = rig.track();
+        let (x, y) = (track.area.x, track.area.y);
+        rig.pointer(MouseEventKind::Down(LEFT), x, y);
+        rig.pointer(MouseEventKind::Drag(LEFT), x, y + track.area.height - 1);
+        rig.draw();
+        assert!(rig.app.holds_view());
+        rig.pointer(MouseEventKind::Drag(LEFT), x, y + 1);
+        rig.draw();
+        assert!(rig.app.holds_view());
+        rig.pointer(MouseEventKind::Up(LEFT), x, y + 1);
+        rig.draw();
+        assert!(!rig.app.holds_view());
+        assert_eq!(rig.app.take_jump(|_| 0), None);
+    }
+
+    #[test]
+    fn a_session_shown_instead_drops_the_place_the_thumb_was_going_to() {
+        let mut rig = Rig::with(calls(5500..5800, 5800));
+        rig.draw();
+        let track = rig.track();
+        let (x, y) = (track.area.x, track.area.y);
+        rig.pointer(MouseEventKind::Down(LEFT), x, y);
+        rig.pointer(MouseEventKind::Drag(LEFT), x, y + track.area.height - 1);
+        rig.draw();
+        rig.pointer(MouseEventKind::Up(LEFT), x, y);
+        assert!(rig.app.holds_view());
+        // A tab of the session clicked.
+        let under = Under {
+            target: Some(Target::Tab(Tab::Prompts)),
+            ..Under::default()
+        };
+        rig.app.on_mouse(
+            MouseEvent {
+                kind: MouseEventKind::Down(LEFT),
+                column: 20,
+                row: 5,
+                modifiers: KeyModifiers::NONE,
+            },
+            under,
+        );
+        assert!(!rig.app.holds_view());
     }
 
     #[test]
