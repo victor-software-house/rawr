@@ -271,13 +271,14 @@ impl History {
     /// The page of the entries around a place has come: `entries`, oldest
     /// first, with whether the transcript has more before them. They
     /// join the held ones, with a gap on each side where the held ones do not
-    /// reach them. Returns the entries whose layout is stale.
+    /// reach them. Returns the entries whose layout is stale, and how many of
+    /// the page's entries were not held before.
     pub(crate) fn land_around(
         &mut self,
         list: List,
         entries: Vec<Said>,
         older_more: bool,
-    ) -> Vec<EntryId> {
+    ) -> (Vec<EntryId>, usize) {
         let total = self.facts.total(list);
         self.lists[list.index()].land_around(
             self.facts.entries_mut(list),
@@ -445,7 +446,8 @@ impl Held {
     }
 
     /// Joins the page `entries` of the entries around a place to `mine`, of
-    /// which `total` entries are counted in all.
+    /// which `total` entries are counted in all. Returns the entries whose
+    /// layout is stale, and how many of the page's were not held before.
     ///
     /// Held entries are in runs with a gap between two, recorded with how many
     /// entries it misses. The page is a run of its own, or joins the ones it
@@ -459,13 +461,13 @@ impl Held {
         (kind, total): (List, usize),
         entries: Vec<Said>,
         older_more: bool,
-    ) -> Vec<EntryId> {
+    ) -> (Vec<EntryId>, usize) {
         let mut stale = Vec::new();
         let (Some(first), Some(last)) = (
             entries.first().map(|said| said.id),
             entries.last().map(|said| said.id),
         ) else {
-            return stale;
+            return (stale, 0);
         };
         // The newest held entry older than the page, and the oldest newer.
         let below = mine.partition_point(|said| said.id < first);
@@ -538,6 +540,7 @@ impl Held {
         if older_held.is_none() && !first_held {
             self.older = older_more;
         }
+        let added = fresh.len();
         mine.extend(fresh);
         mine.sort_by_key(|said| said.id);
         // The view is where the page is, so the entries dropped to stay within
@@ -553,7 +556,7 @@ impl Held {
         });
         self.stalled = None;
         self.trim(mine, Way::Older, Some((first, last)), &mut stale);
-        stale
+        (stale, added)
     }
 
     /// Drops entries from `mine` while it holds more than [`HELD`], the ones
@@ -1242,6 +1245,17 @@ mod tests {
         assert_eq!(shape.gaps.get(&all[109].id), Some(&5390));
         assert_eq!(shape.gaps.get(&all[99].id), None);
         assert_eq!(counted(&history), 5800);
+    }
+
+    #[test]
+    fn a_page_counts_how_many_of_its_entries_were_not_held() {
+        let (all, mut history) = long_history();
+        let (_, fresh) = history.land_around(List::Activity, all[5450..5550].to_vec(), true);
+        assert_eq!(fresh, 50);
+        let (_, fresh) = history.land_around(List::Activity, all[5450..5550].to_vec(), true);
+        assert_eq!(fresh, 0);
+        let (_, fresh) = history.land_around(List::Activity, all[100..200].to_vec(), true);
+        assert_eq!(fresh, 100);
     }
 
     #[test]

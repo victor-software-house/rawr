@@ -71,13 +71,12 @@ pub(crate) enum ToDaemon {
         after: EntryId,
         count: usize,
     },
-    /// Up to `count` entries of `list` nearest the byte `at` millionths of the
-    /// way into the transcript, which the daemon answers with `around`, naming
-    /// `ask`.
+    /// Up to `count` entries of `list` nearest the byte `at` of the
+    /// transcript, which the daemon answers with `around`, naming `ask`.
     Around {
         path: PathBuf,
         list: List,
-        at: u32,
+        at: u64,
         count: usize,
         ask: u64,
     },

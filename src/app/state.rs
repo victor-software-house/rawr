@@ -226,17 +226,20 @@ const REST: Duration = Duration::from_millis(100);
 pub(crate) enum Seek {
     /// A held entry covers it, and the view stands there.
     Held,
-    /// No held entry covers it: it is `share` millionths of the way into the
-    /// transcript's bytes, and the view stays where it was.
-    Past(List, u32),
+    /// No held entry covers it: it stands for the byte `at` of the
+    /// transcript, and the view stays where it was.
+    Past(List, u64),
 }
 
 /// A place in the session that the thumb rests on or was let go of, and no
 /// held entry covers.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct Reaching {
     list: List,
-    share: u32,
+    /// The byte of the transcript the place stands for.
+    at: u64,
+    /// The transcript the place is in: the one the frame found it in.
+    path: PathBuf,
     /// When the thumb came to this place.
     since: Instant,
     /// The request for the entries there, with the epoch of the held entries
@@ -244,12 +247,13 @@ struct Reaching {
     ask: Option<(u64, u64)>,
 }
 
-/// A request for the entries of `list` around the place `share` millionths of
-/// the way into the transcript's bytes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// A request for the entries of `list` around the byte `at` of the transcript
+/// at `path`.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Jump {
     pub(crate) list: List,
-    pub(crate) share: u32,
+    pub(crate) at: u64,
+    pub(crate) path: PathBuf,
     /// Names the request, so only the answer to the newest one lands.
     pub(crate) ask: u64,
 }
@@ -1779,14 +1783,16 @@ impl App {
     pub(crate) fn found_seek(&mut self, seek: Option<Seek>) {
         match seek {
             Some(Seek::Held) => self.reaching = None,
-            Some(Seek::Past(list, share))
+            Some(Seek::Past(list, at))
                 if self
                     .reaching
-                    .is_none_or(|reaching| (reaching.list, reaching.share) != (list, share)) =>
+                    .as_ref()
+                    .is_none_or(|reaching| (reaching.list, reaching.at) != (list, at)) =>
             {
-                self.reaching = Some(Reaching {
+                self.reaching = self.current().map(|agent| Reaching {
                     list,
-                    share,
+                    at,
+                    path: agent.transcript.clone(),
                     since: self.now,
                     ask: None,
                 });
@@ -1797,8 +1803,8 @@ impl App {
 
     /// The request to send now, when the thumb was let go of or has rested on a
     /// place no held entry covers. `epoch` gives the generation of the held
-    /// entries of a list, which an answer must still be in.
-    pub(crate) fn take_jump(&mut self, epoch: impl FnOnce(List) -> u64) -> Option<Jump> {
+    /// entries of a list of a transcript, which an answer must still be in.
+    pub(crate) fn take_jump(&mut self, epoch: impl FnOnce(List, &Path) -> u64) -> Option<Jump> {
         let held = self.held_thumb(Focus::Session).is_some();
         // A drag report not yet drawn may put the thumb somewhere else.
         let pending = self.scroll_of(Focus::Session).seek.is_some();
@@ -1811,40 +1817,70 @@ impl App {
             return None;
         }
         self.asks += 1;
-        reaching.ask = Some((self.asks, epoch(reaching.list)));
+        reaching.ask = Some((self.asks, epoch(reaching.list, &reaching.path)));
         Some(Jump {
             list: reaching.list,
-            share: reaching.share,
+            at: reaching.at,
+            path: reaching.path.clone(),
             ask: self.asks,
         })
     }
 
     /// When the loop must wake for a held thumb that rests.
     pub(crate) fn jump_wake(&self) -> Option<Instant> {
-        let reaching = self.reaching?;
+        let reaching = self.reaching.as_ref()?;
         (reaching.ask.is_none() && self.held_thumb(Focus::Session).is_some())
             .then(|| reaching.since + REST)
     }
 
-    /// Whether the answer `ask` about `list`, read in `epoch`, is to the
-    /// request the window is waiting for.
-    pub(crate) fn expects(&self, list: List, ask: u64, epoch: u64) -> bool {
-        self.reaching
-            .is_some_and(|reaching| reaching.list == list && reaching.ask == Some((ask, epoch)))
-    }
-
-    /// Whether the answer `ask` about `list` is to the request the window is
-    /// waiting for, whatever generation of the held entries it was read in.
-    pub(crate) fn awaits(&self, list: List, ask: u64) -> bool {
-        self.reaching.is_some_and(|reaching| {
-            reaching.list == list && reaching.ask.is_some_and(|(sent, _)| sent == ask)
+    /// Whether the answer `ask` about `list` of the transcript at `path`,
+    /// read in `epoch`, is to the request the window is waiting for.
+    pub(crate) fn expects(&self, path: &Path, list: List, ask: u64, epoch: u64) -> bool {
+        self.reaching.as_ref().is_some_and(|reaching| {
+            reaching.path == path && reaching.list == list && reaching.ask == Some((ask, epoch))
         })
     }
 
-    /// The entries around the place have arrived: the view stands at `place`,
-    /// the entry nearest it, with its first line on top.
-    pub(crate) fn arrive(&mut self, place: EntryId) {
+    /// Whether the answer `ask` about `list` of the transcript at `path` is to
+    /// the request the window is waiting for, whatever generation of the held
+    /// entries it was read in.
+    pub(crate) fn awaits(&self, path: &Path, list: List, ask: u64) -> bool {
+        self.reaching.as_ref().is_some_and(|reaching| {
+            reaching.path == path
+                && reaching.list == list
+                && reaching.ask.is_some_and(|(sent, _)| sent == ask)
+        })
+    }
+
+    /// Whether the answer `ask` is the one to land, read in `epoch`, the
+    /// generation of the entries the window holds for `path`, when it holds
+    /// any. An answer the window waits for and cannot land gives up the place,
+    /// so no page stays held back for it.
+    pub(crate) fn answered(
+        &mut self,
+        path: &Path,
+        list: List,
+        ask: u64,
+        epoch: Option<u64>,
+    ) -> bool {
+        if epoch.is_some_and(|epoch| self.expects(path, list, ask, epoch)) {
+            return true;
+        }
+        if self.awaits(path, list, ask) {
+            self.drop_jump();
+        }
+        false
+    }
+
+    /// The entries around the place have arrived, `fresh` of them not held
+    /// before: the view stands at `place`, the entry nearest it, with its first
+    /// line on top. Entries all held already show nothing the view does not, so
+    /// it stays where it is.
+    pub(crate) fn arrive(&mut self, place: EntryId, fresh: usize) {
         self.reaching = None;
+        if fresh == 0 {
+            return;
+        }
         self.put_scroll(
             Focus::Session,
             Scroll {
@@ -2538,7 +2574,7 @@ mod tests {
     fn losing_focus_lets_go_of_a_held_thumb_and_a_waiting_jump_is_asked() {
         let t0 = Instant::now();
         let ms = Duration::from_millis;
-        let mut app = App::new(None);
+        let mut app = shown_app();
         app.settle(
             &[(Focus::Session, 0)],
             None,
@@ -2551,7 +2587,7 @@ mod tests {
         );
         app.found_seek(Some(Seek::Past(List::Activity, 0)));
         // Held and just arrived: nothing is asked yet.
-        assert_eq!(app.take_jump(|_| 0), None);
+        assert_eq!(app.take_jump(|_, _| 0), None);
         app.on_blur();
         assert_eq!(app.dragging, None);
         assert_eq!(app.held_thumb(Focus::Session), None);
@@ -2561,14 +2597,113 @@ mod tests {
             "the bar fades from the moment it was let go of"
         );
         assert_eq!(
-            app.take_jump(|_| 7),
+            app.take_jump(|_, _| 7),
             Some(Jump {
                 list: List::Activity,
-                share: 0,
+                at: 0,
+                path: PathBuf::from(TRANSCRIPT),
                 ask: 1,
             })
         );
     }
+
+    /// The transcript of every session the fixtures make.
+    const TRANSCRIPT: &str = "/work/shop/session.jsonl";
+
+    /// An app that shows a session, with the Session list's bar drawn.
+    fn shown_app() -> App {
+        let mut app = App::new(None);
+        app.set_panes(vec![pane(
+            "block-a",
+            "alpha/one",
+            Status::Idle,
+            &["Fix login"],
+        )]);
+        app
+    }
+
+    /// An app whose thumb was let go of on a place no held entry covers, and
+    /// the request for it sent, numbered 1 and read in epoch 7.
+    fn asked_app() -> (App, Jump) {
+        let mut app = shown_app();
+        app.settle(
+            &[(Focus::Session, 0)],
+            None,
+            &[track(Focus::Session, 20, (0, 100))],
+        );
+        app.now = Instant::now();
+        app.on_mouse(
+            pointer(MouseEventKind::Down(LEFT), 4),
+            on_bar(Focus::Session),
+        );
+        app.found_seek(Some(Seek::Past(List::Activity, 0)));
+        app.on_mouse(pointer(MouseEventKind::Up(LEFT), 4), Under::default());
+        let jump = app.take_jump(|_, _| 7).expect("a jump on letting go");
+        (app, jump)
+    }
+
+    #[test]
+    fn an_answer_for_another_transcript_never_lands() {
+        let (mut app, jump) = asked_app();
+        let other = Path::new("/work/shop/other.jsonl");
+        assert!(app.expects(&jump.path, List::Activity, jump.ask, 7));
+        assert!(!app.expects(other, List::Activity, jump.ask, 7));
+        assert!(!app.awaits(other, List::Activity, jump.ask));
+        // It is no answer to wait for, and gives nothing up.
+        assert!(!app.answered(other, List::Activity, jump.ask, Some(7)));
+        assert!(app.holds_view());
+        assert!(app.answered(&jump.path, List::Activity, jump.ask, Some(7)));
+    }
+
+    #[test]
+    fn an_answer_awaited_but_not_landable_gives_up_the_place() {
+        // Read in another generation, as after a rewrite of the transcript.
+        let (mut app, jump) = asked_app();
+        assert!(!app.answered(&jump.path, List::Activity, jump.ask, Some(8)));
+        assert!(!app.holds_view());
+        // No entries held for the transcript at all.
+        let (mut app, jump) = asked_app();
+        assert!(!app.answered(&jump.path, List::Activity, jump.ask, None));
+        assert!(!app.holds_view());
+    }
+
+    #[test]
+    fn the_answer_to_a_request_stays_awaited_after_ctrl_f_and_gives_the_place_up() {
+        let (mut app, jump) = asked_app();
+        app.on_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL));
+        assert_eq!(app.focus, Focus::Search);
+        assert!(app.holds_view());
+        // The answer comes in a generation the window left: the paging that
+        // the place held back resumes.
+        assert!(!app.answered(&jump.path, List::Activity, jump.ask, Some(8)));
+        assert!(!app.holds_view());
+    }
+
+    #[test]
+    fn a_place_belongs_to_the_transcript_the_frame_found_it_in() {
+        let (_, jump) = asked_app();
+        assert_eq!(jump.path, Path::new(TRANSCRIPT));
+    }
+
+    #[test]
+    fn entries_all_held_already_leave_the_view_where_it_is() {
+        let (mut app, _) = asked_app();
+        let place = EntryId {
+            line: 100,
+            index: 0,
+        };
+        app.arrive(place, 0);
+        assert!(!app.holds_view());
+        assert_eq!(app.scroll_of(Focus::Session).anchor, None);
+        let (mut app, _) = asked_app();
+        app.arrive(place, 3);
+        assert!(!app.holds_view());
+        assert_eq!(
+            app.scroll_of(Focus::Session).anchor.map(|anchor| anchor.id),
+            Some(place)
+        );
+    }
+
     #[test]
     fn a_press_on_a_track_with_no_thumb_does_nothing() {
         let mut app = App::new(None);

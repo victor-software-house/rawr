@@ -143,6 +143,9 @@ pub(crate) fn run(view: Option<u64>, mode: &Mode) -> Result<Option<Agent>> {
         {
             history::keep_only(&mut histories, &agent.transcript);
             shown_path = Some(agent.transcript.clone());
+            // The place the thumb was going to is in the transcript left
+            // behind.
+            app.drop_jump();
         }
         if let Some(agent) = &agent
             && asked.as_ref() != Some(&agent.transcript)
@@ -341,28 +344,24 @@ pub(crate) fn run(view: Option<u64>, mode: &Mode) -> Result<Option<Agent>> {
                                 failed,
                             } => {
                                 let epoch = histories.get(&path).map(|history| history.epoch(list));
-                                let current =
-                                    app.current().is_some_and(|agent| agent.transcript == path);
-                                if current
-                                    && epoch.is_some_and(|epoch| app.expects(list, ask, epoch))
-                                {
+                                // An answer the window waits for and cannot
+                                // land, as when the numbering changed under
+                                // the request by a rewrite of the transcript,
+                                // gives up the place.
+                                if app.answered(&path, list, ask, epoch) {
                                     if let Some(reason) = failed {
                                         app.notice = Some(reason);
                                         app.drop_jump();
                                     } else if let (Some(history), Some(place)) =
                                         (histories.get_mut(&path), place)
                                     {
-                                        let stale = history.land_around(list, entries, older);
+                                        let (stale, fresh) =
+                                            history.land_around(list, entries, older);
                                         app.layouts.forget(&path, &stale);
-                                        app.arrive(place);
+                                        app.arrive(place, fresh);
                                     } else {
                                         app.drop_jump();
                                     }
-                                } else if current && app.awaits(list, ask) {
-                                    // The numbering changed under the request,
-                                    // as a rewrite of the transcript does: the
-                                    // place is gone.
-                                    app.drop_jump();
                                 }
                             }
                             FromDaemon::Hits {
@@ -458,17 +457,13 @@ pub(crate) fn run(view: Option<u64>, mode: &Mode) -> Result<Option<Agent>> {
         }
         // A thumb let go of, or at rest, on a place no held entry covers asks
         // for the entries there.
-        if let Some(agent) = app.current().cloned()
-            && let Some(jump) = app.take_jump(|list| {
-                histories
-                    .get(&agent.transcript)
-                    .map_or(0, |history| history.epoch(list))
-            })
+        if let Some(jump) =
+            app.take_jump(|list, path| histories.get(path).map_or(0, |history| history.epoch(list)))
         {
             daemon.send(ToDaemon::Around {
-                path: agent.transcript,
+                path: jump.path,
                 list: jump.list,
-                at: jump.share,
+                at: jump.at,
                 count: PAGE,
                 ask: jump.ask,
             });

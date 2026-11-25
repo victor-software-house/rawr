@@ -642,20 +642,18 @@ pub(crate) struct Around {
     pub(crate) place: Option<EntryId>,
 }
 
-/// Up to `count` (at most [`KEEP`]) entries of `list` nearest the byte `at`
-/// millionths of the way into the transcript at `path`, half of them before
-/// it and half after, or all of them on one side when the other ends in the
-/// transcript's first or last line. The entries are read as a page reads them,
+/// Up to `count` (at most [`KEEP`]) entries of `list` nearest the byte `at` of
+/// the transcript at `path`, half of them before it and half after, or all of
+/// them on one side when the other ends in the transcript's first or last
+/// line. The entries are read as a page reads them,
 /// so the ids, the results across the edge and the cap on the bytes read are
 /// the same. An error when the transcript cannot be opened or read.
-pub(crate) fn around(path: &Path, list: List, at: u32, count: usize) -> io::Result<Around> {
+pub(crate) fn around(path: &Path, list: List, at: u64, count: usize) -> io::Result<Around> {
     let count = count.clamp(1, KEEP);
     let mut file = fs::File::open(path)?;
     let len = file.metadata()?.len();
     let invalid = || io::Error::new(io::ErrorKind::InvalidData, "a line could not be read");
-    let byte = u64::try_from(u128::from(len) * u128::from(at.min(MILLION)) / u128::from(MILLION))
-        .unwrap_or(len);
-    let start = complete_line_start(&mut file, byte, len).ok_or_else(invalid)?;
+    let start = complete_line_start(&mut file, at.min(len), len).ok_or_else(invalid)?;
     // No line is whole yet.
     if line_at(&mut file, start).is_none() {
         return Ok(Around {
@@ -707,9 +705,6 @@ pub(crate) fn around(path: &Path, list: List, at: u32, count: usize) -> io::Resu
         place,
     })
 }
-
-/// A place in a transcript, in parts of this many.
-pub(crate) const MILLION: u32 = 1_000_000;
 
 /// The start of the line that holds byte `byte` of the `len` the transcript
 /// has, or of the one before it when that line has no line break yet, since a
@@ -1716,7 +1711,7 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::{
-        AHEAD, EntryId, Facts, KEEP, LINE_MOST, List, MILLION, Reading, Said, Way, around, page,
+        AHEAD, EntryId, Facts, KEEP, LINE_MOST, List, Reading, Said, Way, around, page,
         read_forward, tasks,
     };
     use crate::daemon::{FromDaemon, ToDaemon};
@@ -2143,20 +2138,21 @@ mod tests {
 
     #[test]
     fn a_page_around_the_start_or_the_end_gives_the_hundred_nearest_that_edge() {
-        let all = turns(250);
-        let path = file("around-ends", &all.concat());
+        let text = turns(250).concat();
+        let path = file("around-ends", &text);
         let calls = of(&forward(&path), List::Activity);
         assert_eq!(calls.len(), 250);
         let start = around(&path, List::Activity, 0, 100).expect("a page");
         assert_eq!(start.entries, calls[..100]);
         assert_eq!(start.place, Some(calls[0].id));
         assert!(!start.older && start.newer);
-        let end = around(&path, List::Activity, MILLION, 100).expect("a page");
+        let last = u64::try_from(text.len()).expect("a size");
+        let end = around(&path, List::Activity, last, 100).expect("a page");
         assert_eq!(end.entries, calls[150..]);
         assert_eq!(end.place, Some(calls[249].id));
         assert!(end.older && !end.newer);
         // A place past the end is the end.
-        let past = around(&path, List::Activity, u32::MAX, 100).expect("a page");
+        let past = around(&path, List::Activity, u64::MAX, 100).expect("a page");
         assert_eq!(past, end);
         let _ = fs::remove_file(path);
     }
@@ -2168,7 +2164,9 @@ mod tests {
         let path = file("around-middle", &text);
         let calls = of(&forward(&path), List::Activity);
         for share in [250_000, 500_000, 731_000] {
-            let got = around(&path, List::Activity, share, 100).expect("a page");
+            let byte = text.len() * share / 1_000_000;
+            let at = u64::try_from(byte).expect("a size");
+            let got = around(&path, List::Activity, at, 100).expect("a page");
             assert_eq!(got.entries.len(), 100, "{share}");
             assert!(got.older && got.newer, "{share}");
             // The entries follow one another in the transcript.
@@ -2179,7 +2177,6 @@ mod tests {
             assert_eq!(got.entries, calls[first..first + 100], "{share}");
             // The place is the first entry at or after the line the byte is
             // in, and half the page is before it.
-            let byte = text.len() * usize::try_from(share).expect("a small number") / 1_000_000;
             let line = text[..byte].rfind('\n').map_or(0, |at| at + 1);
             let place = got.place.expect("a place");
             assert!(
@@ -2199,7 +2196,7 @@ mod tests {
         let calls = of(&forward(&file("around-whole", &text)), List::Activity);
         text.push_str(r#"{"type":"assistant","message":{"content":[{"type":"tool_"#);
         let path = file("around-partial", &text);
-        let got = around(&path, List::Activity, MILLION, 100).expect("a page");
+        let got = around(&path, List::Activity, u64::MAX, 100).expect("a page");
         assert_eq!(got.entries, calls[150..]);
         // A transcript of one line with no break has nothing to give.
         let only = file("around-one", "{\"type\":\"user\"");

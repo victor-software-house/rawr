@@ -19,7 +19,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Padding, Paragraph};
 
-use crate::app::facts::{EntryId, Facts, Kind, List, MILLION, Outcome, Pr, Said};
+use crate::app::facts::{EntryId, Facts, Kind, List, Outcome, Pr, Said};
 use crate::app::feed::Pane;
 use crate::app::history::{Gaps, History, NEAR, Reach, Shape};
 use crate::app::layouts::{Laid, Layouts};
@@ -1753,12 +1753,11 @@ fn said(
         counted,
         (top, total + usize::from(tail), placed.len()),
     );
-    let seek = asked.map(|at| match seek {
-        Some(_) => Seek::Held,
-        None => Seek::Past(
-            list,
-            place_share(at, bar.1.saturating_sub(usize::from(height))),
-        ),
+    // A filter counts no entry that is not held, so no place lies past them.
+    let seek = asked.and_then(|at| match seek {
+        Some(_) => Some(Seek::Held),
+        None if filtered => None,
+        None => seek_byte(&placed, shape, (at, total)).map(|byte| Seek::Past(list, byte)),
     });
     Entries {
         lines,
@@ -1868,14 +1867,47 @@ fn seek_line(
     })
 }
 
-/// How far into the transcript's bytes the scrollbar's line `at` of
-/// `scrollable` stands for, in millionths from its first byte. The list shows
-/// the newest entries first, so the top of the bar is the end of the transcript
-/// and its bottom the start.
-fn place_share(at: usize, scrollable: usize) -> u32 {
-    let far = u128::try_from(at.min(scrollable)).unwrap_or(0) * u128::from(MILLION)
-        / u128::try_from(scrollable.max(1)).unwrap_or(1);
-    MILLION - u32::try_from(far).unwrap_or(MILLION)
+/// The byte of the transcript that the scrollbar's line `at`, which no held
+/// entry covers, stands for: inside the gap it falls in, or among the entries
+/// older than the held ones, by how far into it the line is. The list shows the
+/// newest entries first, so the top of a gap is the byte of the oldest entry
+/// held above it, its bottom the byte of the newest held below it, and the
+/// older entries end at the transcript's first byte. `None` when no entry is
+/// held.
+fn seek_byte(placed: &[Placed], shape: Shape<'_>, (at, total): (usize, usize)) -> Option<u64> {
+    // Where the runs of held entries seen so far end on the bar, and the byte
+    // of the oldest entry among them.
+    let mut above: Option<(usize, u64)> = None;
+    for run in placed.chunk_by(|a, b| a.run == b.run) {
+        let (first, last) = (run.first()?, run.last()?);
+        let gaps: usize = shape
+            .gaps
+            .range(first.id..)
+            .map(|(_, missing)| *missing)
+            .sum();
+        let from = first.start + tall(gaps, total, placed.len());
+        if let Some((end, newer)) = above
+            && at < from
+        {
+            return Some(between(
+                (at.saturating_sub(end), from - end),
+                (newer, first.id.line),
+            ));
+        }
+        above = Some((from + last.start + last.height - first.start, last.id.line));
+    }
+    let (end, oldest) = above?;
+    let older = tall(shape.older, total, placed.len());
+    Some(between((at.saturating_sub(end), older), (oldest, 0)))
+}
+
+/// The byte `far` of `span` of the way from `top` down to `bottom`, the two
+/// bytes of the transcript that end a stretch of the bar.
+fn between((far, span): (usize, usize), (top, bottom): (u64, u64)) -> u64 {
+    let far = u128::try_from(far.min(span)).unwrap_or(0);
+    let span = u128::try_from(span.max(1)).unwrap_or(1);
+    let down = u128::from(top.saturating_sub(bottom)) * far / span;
+    top.saturating_sub(u64::try_from(down).unwrap_or(u64::MAX))
 }
 
 /// How many lines `entries` entries not held take: as many as those held take
@@ -3202,6 +3234,7 @@ fn draw_bar(
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
     use std::time::Instant;
 
     use ratatui::Terminal;
@@ -3211,10 +3244,12 @@ mod tests {
     use super::*;
     use crate::app::facts::Way;
     use crate::app::history::Ask;
-    use crate::app::state::Jump;
     use crate::app::state::fixtures::pane;
 
     const OWN: &str = "block-own";
+
+    /// The transcript of every session the fixtures make.
+    const TRANSCRIPT: &str = "/work/shop/session.jsonl";
 
     /// The text of `app` drawn on a 100 by 40 screen, one line a row.
     fn screen(app: &mut App) -> String {
@@ -4036,31 +4071,34 @@ mod tests {
             rig.draw();
             asked.extend(rig.asks());
             // The thumb is moving, so nothing is asked for yet.
-            assert_eq!(rig.app.take_jump(|_| 0), None, "row {row}");
+            assert_eq!(rig.app.take_jump(|_, _| 0), None, "row {row}");
         }
         rig.pointer(MouseEventKind::Up(LEFT), x, y + track.area.height - 1);
         rig.draw();
         asked.extend(rig.asks());
         let epoch = rig.history.epoch(List::Activity);
-        let jump = rig.app.take_jump(|_| epoch).expect("a jump on letting go");
-        // The bottom of the track is the start of the transcript.
+        let jump = rig
+            .app
+            .take_jump(|_, _| epoch)
+            .expect("a jump on letting go");
+        // The bottom of the track is the start of the transcript: a byte
+        // among the first calls, which the oldest held one is far from.
         assert_eq!(
-            jump,
-            Jump {
-                list: List::Activity,
-                share: 0,
-                ask: 1,
-            }
+            (jump.list, jump.ask, jump.path.as_path()),
+            (List::Activity, 1, Path::new(TRANSCRIPT))
         );
-        assert_eq!(rig.app.take_jump(|_| epoch), None);
+        assert!(jump.at < 20_000, "{}", jump.at);
+        assert_eq!(rig.app.take_jump(|_, _| epoch), None);
         assert_eq!(asked, [], "no page is asked for on the way");
         // The daemon's answer: the first 100 calls, and the start of the
         // transcript among them.
-        assert!(rig.app.expects(List::Activity, jump.ask, epoch));
-        assert!(!rig.app.expects(List::Activity, jump.ask + 1, epoch));
-        rig.history
+        let path = Path::new(TRANSCRIPT);
+        assert!(rig.app.expects(path, List::Activity, jump.ask, epoch));
+        assert!(!rig.app.expects(path, List::Activity, jump.ask + 1, epoch));
+        let (_, fresh) = rig
+            .history
             .land_around(List::Activity, all[..100].to_vec(), false);
-        rig.app.arrive(all[0].id);
+        rig.app.arrive(all[0].id, fresh);
         let shown = rig.entries();
         assert!(
             shown.last().is_some_and(|row| row.contains("file-0.rs")),
@@ -4087,13 +4125,17 @@ mod tests {
         rig.draw();
         let epoch = rig.history.epoch(List::Activity);
         rig.app.now = at(t0, 99);
-        assert_eq!(rig.app.take_jump(|_| epoch), None);
+        assert_eq!(rig.app.take_jump(|_, _| epoch), None);
         assert_eq!(rig.app.jump_wake(), Some(at(t0, 100)));
         rig.app.now = at(t0, 100);
-        let jump = rig.app.take_jump(|_| epoch).expect("a jump after the rest");
-        // About half way: the middle of the transcript's bytes.
-        assert!(jump.share.abs_diff(500_000) < 50_000, "{}", jump.share);
-        assert_eq!(rig.app.take_jump(|_| epoch), None);
+        let jump = rig
+            .app
+            .take_jump(|_, _| epoch)
+            .expect("a jump after the rest");
+        // About half way down the bar: the byte that far from the oldest held
+        // call, which is at byte 550,000, to the transcript's start.
+        assert!(jump.at.abs_diff(290_000) < 50_000, "{}", jump.at);
+        assert_eq!(rig.app.take_jump(|_, _| epoch), None);
         assert_eq!(rig.app.jump_wake(), None);
         // The thumb moving on asks again, and the first answer is dropped.
         rig.pointer(MouseEventKind::Drag(LEFT), x, y + track.area.height - 1);
@@ -4101,17 +4143,19 @@ mod tests {
         rig.app.now = at(t0, 300);
         let again = rig
             .app
-            .take_jump(|_| epoch)
+            .take_jump(|_, _| epoch)
             .expect("a jump to the new place");
-        assert_eq!((again.ask, again.share), (2, 0));
-        assert!(!rig.app.expects(List::Activity, jump.ask, epoch));
-        assert!(rig.app.expects(List::Activity, again.ask, epoch));
+        assert_eq!(again.ask, 2);
+        assert!(again.at < 20_000, "{}", again.at);
+        let path = Path::new(TRANSCRIPT);
+        assert!(!rig.app.expects(path, List::Activity, jump.ask, epoch));
+        assert!(rig.app.expects(path, List::Activity, again.ask, epoch));
         // An answer read before the connection was lost is dropped, and the
         // place it was for is given up, so no page stays held back for it.
-        assert!(!rig.app.expects(List::Activity, again.ask, epoch + 1));
-        assert!(rig.app.awaits(List::Activity, again.ask));
-        assert!(!rig.app.awaits(List::Activity, again.ask + 1));
-        assert!(!rig.app.awaits(List::Log, again.ask));
+        assert!(!rig.app.expects(path, List::Activity, again.ask, epoch + 1));
+        assert!(rig.app.awaits(path, List::Activity, again.ask));
+        assert!(!rig.app.awaits(path, List::Activity, again.ask + 1));
+        assert!(!rig.app.awaits(path, List::Log, again.ask));
     }
 
     #[test]
@@ -4130,7 +4174,7 @@ mod tests {
         rig.pointer(MouseEventKind::Up(LEFT), x, y + 1);
         rig.draw();
         assert!(!rig.app.holds_view());
-        assert_eq!(rig.app.take_jump(|_| 0), None);
+        assert_eq!(rig.app.take_jump(|_, _| 0), None);
     }
 
     #[test]
@@ -4159,6 +4203,109 @@ mod tests {
             under,
         );
         assert!(!rig.app.holds_view());
+    }
+
+    #[test]
+    fn a_drag_just_past_the_held_entries_asks_for_a_byte_just_before_the_oldest_held_one() {
+        // The newest 300 of 5,800 calls, the oldest of them at byte 550,000.
+        let drag_to = |row: u16| {
+            let mut rig = Rig::with(calls(5500..5800, 5800));
+            rig.draw();
+            let track = rig.track();
+            let (x, y) = (track.area.x, track.area.y);
+            rig.pointer(MouseEventKind::Down(LEFT), x, y);
+            rig.pointer(MouseEventKind::Drag(LEFT), x, y + row);
+            rig.draw();
+            rig.pointer(MouseEventKind::Up(LEFT), x, y + row);
+            rig.draw();
+            let epoch = rig.history.epoch(List::Activity);
+            rig.app.take_jump(|_, _| epoch)
+        };
+        let mut rig = Rig::with(calls(5500..5800, 5800));
+        rig.draw();
+        let height = rig.track().area.height;
+        // The first row of the track whose place no held entry covers.
+        let jump = (1..height)
+            .find_map(drag_to)
+            .expect("a row past the held entries");
+        assert!((500_000..550_000).contains(&jump.at), "{}", jump.at);
+    }
+
+    #[test]
+    fn an_answer_of_entries_already_held_leaves_the_view_where_it_is() {
+        let mut rig = Rig::with(calls(5500..5800, 5800));
+        // The rows, less the thumb at their end.
+        let text = |rig: &mut Rig| -> Vec<String> {
+            rig.entries()
+                .iter()
+                .map(|row| row.trim_end_matches(['█', '┃', ' ']).to_owned())
+                .collect()
+        };
+        let before = text(&mut rig);
+        let track = rig.track();
+        let (x, y) = (track.area.x, track.area.y);
+        rig.pointer(MouseEventKind::Down(LEFT), x, y);
+        rig.pointer(MouseEventKind::Drag(LEFT), x, y + track.area.height - 1);
+        rig.draw();
+        rig.pointer(MouseEventKind::Up(LEFT), x, y + track.area.height - 1);
+        rig.draw();
+        let epoch = rig.history.epoch(List::Activity);
+        rig.app
+            .take_jump(|_, _| epoch)
+            .expect("a jump on letting go");
+        // The daemon's answer holds the entries around the place, which are
+        // all held already.
+        let held: Vec<Said> = rig.history.facts.activity[100..200].to_vec();
+        let place = held[50].id;
+        let (_, fresh) = rig.history.land_around(List::Activity, held, true);
+        assert_eq!(fresh, 0);
+        rig.app.arrive(place, fresh);
+        assert!(!rig.app.holds_view());
+        assert_eq!(text(&mut rig), before);
+    }
+
+    #[test]
+    fn a_place_in_a_gap_or_among_the_older_entries_is_a_byte_between_the_entries_each_side() {
+        let placed = |run: usize, start: usize, line: u64| Placed {
+            index: 0,
+            id: EntryId { line, index: 0 },
+            open: false,
+            run,
+            start,
+            height: 1,
+        };
+        // Two runs of two lines, 10 entries not held between them and 20
+        // older than both.
+        let held = [
+            placed(0, 0, 900),
+            placed(0, 1, 800),
+            placed(1, 2, 300),
+            placed(1, 3, 200),
+        ];
+        let gaps = Gaps::from([(
+            EntryId {
+                line: 300,
+                index: 0,
+            },
+            10,
+        )]);
+        let shape = Shape {
+            gaps: &gaps,
+            older: 20,
+        };
+        // The bar's lines: the first run takes 0 and 1, the gap 2 to 11, the
+        // second run 12 and 13, and the older entries 14 to 33.
+        let byte = |at| seek_byte(&held, shape, (at, 4));
+        // The top of the gap is the byte of the oldest entry above it.
+        assert_eq!(byte(2), Some(800));
+        assert_eq!(byte(7), Some(550));
+        assert_eq!(byte(11), Some(350));
+        // The older entries run from the oldest held one to the first byte.
+        assert_eq!(byte(14), Some(200));
+        assert_eq!(byte(24), Some(100));
+        assert_eq!(byte(34), Some(0));
+        assert_eq!(byte(500), Some(0));
+        assert_eq!(seek_byte(&[], shape, (3, 0)), None);
     }
 
     #[test]
