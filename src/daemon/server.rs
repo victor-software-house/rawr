@@ -80,7 +80,8 @@ impl State {
     /// A daemon that has seen no feed and no client yet. IDs start at the
     /// wall clock in microseconds, so they differ across daemon runs: a
     /// window that reconnects after a restart keeps its old view ID, which
-    /// no new window may take.
+    /// no new window may take, unless the clock went back further than the
+    /// last run counted.
     fn new() -> Self {
         Self {
             panes: Vec::new(),
@@ -103,7 +104,7 @@ impl State {
     /// view moves `next` past it, for a clock that went back since.
     fn admit(&mut self, kept: Option<u64>) -> (u64, u64) {
         let id = self.next;
-        self.next += 1;
+        self.next = self.next.saturating_add(1);
         if let Some(kept) = kept {
             self.next = self.next.max(kept.saturating_add(1));
         }
@@ -451,7 +452,7 @@ fn serve(hub: &Arc<Hub>, stream: UnixStream, socket: &Path) {
                         continue;
                     }
                     let ticket = state.next;
-                    state.next += 1;
+                    state.next = state.next.saturating_add(1);
                     // The copy may connect before the go-to returns, so the
                     // hand-off it opens with is known before it starts.
                     if let Some(old) = here.clone() {
@@ -858,6 +859,9 @@ mod tests {
         let (other, own) = state.admit(None);
         assert_eq!(own, other);
         assert!(other > kept && other != id);
+        // A kept view at the top of the range moves nothing past it.
+        let (_, top) = state.admit(Some(u64::MAX));
+        assert_eq!(top, u64::MAX);
     }
 
     #[test]
