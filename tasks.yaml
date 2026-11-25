@@ -191,6 +191,36 @@ queue:
       - '2026-11-23, the maintainer chose: stand-in shows this pane sessions only; full app is the floating window; each reports its own state only.'
       - 2026-11-23, the maintainer restated that only the origin says rawr, as Claude sessions come from claude; RAWR-030 covers the tab title, this row the status record.
     plan: openspec/changes/stand-in/proposal.md
+
+  - id: RAWR-032
+    title: Scroll lists smoothly with the wheel and a trackpad
+    scope: app
+    outcome: >-
+      The Conversation and Activity tabs scroll with the hand on a trackpad, and a new entry never moves the text being read.
+    blocked_by: []
+    acceptance:
+      - A trackpad gesture moves the list on evenly spaced frames, never a whole batch in one frame and none in the next.
+      - A new tool call while the reader is scrolled leaves the entries on screen on the same rows.
+      - A frame with 3,000 entries held takes less than 2 ms at p99 while the view scrolls.
+    plan: openspec/changes/smooth-scroll/proposal.md
+    notes:
+      - 2026-11-25, the maintainer asked for scrolling as smooth as a native list, paced as another of their clients paces the wheel.
+
+  - id: RAWR-033
+    title: Load older history on demand
+    scope: app
+    outcome: >-
+      The Conversation and Activity tabs reach back to the start of a session, with
+      no stop at 300 and no visible loading.
+    blocked_by:
+      - RAWR-032
+    acceptance:
+      - Scrolling down a session with 2,400 tool calls reaches its first call, and the view never waits at the end of what is held at the speed the maintainer scrolls.
+      - A window holds at most 3,000 entries of each list, and the daemon keeps no page.
+      - The Activity tab reads the whole session total once the daemon has read the transcript.
+    plan: openspec/changes/history-pages/proposal.md
+    notes:
+      - 2026-11-25, the maintainer chose load on demand for the history past 300 entries, and asked that the loading go unnoticed.
 archive:
   - id: RAWR-021
     title: Draw the picker search box at the bottom
