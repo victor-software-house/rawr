@@ -110,6 +110,16 @@ impl Facts {
         }
     }
 
+    /// How many files the session changed or read.
+    pub(crate) fn touched(&self) -> usize {
+        self.files.len()
+            + self
+                .read
+                .iter()
+                .filter(|(path, _)| !self.files.iter().any(|(file, _)| file == path))
+                .count()
+    }
+
     /// Whether `list` may have entries older than the ones kept: the lines
     /// are not all read, or they gave more than were kept.
     pub(crate) fn older(&self, list: List) -> bool {
