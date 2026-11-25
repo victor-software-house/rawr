@@ -47,6 +47,11 @@ pub(crate) struct Facts {
     pub(crate) log: Vec<Said>,
     /// The tools Claude called, oldest first, the last [`KEEP`] of them.
     pub(crate) activity: Vec<Said>,
+    /// How many entries the conversation has in the lines read so far, past
+    /// the [`KEEP`] it keeps.
+    pub(crate) log_total: usize,
+    /// How many tool calls the lines read so far hold.
+    pub(crate) activity_total: usize,
     /// Whether every line of the transcript is read. The daemon reads from
     /// the newest line back, so until then the counts, the start and the
     /// task list cover only the newest part.
@@ -56,6 +61,40 @@ pub(crate) struct Facts {
 
 /// How many prompts and tool calls the facts keep.
 pub(crate) const KEEP: usize = 300;
+
+/// One of the two lists of entries a transcript gives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum List {
+    /// The conversation: what the user typed and Claude's replies.
+    Log,
+    /// The tools Claude called.
+    Activity,
+}
+
+impl Facts {
+    /// The entries of `list` the facts keep.
+    pub(crate) fn entries(&self, list: List) -> &[Said] {
+        match list {
+            List::Log => &self.log,
+            List::Activity => &self.activity,
+        }
+    }
+
+    /// How many entries `list` has in the lines read so far.
+    pub(crate) const fn total(&self, list: List) -> usize {
+        match list {
+            List::Log => self.log_total,
+            List::Activity => self.activity_total,
+        }
+    }
+
+    /// Whether `list` may have entries older than the ones kept: the lines
+    /// are not all read, or they gave more than were kept.
+    pub(crate) fn older(&self, list: List) -> bool {
+        !self.whole || self.total(list) > self.entries(list).len()
+    }
+}
 
 /// One task of a session's list.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, Deserialize)]
@@ -510,6 +549,8 @@ impl Stretch {
         for (path, count) in newer.read {
             touch(&mut facts.read, &path, count);
         }
+        facts.log_total += newer.log_total;
+        facts.activity_total += newer.activity_total;
         facts.log.extend(newer.log);
         trim(&mut facts.log);
         // Results that reached this stretch's calls from the newer one.
@@ -707,6 +748,7 @@ fn add(stretch: &mut Stretch, record: Record<'_>, line: u64) {
                             if !text.is_empty() && text != "(no content)" {
                                 keep(
                                     &mut stretch.facts.log,
+                                    &mut stretch.facts.log_total,
                                     Said {
                                         id: place.take(),
                                         at: at.map(str::to_owned),
@@ -740,6 +782,7 @@ fn add(stretch: &mut Stretch, record: Record<'_>, line: u64) {
                 }
                 keep(
                     &mut facts.log,
+                    &mut facts.log_total,
                     Said {
                         id: place.take(),
                         at: record.timestamp.as_deref().map(str::to_owned),
@@ -1095,8 +1138,10 @@ fn attribute<'text>(text: &'text str, name: &str) -> Option<&'text str> {
     text.get(start..end)
 }
 
-/// Adds `item` to the end of `list`, keeping the last [`KEEP`].
-fn keep(list: &mut Vec<Said>, item: Said) {
+/// Adds `item` to the end of `list`, keeping the last [`KEEP`], and counts it
+/// in `total`.
+fn keep(list: &mut Vec<Said>, total: &mut usize, item: Said) {
+    *total += 1;
     list.push(item);
     if list.len() > KEEP {
         list.drain(..list.len() - KEEP);
@@ -1172,6 +1217,7 @@ fn call(
     if let Some((shown, what, more)) = tool_line(name, &input, part.input, cwd) {
         keep(
             &mut facts.activity,
+            &mut facts.activity_total,
             Said {
                 id: place.take(),
                 at: at.map(str::to_owned),
@@ -1328,7 +1374,7 @@ mod tests {
     use std::path::PathBuf;
     use std::{env, process};
 
-    use super::{EntryId, Facts, KEEP, Reading, read_forward, tasks};
+    use super::{EntryId, Facts, KEEP, List, Reading, read_forward, tasks};
 
     /// A transcript of `turns` turns: a prompt, then a reply that creates
     /// a task, edits a file and, every fifth turn, carries a long text, so
@@ -1458,6 +1504,42 @@ mod tests {
         assert!(!facts.whole);
         assert_eq!(facts.last_prompt.as_deref(), Some("prompt 399"));
         assert_eq!(facts.model.as_deref(), Some("m7"));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn every_entry_is_counted_past_the_ones_kept() {
+        let path = file("totals", &transcript(400));
+        let mut reading = Reading::default();
+        reading.catch_up(&path).expect("catch up");
+        reading.step_back(&path).expect("step back");
+        // Part of the transcript is read: the count is of the lines so far,
+        // and older entries may exist.
+        let partial = reading.facts();
+        assert!(!partial.whole);
+        assert!(partial.activity_total < 400, "{}", partial.activity_total);
+        assert!(partial.older(List::Activity));
+        while !reading.whole() {
+            reading.step_back(&path).expect("step back");
+        }
+        let facts = reading.facts();
+        // Each turn has one prompt and one edit, and every fifth turn a reply.
+        assert_eq!((facts.log_total, facts.activity_total), (480, 400));
+        assert_eq!((facts.log.len(), facts.activity.len()), (KEEP, KEEP));
+        assert!(facts.older(List::Log) && facts.older(List::Activity));
+        assert_eq!(facts, forward(&path));
+        let _ = fs::remove_file(path);
+
+        // A transcript that fits in the facts has nothing older.
+        let path = file("small", &transcript(40));
+        let mut reading = Reading::default();
+        reading.catch_up(&path).expect("catch up");
+        while !reading.whole() {
+            reading.step_back(&path).expect("step back");
+        }
+        let facts = reading.facts();
+        assert_eq!(facts.activity_total, 40);
+        assert!(!facts.older(List::Log) && !facts.older(List::Activity));
         let _ = fs::remove_file(path);
     }
 
