@@ -94,10 +94,24 @@ The scrollbar SHALL count entries not held at the average height of those laid o
 
 ### Requirement: The filter covers held entries
 
-The `/` filter SHALL show the matching entries among those held, and pages SHALL keep loading as the view nears the oldest match held.
+The `/` filter SHALL show the matching entries among those held.
+Pages SHALL keep loading as the view nears the oldest match held, and while no match is held, until the list holds 3,000 entries.
+Then the tab SHALL end with one dim line that says older entries are not searched and that `ctrl+f` searches the whole session.
 
 #### Scenario: Filtering a partly loaded list
 
 - **WHEN** the reader filters the Activity tab for `cargo` while 300 of 2,400 calls are held
 - **THEN** the tab shows the matching calls among the 300
 - **AND** older matching calls appear as the reader scrolls down
+
+#### Scenario: No match held
+
+- **WHEN** the reader filters for a word that none of the 300 held calls of 5,000 contains
+- **THEN** pages load until 3,000 calls are held, or a match comes
+- **AND** if none comes, the tab reads that nothing matches, and ends with the dim line
+
+#### Scenario: A filter at the bound
+
+- **WHEN** every match is among the newest calls, and 3,000 calls are held
+- **THEN** the window asks for no more pages, and holds no more than 3,000
+- **AND** the tab ends with the dim line
