@@ -1537,3 +1537,44 @@ impl App {
         self.focus == Focus::Search && !self.query.trim().is_empty()
     }
 }
+
+/// Panes and sessions the tests of the app's state and view build on.
+#[cfg(test)]
+pub(crate) mod fixtures {
+    use std::path::PathBuf;
+    use std::time::Duration;
+
+    use crate::app::feed::Pane;
+    use crate::session::Agent;
+    use crate::status::Status;
+
+    /// A session titled `title`, started in an invented folder.
+    pub(crate) fn agent(session_id: &str, title: &str) -> Agent {
+        Agent {
+            session_id: session_id.to_owned(),
+            cwd: "/work/shop".to_owned(),
+            title: title.to_owned(),
+            idle: Some(Duration::from_secs(60)),
+            transcript: PathBuf::from("/work/shop/session.jsonl"),
+        }
+    }
+
+    /// The pane `block`, named `name`, with a session for each of `titles`.
+    pub(crate) fn pane(block: &str, name: &str, status: Status, titles: &[&str]) -> Pane {
+        Pane {
+            session_id: "main".to_owned(),
+            block_id: block.to_owned(),
+            name: name.to_owned(),
+            status,
+            tab: "tab 1".to_owned(),
+            progress: None,
+            msg: None,
+            sessions: titles
+                .iter()
+                .enumerate()
+                .map(|(place, title)| (agent(&format!("{block}-{place}"), title), false))
+                .collect(),
+            closed: false,
+        }
+    }
+}
