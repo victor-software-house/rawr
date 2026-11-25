@@ -23,8 +23,3 @@
      It lost: the rows under the pointer would move as the pointer reached them.
 3. **Keys and focus do not fold or unfold it.**
    - Only the list's position decides, so `Home` and a scroll back to the top bring the full header back.
-4. **A column that folds or opens slides; it never switches to its rail mid-move.**
-   - Today `rails` draws any column narrower than `FULL` as a rail. While the panes drawer shuts or a focus move folds the panes, the list turns into the rail in one frame, and a blank gap then closes (operator, 2026-11-25).
-   - While a column's width moves, it is drawn at the width it has when open and cut at its moving edge, so its rows slide with the edge. It draws as a rail only once the move has ended at the rail's width.
-   - The rail's marks sit in the same columns as the list's marks, so the last frames of a fold already look like the rail.
-   - The header's slide in decision 2 draws the same way, cut at its moving bottom edge.

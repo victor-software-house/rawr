@@ -120,6 +120,16 @@ pub(crate) struct History {
     /// `activity` are the held entries.
     pub(crate) facts: Facts,
     lists: [Held; 2],
+    /// The counts of the last read of the whole transcript, until a rewrite.
+    counts: Option<Counts>,
+}
+
+/// What the tabs count: the conversation, the tool calls, and the files.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Counts {
+    pub(crate) log: usize,
+    pub(crate) activity: usize,
+    pub(crate) files: usize,
 }
 
 #[derive(Debug)]
@@ -160,6 +170,7 @@ impl History {
     /// Takes the daemon's facts in. Returns the entries whose layout is stale.
     pub(crate) fn merge(&mut self, mut read: Facts) -> Vec<EntryId> {
         let mut stale = Vec::new();
+        let epochs = List::BOTH.map(|list| self.lists[list.index()].epoch);
         for list in List::BOTH {
             let (older, total) = (read.older(list), read.whole.then(|| read.total(list)));
             let incoming = mem::take(read.entries_mut(list));
@@ -167,8 +178,46 @@ impl History {
             *read.entries_mut(list) =
                 self.lists[list.index()].take(kept, incoming, (older, total), &mut stale);
         }
+        // A rewrite makes the counts of the last whole read stale.
+        if List::BOTH
+            .iter()
+            .any(|list| self.lists[list.index()].epoch != epochs[list.index()])
+        {
+            self.counts = None;
+        }
+        if read.whole {
+            self.counts = Some(Counts {
+                log: read.log_total,
+                activity: read.activity_total,
+                files: read.touched(),
+            });
+        }
         self.facts = read;
         stale
+    }
+
+    /// What the tab labels count, and whether that is only the part read so
+    /// far. While a read of the newest part follows a whole read, the labels
+    /// keep the whole read's counts, or the new read's where it counts more.
+    pub(crate) fn counts(&self) -> (Counts, bool) {
+        match self.counts {
+            Some(whole) if !self.facts.whole => (
+                Counts {
+                    log: whole.log.max(self.facts.log_total),
+                    activity: whole.activity.max(self.facts.activity_total),
+                    files: whole.files.max(self.facts.touched()),
+                },
+                false,
+            ),
+            Some(_) | None => (
+                Counts {
+                    log: self.facts.log_total,
+                    activity: self.facts.activity_total,
+                    files: self.facts.touched(),
+                },
+                !self.facts.whole,
+            ),
+        }
     }
 
     /// The answer to `ask` has come. An answer that is not to the page in
@@ -1181,6 +1230,52 @@ mod tests {
     fn counted(history: &History) -> usize {
         let shape = history.shape(List::Activity);
         held(history) + shape.gaps.values().sum::<usize>() + shape.older
+    }
+
+    /// A read of the entries `window` of `all`, which counts `total` of
+    /// them so far and is not whole.
+    fn partial_of(all: &[Said], window: Range<usize>, total: usize) -> Facts {
+        Facts {
+            activity: all[window].to_vec(),
+            activity_total: total,
+            whole: false,
+            ..Facts::default()
+        }
+    }
+
+    #[test]
+    fn a_read_of_the_newest_part_leaves_the_facts_true_and_the_labels_whole() {
+        let all = world(5801);
+        let mut history = History::default();
+        history.merge(facts_of(&all[..5800], 5500..5800));
+        history.merge(partial_of(&all, 5700..5801, 101));
+        // The facts are what the daemon sent.
+        assert!(!history.facts.whole);
+        assert_eq!(history.facts.total(List::Activity), 101);
+        assert_eq!(history.facts.activity.last(), all.last());
+        // The labels keep the whole read's counts, with no plus.
+        let (counts, partial) = history.counts();
+        assert_eq!(counts.activity, 5800);
+        assert!(!partial);
+        // A whole read replaces them.
+        history.merge(facts_of(&all, 5501..5801));
+        assert_eq!(history.counts().0.activity, 5801);
+        // A read of the newest part that counts more than the whole read
+        // shows its own count.
+        history.merge(partial_of(&all, 5700..5801, 6000));
+        assert_eq!(history.counts().0.activity, 6000);
+    }
+
+    #[test]
+    fn a_rewrite_makes_the_counts_of_the_whole_read_stale() {
+        let all = world(5800);
+        let mut history = History::default();
+        history.merge(facts_of(&all, 5500..5800));
+        // The transcript is written again, and its newest part numbers lower.
+        history.merge(partial_of(&all, 0..100, 100));
+        let (counts, partial) = history.counts();
+        assert_eq!(counts.activity, 100);
+        assert!(partial);
     }
 
     #[test]

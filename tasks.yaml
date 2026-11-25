@@ -249,7 +249,6 @@ queue:
       - Scrolling a tab off its top folds the header into one row, and the list gains about eight rows.
       - Moving the pointer onto the folded row slides the full header out over the list without moving it.
       - Back at the top of the list, the full header returns.
-      - When the pane drawer shuts or opens, its list slides with the moving edge, and no frame shows a rail beside a blank gap.
     plan: openspec/changes/compact-header/proposal.md
     notes:
       - 2026-11-25, the maintainer asked for the header to fold while scrolled and come back on hover, as the pane rail does.

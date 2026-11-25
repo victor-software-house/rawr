@@ -42,6 +42,10 @@ pub(crate) struct Pane {
     /// pane holds, listed so it can be resumed.
     #[serde(default)]
     pub(crate) closed: bool,
+    /// Whether the pane stands for a session chosen from the search that no
+    /// pane lists; the app adds it, and it is closed too.
+    #[serde(default)]
+    pub(crate) opened: bool,
 }
 
 impl Pane {
@@ -241,6 +245,7 @@ pub(crate) fn with_closed(open: &[Pane], closed: &[Agent]) -> Vec<Pane> {
                 msg: None,
                 sessions: vec![(agent.clone(), live.contains(&agent.session_id))],
                 closed: true,
+                opened: false,
             }),
     );
     listed
@@ -315,6 +320,7 @@ fn pane(tracked: &Tracked, dir: &Path, live: &HashSet<String>) -> Option<Pane> {
         msg,
         sessions,
         closed: false,
+        opened: false,
     })
 }
 

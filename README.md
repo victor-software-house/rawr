@@ -170,6 +170,9 @@ Entries show a few lines and a `+N` count of the rest; click one to expand it, w
 | Activity | Every entry, tool calls and results included |
 | Files | Files the session changed and read. Click a file to open it, or a folder to filter the list |
 
+Enter, or a click, on a search result closes the search and selects the result's session, without resuming it or switching Rex.
+A session no pane lists opens as an Opened pane at the top of the list, with Resume and no Go to pane, until a pane lists it or you close it.
+
 ### Resume and go to a pane
 
 Resuming a session restores the terminal and runs `claude --resume` in the session's folder.
@@ -187,6 +190,7 @@ Going to a pane switches the Rex app to it, which needs Remote Control turned on
 | Move the selection or scroll | `↑` `↓`, `j` `k` | Click a row, scroll the wheel, or drag the scrollbar |
 | Go to the pane in the Rex app | `Enter` on a pane, `g` | Click the selected pane |
 | Resume the session | `Enter` on a session, `r` | Click the selected session |
+| Close an opened pane | `x` | Click its `×` |
 | Filter the focused column | `/`; `Esc` clears the filter | |
 | Search all sessions by prompt, title, folder or ID | `Ctrl+F`; `Esc` closes the search | |
 | One column or two | `Ctrl+L` | |
