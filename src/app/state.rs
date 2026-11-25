@@ -302,6 +302,14 @@ struct Fold {
     from: f32,
 }
 
+/// The folded session header drawn out over the list.
+#[derive(Debug, Clone, Copy)]
+struct Peek {
+    /// When it started opening or closing.
+    at: Instant,
+    open: bool,
+}
+
 /// How many rows the session header takes before a frame has drawn it.
 const HEADER_ROWS: u16 = 9;
 
@@ -316,6 +324,10 @@ pub(crate) struct Move {
 
 /// What lies under the pointer, as the last frame drew it.
 #[derive(Debug, Clone, Copy, Default)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each flag says whether the pointer is in one place the last frame drew"
+)]
 pub(crate) struct Under {
     pub(crate) target: Option<Target>,
     /// The list the wheel scrolls there.
@@ -326,6 +338,10 @@ pub(crate) struct Under {
     pub(crate) keep: bool,
     /// Whether the pointer is over the rail the drawer comes out of.
     pub(crate) on_rail: bool,
+    /// Whether the pointer is on the row of the folded header.
+    pub(crate) fold: bool,
+    /// Whether the pointer is where it keeps the folded header out.
+    pub(crate) peek: bool,
     /// The screen's width and height.
     pub(crate) size: (u16, u16),
 }
@@ -483,6 +499,10 @@ pub(crate) struct App {
     /// decides. It moves by [`App::now`], the clock the loop reads at each
     /// wake.
     fold: Fold,
+    /// The folded header drawn out over the list, and when the pointer last
+    /// left it.
+    peek: Option<Peek>,
+    peek_left: Option<Instant>,
     /// How many rows the header takes unfolded, as the last frame that drew it
     /// found.
     header_rows: u16,
@@ -597,6 +617,8 @@ impl App {
                     .unwrap_or_else(Instant::now),
                 from: 0.0,
             },
+            peek: None,
+            peek_left: None,
             header_rows: HEADER_ROWS,
             cleared: [false; 4],
             wants: [48, 60, 72],
@@ -663,6 +685,10 @@ impl App {
         // The header folds while the session list is off its top.
         if let Some((_, top)) = tops.iter().find(|(list, _)| *list == Focus::Session) {
             self.fold_to(*top > 0);
+        }
+        // A header that has slid back has nothing left to draw.
+        if self.peek.is_some_and(|peek| !peek.open) && self.peeked().is_none() {
+            self.peek = None;
         }
         // Only a frame that drew the session list knows where it stands.
         if tops.iter().any(|(list, _)| *list == Focus::Session) {
@@ -912,6 +938,59 @@ impl App {
             at: self.now,
             from: self.folded(),
         };
+        if !folded {
+            self.peek = None;
+        }
+    }
+
+    /// How long the folded header takes to slide out or back.
+    fn peek_span(&self) -> Duration {
+        span(self.header_rows.saturating_add(1))
+    }
+
+    /// How far the folded header is drawn out over the list, from 0 to 1,
+    /// eased; none once it has slid back.
+    pub(crate) fn peeked(&self) -> Option<f32> {
+        let peek = self.peek?;
+        let (t, eased) = eased(
+            self.now.saturating_duration_since(peek.at),
+            self.peek_span(),
+        );
+        if peek.open {
+            Some(eased)
+        } else if t < 1.0 {
+            Some(1.0 - eased)
+        } else {
+            None
+        }
+    }
+
+    /// Draws the folded header out, or slides it back, from where it stands
+    /// now so a reversal never jumps.
+    fn peek_out(&mut self, open: bool) {
+        if self.peek.is_some_and(|peek| peek.open == open) {
+            return;
+        }
+        let Some(out) = self.peeked() else {
+            self.peek = open.then_some(Peek { at: self.now, open });
+            return;
+        };
+        // The curve is the drawer's: see [`App::draw_out`].
+        let t = if open {
+            1.0 - (1.0 - out).cbrt()
+        } else {
+            1.0 - out.cbrt()
+        };
+        let at = self
+            .now
+            .checked_sub(self.peek_span().mul_f32(t))
+            .unwrap_or(self.now);
+        self.peek = Some(Peek { at, open });
+    }
+
+    /// How many rows the header takes unfolded.
+    pub(crate) const fn header_rows(&self) -> u16 {
+        self.header_rows
     }
 
     /// Notes how many rows the unfolded header took in the last frame.
@@ -947,6 +1026,7 @@ impl App {
             self.start_move(self.lead);
             self.lead = column;
             self.drawer = None;
+            self.peek = None;
         }
         if column != self.focus {
             self.focus = column;
@@ -1180,6 +1260,9 @@ impl App {
                 .drawer
                 .is_some_and(|drawer| drawer.at.elapsed() < self.drawer_span(drawer.column))
             || self.now.saturating_duration_since(self.fold.at) < self.header_span()
+            || self
+                .peek
+                .is_some_and(|peek| self.now.saturating_duration_since(peek.at) < self.peek_span())
     }
 
     /// The session `r` resumes: the one shown, or the selected pane's newest
@@ -1594,6 +1677,37 @@ impl App {
             return;
         }
         self.outside = None;
+        self.follow_drawer(under);
+        self.follow_header(under);
+    }
+
+    /// Opens or shuts the folded header as the pointer moves: it draws out
+    /// on the folded row and slides back once the pointer has left it and
+    /// the header drawn out, as the drawer does.
+    fn follow_header(&mut self, under: Under) {
+        if under.fold {
+            self.peek_out(true);
+            return;
+        }
+        let Some(peek) = self.peek else {
+            return;
+        };
+        if peek.open {
+            if !under.peek {
+                self.peek_left = Some(self.now);
+                self.peek_out(false);
+            }
+        } else if under.peek
+            && self
+                .peek_left
+                .is_some_and(|left| self.now.saturating_duration_since(left) < GRACE)
+        {
+            self.peek_out(true);
+        }
+    }
+
+    /// Opens or shuts the drawer as the pointer moves.
+    fn follow_drawer(&mut self, under: Under) {
         let Some(drawer) = self.drawer else {
             if let Some(column) = under.rail {
                 self.draw_out(Some(column));
@@ -1618,24 +1732,33 @@ impl App {
     /// window's edge has been away long enough to shut the drawer.
     pub(crate) fn wake_at(&self) -> Option<Instant> {
         self.outside
-            .filter(|_| self.drawer.is_some_and(|drawer| drawer.open))
+            .filter(|_| {
+                self.drawer.is_some_and(|drawer| drawer.open)
+                    || self.peek.is_some_and(|peek| peek.open)
+            })
             .map(|since| since + AWAY)
     }
 
-    /// Shuts the drawer once the pointer has stayed past the window's edge,
-    /// and returns whether it did. A pointer that has stayed away with the
-    /// drawer shut is forgotten, so a drawer opened later is not shut for it.
+    /// Shuts the drawer and the header drawn out once the pointer has stayed
+    /// past the window's edge, and returns whether it shut one. A pointer that
+    /// has stayed away with both shut is forgotten, so one opened later is not
+    /// shut for it.
     pub(crate) fn tick(&mut self) -> bool {
         if self.outside.is_none_or(|since| since.elapsed() < AWAY) {
             return false;
         }
         self.outside = None;
-        if !self.drawer.is_some_and(|drawer| drawer.open) {
-            return false;
+        let drawer = self.drawer.is_some_and(|drawer| drawer.open);
+        let header = self.peek.is_some_and(|peek| peek.open);
+        if drawer {
+            self.left = Some(Instant::now());
+            self.draw_out(None);
         }
-        self.left = Some(Instant::now());
-        self.draw_out(None);
-        true
+        if header {
+            self.peek_left = Some(self.now);
+            self.peek_out(false);
+        }
+        drawer || header
     }
 
     /// Moves the start of every animation back by `by`, as if that long had
@@ -1806,6 +1929,7 @@ impl App {
     pub(crate) fn on_blur(&mut self) {
         self.hover_over(None);
         self.draw_out(None);
+        self.peek_out(false);
         // The release of a thumb held when focus went may never come: let go
         // of it as a release does, so a place waiting for its entries is asked.
         if let Some(Drag::Thumb(held)) = self.dragging {
@@ -2445,6 +2569,122 @@ mod tests {
         let scroll = app.scroll_of(Focus::Session);
         assert_eq!(scroll.anchor, Some(Anchor { moved: 1, ..anchor }));
         assert_eq!(scroll.top, 4);
+    }
+
+    /// A pointer report inside the window, over what `under` says.
+    fn pointer_at(app: &mut App, under: Under) {
+        let under = Under {
+            size: (100, 40),
+            ..under
+        };
+        app.on_mouse(
+            MouseEvent {
+                kind: MouseEventKind::Moved,
+                column: 10,
+                row: 10,
+                modifiers: KeyModifiers::NONE,
+            },
+            under,
+        );
+    }
+
+    #[test]
+    fn the_pointer_on_the_folded_header_draws_it_out_and_leaving_shuts_it() {
+        let mut app = App::new(None);
+        app.set_panes(three_panes(&["Fix checkout"]));
+        assert_eq!(app.peeked(), None);
+        pointer_at(
+            &mut app,
+            Under {
+                fold: true,
+                ..Under::default()
+            },
+        );
+        assert_eq!(app.peeked(), Some(0.0));
+        app.now += Duration::from_secs(1);
+        assert_eq!(app.peeked(), Some(1.0));
+        // On the header drawn out, or back on the folded row, it stays.
+        for under in [
+            Under {
+                peek: true,
+                ..Under::default()
+            },
+            Under {
+                fold: true,
+                peek: true,
+                ..Under::default()
+            },
+        ] {
+            pointer_at(&mut app, under);
+            app.now += Duration::from_secs(1);
+            assert_eq!(app.peeked(), Some(1.0));
+        }
+        // Off both, it slides back.
+        pointer_at(&mut app, Under::default());
+        app.now += Duration::from_millis(20);
+        assert!(app.peeked().is_some_and(|out| out > 0.0 && out < 1.0));
+        app.now += Duration::from_secs(1);
+        assert_eq!(app.peeked(), None);
+    }
+
+    #[test]
+    fn the_header_comes_back_for_a_pointer_that_returns_within_the_grace() {
+        let mut app = App::new(None);
+        app.set_panes(three_panes(&["Fix checkout"]));
+        let on_header = Under {
+            peek: true,
+            ..Under::default()
+        };
+        pointer_at(
+            &mut app,
+            Under {
+                fold: true,
+                ..Under::default()
+            },
+        );
+        app.now += Duration::from_secs(1);
+        pointer_at(&mut app, Under::default());
+        app.now += GRACE / 2;
+        pointer_at(&mut app, on_header);
+        assert!(app.peek.is_some_and(|peek| peek.open));
+        // Past the grace, the header drawn out is no longer the pointer's to
+        // call back.
+        pointer_at(&mut app, Under::default());
+        app.now += GRACE * 2;
+        pointer_at(&mut app, on_header);
+        assert!(app.peek.is_some_and(|peek| !peek.open));
+    }
+
+    #[test]
+    fn a_pointer_past_the_window_edge_shuts_the_header_after_the_away_time() {
+        let mut app = App::new(None);
+        app.set_panes(three_panes(&["Fix checkout"]));
+        pointer_at(
+            &mut app,
+            Under {
+                fold: true,
+                ..Under::default()
+            },
+        );
+        app.now += Duration::from_secs(1);
+        app.on_mouse(
+            MouseEvent {
+                kind: MouseEventKind::Moved,
+                column: 0,
+                row: 0,
+                modifiers: KeyModifiers::NONE,
+            },
+            Under {
+                size: (100, 40),
+                ..Under::default()
+            },
+        );
+        assert!(app.wake_at().is_some());
+        app.outside = app.outside.and_then(|at| at.checked_sub(AWAY * 2));
+        assert!(app.tick());
+        app.now += Duration::from_secs(1);
+        assert_eq!(app.peeked(), None);
+        assert_eq!(app.wake_at(), None);
     }
 
     #[test]

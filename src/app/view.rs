@@ -51,6 +51,9 @@ pub(crate) struct Hits {
     rails: Vec<(Rect, Focus)>,
     /// The row of the folded session header.
     folded: Option<Rect>,
+    /// Where the pointer keeps the folded header out: as tall as it opens, and
+    /// a little past its bottom.
+    peek: Option<Rect>,
     /// How many rows the session header takes unfolded, when a frame drew it.
     pub(crate) header: Option<u16>,
     /// Where the pointer keeps the drawer out: as wide as it opens, and a
@@ -99,6 +102,8 @@ impl Hits {
             rail: find(&self.rails),
             keep: self.keep.is_some_and(|area| area.contains(at)),
             on_rail: self.drawer_rail.is_some_and(|area| area.contains(at)),
+            fold: self.folded.is_some_and(|area| area.contains(at)),
+            peek: self.peek.is_some_and(|area| area.contains(at)),
             size: (self.width, self.height),
         }
     }
@@ -186,6 +191,7 @@ fn draw_with(frame: &mut Frame<'_>, app: &App, layouts: &mut Layouts, shown: Sho
         hits.targets.clear();
         hits.rails.clear();
         hits.folded = None;
+        hits.peek = None;
         hits.bars.clear();
         hits.cursor = None;
         help(frame, app.is_stand_in());
@@ -1043,6 +1049,13 @@ fn pane_view(
         return;
     };
     tabbed(frame, app, layouts, area, tabs_at, (agent, history), hits);
+    // While the pointer is on the folded row, the whole header slides down
+    // over the list.
+    if fold >= 1.0
+        && let Some(out) = app.peeked()
+    {
+        peek(frame, app, area, pane, ((agent, history), out), hits);
+    }
 }
 
 /// The rows of the header above the tabs: the pane, its status, its
@@ -1239,6 +1252,46 @@ fn folding(
         visible
     });
     rows.map(|rows| inner.y + rows)
+}
+
+/// The whole header and the tabs, drawn `out` of the way down over the top of
+/// the list and cut at their moving bottom edge, so the list does not move.
+/// What lies under them takes no click, and they take their own.
+fn peek(
+    frame: &mut Frame<'_>,
+    app: &App,
+    area: Rect,
+    pane: Option<&Pane>,
+    ((agent, history), out): ((&Agent, Option<&History>), f32),
+    hits: &mut Hits,
+) {
+    let inner = pad(area, 1, 0);
+    hits.peek = Some(Rect {
+        height: (app.header_rows() + 2 + SLACK).min(area.height),
+        ..area
+    });
+    hits.within(true, |hits| {
+        let mut rows = 0;
+        let cells = scratch(area.right(), area.bottom(), |screen| {
+            if let Some(y) = head(screen, app, area, pane, Some((agent, history)), hits) {
+                tabs(
+                    screen,
+                    app,
+                    row_at(inner, y),
+                    history.map(|history| &history.facts),
+                    hits,
+                );
+                rule(screen, row_at(area, y + 1), theme::line());
+                rows = y + 2 - area.y;
+            }
+        });
+        let visible = Rect {
+            height: mix(0, rows, out).min(area.height),
+            ..area
+        };
+        paste(frame.buffer_mut(), &cells, visible);
+        visible
+    });
 }
 
 /// The folded header: the pane's status and name, and the session's title.
@@ -3461,6 +3514,7 @@ mod tests {
     use super::*;
     use crate::app::facts::Way;
     use crate::app::history::Ask;
+    use crate::app::state::Action;
     use crate::app::state::fixtures::pane;
 
     const OWN: &str = "block-own";
@@ -4845,5 +4899,65 @@ mod tests {
         assert_eq!(called(&back), called(&unfolded));
         assert!(back[0].contains("file-299.rs"), "{:?}", back[0]);
         assert!(rig.draw().iter().any(|row| row.contains("Resume")));
+    }
+
+    #[test]
+    fn the_pointer_on_the_folded_header_draws_it_out_over_the_list_and_it_takes_a_click() {
+        let mut rig = Rig::new(300);
+        rig.scroll(10);
+        rig.draw();
+        rig.app.now += Duration::from_secs(1);
+        let folded = rig.draw();
+        assert!(
+            !folded.iter().any(|row| row.contains("Resume")),
+            "{folded:?}"
+        );
+        // The pointer moves onto the folded row.
+        let row = rig.hits.folded.expect("the header is folded");
+        rig.pointer(MouseEventKind::Moved, row.x + 3, row.y);
+        assert!(rig.app.peeked().is_some());
+        rig.app.now += Duration::from_secs(1);
+        let out = rig.draw();
+        let at = out
+            .iter()
+            .position(|row| row.contains("Resume"))
+            .expect("the header is drawn out");
+        // The list's rows stay where they were, below the header and left of
+        // the scrollbar, which fades by the clock.
+        let text = |rows: &[String]| -> Vec<String> {
+            rows[at + 8..37]
+                .iter()
+                .map(|row| row.chars().take(110).collect())
+                .collect()
+        };
+        assert_eq!(text(&out), text(&folded));
+        // The Resume button takes a click.
+        let column = out[at]
+            .split("Resume")
+            .next()
+            .expect("a row")
+            .chars()
+            .count();
+        let (column, row) = (
+            u16::try_from(column).expect("a small number"),
+            u16::try_from(at).expect("a small number"),
+        );
+        let under = rig.hits.under(column, row);
+        assert_eq!(under.target, Some(Target::Button(Button::Resume)));
+        let action = rig.app.on_mouse(
+            MouseEvent {
+                kind: MouseEventKind::Down(LEFT),
+                column,
+                row,
+                modifiers: KeyModifiers::NONE,
+            },
+            under,
+        );
+        assert!(matches!(action, Action::Resume(_)), "{action:?}");
+        // Off the header and the folded row, it slides back.
+        rig.pointer(MouseEventKind::Moved, 100, 30);
+        rig.app.now += Duration::from_secs(1);
+        assert_eq!(rig.app.peeked(), None);
+        assert!(!rig.draw().iter().any(|row| row.contains("Resume")));
     }
 }
