@@ -338,16 +338,14 @@ pub(crate) fn run(view: Option<u64>, mode: &Mode) -> Result<Option<Agent>> {
                     });
                 }
             }
+            // A list whose scroll this message set another way has no use for
+            // the wheel reports read before it, and keeps those read after.
+            pacer.reset(&app.take_cleared(), &mut reports);
         }
         // A pointer past the window's edge shuts the drawer once it has
         // stayed away a moment.
         if app.tick() {
             urgent = true;
-        }
-        // A list whose scroll was set another way has no wheel report left to
-        // move it.
-        for list in app.take_cleared() {
-            pacer.clear(list);
         }
         due = pacer.wake(&Wake {
             now: woke,
@@ -437,9 +435,47 @@ fn own_status(app: &App) -> Report {
 
 #[cfg(test)]
 mod tests {
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
     use super::*;
     use crate::app::state::fixtures::pane;
     use crate::status::Status;
+
+    /// A report, then a key that switches the tab, then a report, in one batch:
+    /// the key sets the scroll another way, so the report read before it is
+    /// dropped and the one read after it moves the list.
+    #[test]
+    fn a_reset_drops_the_wheel_reports_read_before_it_only() {
+        let t0 = Instant::now();
+        let ms = Duration::from_millis;
+        let mut app = App::new(None);
+        app.set_panes(vec![pane(
+            "block-a",
+            "alpha/one",
+            Status::Idle,
+            &["Fix login"],
+        )]);
+        let mut pacer = Pacer::new(t0);
+        let wheel = |at| Wheel {
+            list: Focus::Session,
+            rows: 2,
+            at,
+        };
+        let mut reports = vec![wheel(t0)];
+        app.on_key(KeyEvent::new(KeyCode::Char(']'), KeyModifiers::NONE));
+        pacer.reset(&app.take_cleared(), &mut reports);
+        reports.push(wheel(t0 + ms(1)));
+        let moves = pacer
+            .wake(&Wake {
+                now: t0 + ms(1),
+                reports: &reports,
+                urgent: false,
+                dirty: false,
+                moving: false,
+            })
+            .expect("a frame");
+        assert_eq!(moves[state::slot(Focus::Session)], 2);
+    }
 
     /// Whether the full app sends a report for each list of panes, shown in
     /// turn with these statuses.

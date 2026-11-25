@@ -704,6 +704,34 @@ fn only_a_frame_the_wheel_moves_spins() {
         })
     );
     // A list whose scroll was set another way has no report left to move it.
-    pacer.clear(Focus::Session);
+    pacer.reset(&[Focus::Session], &mut Vec::new());
     assert_eq!(pacer.wait(false, &[None]), None);
+}
+
+/// While focus is on the move it draws every 16 ms. The pointer's wakes every
+/// 4 ms mark changes, which wait for those frames instead of drawing between
+/// them, and the move's last frame follows its end.
+#[test]
+fn a_move_draws_only_on_its_own_frames() {
+    let t0 = Instant::now();
+    let ms = Duration::from_millis;
+    let scene = Scene {
+        moving_until: ms(100),
+        ..Scene::default()
+    };
+    let pointer: Vec<_> = (0..25)
+        .map(|k| (t0 + ms(1) + ms(4) * k, Input::Daemon))
+        .collect();
+    let frames = play_scene(&mut Pacer::new(t0), t0, &pointer, scene);
+    assert_eq!(
+        frames.iter().map(|frame| frame.0 - t0).collect::<Vec<_>>(),
+        [16, 32, 48, 64, 80, 96, 112].map(ms)
+    );
+    // A key still draws between them.
+    let key = [(t0 + ms(20), Input::Key)];
+    let frames = play_scene(&mut Pacer::new(t0), t0, &key, scene);
+    assert!(
+        frames.iter().any(|frame| frame.0 == t0 + ms(20)),
+        "{frames:?}"
+    );
 }
