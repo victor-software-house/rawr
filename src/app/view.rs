@@ -1279,13 +1279,7 @@ fn peek(
         let mut rows = 0;
         let cells = scratch(area.right(), area.bottom(), |screen| {
             if let Some(y) = head(screen, app, area, pane, Some((agent, history)), hits) {
-                tabs(
-                    screen,
-                    app,
-                    row_at(inner, y),
-                    history.map(|history| &history.facts),
-                    hits,
-                );
+                tabs(screen, app, row_at(inner, y), history, hits);
                 rule(screen, row_at(area, y + 1), theme::line());
                 rows = y + 2 - area.y;
             }
@@ -1342,13 +1336,7 @@ fn tabbed(
 ) {
     let inner = pad(area, 1, 0);
     let bottom = inner.bottom();
-    tabs(
-        frame,
-        app,
-        row_at(inner, y),
-        history.map(|history| &history.facts),
-        hits,
-    );
+    tabs(frame, app, row_at(inner, y), history, hits);
     rule(frame, row_at(area, y + 1), theme::line());
     let content = Rect {
         y: y + 2,
@@ -1566,30 +1554,23 @@ fn session_list(frame: &mut Frame<'_>, app: &App, area: Rect, pane: &Pane, hits:
     used
 }
 
-/// How many entries `list` has in the whole transcript, or in the part read so
-/// far with a `+` while the rest is still being read.
-fn counted(facts: &Facts, list: List) -> String {
-    let plus = if facts.whole { "" } else { "+" };
-    format!("{}{plus}", facts.total(list))
+/// How many entries a list has: in the whole transcript, or in the part read
+/// so far with a `+` while the rest is still being read.
+fn counted(total: usize, partial: bool) -> String {
+    let plus = if partial { "+" } else { "" };
+    format!("{total}{plus}")
 }
 
 /// The tab bar: each tab's name and how many rows it holds.
-fn tabs(frame: &mut Frame<'_>, app: &App, area: Rect, facts: Option<&Facts>, hits: &mut Hits) {
+fn tabs(frame: &mut Frame<'_>, app: &App, area: Rect, history: Option<&History>, hits: &mut Hits) {
+    let counts = history.map(History::counts);
     let mut x = area.x;
     for tab in Tab::ALL {
-        let count = facts.map(|facts| match tab {
+        let count = counts.map(|(counts, partial)| match tab {
             Tab::Overview => None,
-            Tab::Prompts => Some(counted(facts, List::Log)),
-            Tab::Activity => Some(counted(facts, List::Activity)),
-            Tab::Files => Some(
-                (facts.files.len()
-                    + facts
-                        .read
-                        .iter()
-                        .filter(|(path, _)| !facts.files.iter().any(|(file, _)| file == path))
-                        .count())
-                .to_string(),
-            ),
+            Tab::Prompts => Some(counted(counts.log, partial)),
+            Tab::Activity => Some(counted(counts.activity, partial)),
+            Tab::Files => Some(counts.files.to_string()),
         });
         let text = match count.flatten() {
             Some(count) => format!(" {} {count} ", tab.name()),
@@ -1618,7 +1599,7 @@ fn tabs(frame: &mut Frame<'_>, app: &App, area: Rect, facts: Option<&Facts>, hit
         x += width + 1;
     }
     // The newest lines show first; the counts grow as the older ones come.
-    if facts.is_some_and(|facts| !facts.whole) {
+    if counts.is_some_and(|(_, partial)| partial) {
         let text = "reading older lines…";
         let width = u16::try_from(text.chars().count()).unwrap_or(0);
         if x + width <= area.right() {
@@ -3762,11 +3743,52 @@ mod tests {
             "{rows:?}"
         );
         // The newest 300 are read and the start is not.
-        rig.history.facts.activity_total = 300;
-        rig.history.facts.whole = false;
+        let mut partial = calls(0..300, 300);
+        partial.whole = false;
+        rig.history = History::default();
+        rig.history.merge(partial);
         let rows = rig.draw();
         assert!(
             rows.iter().any(|row| row.contains("Activity 300+ ")),
+            "{rows:?}"
+        );
+    }
+
+    /// The rows drawn after the daemon sends `read`, as the window merges it.
+    fn after_read(rig: &mut Rig, read: Facts) -> Vec<String> {
+        rig.history.merge(read);
+        rig.draw()
+    }
+
+    #[test]
+    fn a_read_of_the_newest_part_after_a_whole_one_keeps_the_whole_counts() {
+        let mut rig = Rig::with(calls(0..300, 2400));
+        let mut partial = calls(0..300, 785);
+        partial.whole = false;
+        let rows = after_read(&mut rig, partial);
+        assert!(
+            rows.iter().any(|row| row.contains("Activity 2400 ")),
+            "{rows:?}"
+        );
+        assert!(
+            !rows.iter().any(|row| row.contains("reading older lines")),
+            "{rows:?}"
+        );
+    }
+
+    #[test]
+    fn a_rewrite_shows_the_part_read_with_a_plus_again() {
+        let mut rig = Rig::with(calls(0..300, 2400));
+        // The transcript was written again: its newest entries number lower.
+        let mut partial = calls(0..100, 100);
+        partial.whole = false;
+        let rows = after_read(&mut rig, partial);
+        assert!(
+            rows.iter().any(|row| row.contains("Activity 100+ ")),
+            "{rows:?}"
+        );
+        assert!(
+            rows.iter().any(|row| row.contains("reading older lines")),
             "{rows:?}"
         );
     }
