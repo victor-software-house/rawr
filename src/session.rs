@@ -115,35 +115,50 @@ pub(crate) fn live_sessions() -> Result<HashSet<String>> {
     Ok(live)
 }
 
-/// The titles read from transcripts, each kept with the modified time and
-/// length of the transcript it came from, so a title is read again only when
-/// its transcript changed.
+/// What a title was read at: its transcript's modified time and length, and
+/// the modified time of the session's `custom-title.json`, which
+/// [`transcript_title`] also reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Seen {
+    modified: SystemTime,
+    len: u64,
+    side: Option<SystemTime>,
+}
+
+/// The titles read from transcripts, each kept with what it was read at, so
+/// a title is read again only when its transcript or its title file changed.
 ///
 /// Two generations let a transcript that is no longer asked for drop out:
 /// [`Titles::sweep`] keeps what the last round asked for and forgets the rest.
 #[derive(Debug, Default)]
 pub(crate) struct Titles {
-    last: HashMap<PathBuf, (SystemTime, u64, Option<String>)>,
-    next: HashMap<PathBuf, (SystemTime, u64, Option<String>)>,
+    last: HashMap<PathBuf, (Seen, Option<String>)>,
+    next: HashMap<PathBuf, (Seen, Option<String>)>,
 }
 
 impl Titles {
-    /// The title of the transcript at `path`, read from the file only when
-    /// `modified` or `len` differ from the ones its last title was read at.
+    /// The title of the transcript at `path`, read from the files only when
+    /// `modified`, `len` or the title file's modified time differ from the
+    /// ones its last title was read at.
     pub(crate) fn title(&mut self, path: &Path, modified: SystemTime, len: u64) -> Option<String> {
-        let current =
-            |(seen, size, _): &(SystemTime, u64, Option<String>)| *seen == modified && *size == len;
+        let seen = Seen {
+            modified,
+            len,
+            side: fs::metadata(title_file_path(path))
+                .and_then(|meta| meta.modified())
+                .ok(),
+        };
+        let current = |(was, _): &(Seen, Option<String>)| *was == seen;
         let title = match self
             .next
             .remove(path)
             .filter(current)
             .or_else(|| self.last.remove(path).filter(current))
         {
-            Some((_, _, title)) => title,
+            Some((_, title)) => title,
             None => transcript_title(path),
         };
-        self.next
-            .insert(path.to_path_buf(), (modified, len, title.clone()));
+        self.next.insert(path.to_path_buf(), (seen, title.clone()));
         title
     }
 
@@ -304,8 +319,13 @@ fn last_row(lines: &[u8], kind: Title) -> Option<String> {
 }
 
 /// The title in the session's `custom-title.json`, unless missing or blank.
+/// The session's own title file, beside its transcript.
+fn title_file_path(transcript: &Path) -> PathBuf {
+    transcript.with_extension("").join("custom-title.json")
+}
+
 fn title_file(transcript: &Path) -> Option<String> {
-    let bytes = fs::read(transcript.with_extension("").join("custom-title.json")).ok()?;
+    let bytes = fs::read(title_file_path(transcript)).ok()?;
     let file = serde_json::from_slice::<TitleFile>(&bytes).ok()?;
     Some(file.custom).filter(|title| !title.trim().is_empty())
 }
@@ -516,6 +536,26 @@ mod tests {
         assert_eq!(
             titles.title(&path, later, longer).as_deref(),
             Some("Charlie three")
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_title_is_read_again_when_its_title_file_changes() {
+        let dir = env::temp_dir().join(format!("rawr-side-{}", process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("s.jsonl");
+        fs::write(&path, "{\"type\":\"user\"}\n").unwrap();
+        let meta = fs::metadata(&path).unwrap();
+        let (modified, len) = (meta.modified().unwrap(), meta.len());
+        let mut titles = Titles::default();
+        assert_eq!(titles.title(&path, modified, len), None);
+        let side = title_file_path(&path);
+        fs::create_dir_all(side.parent().unwrap()).unwrap();
+        fs::write(&side, "{\"customTitle\":\"Saved apart\"}").unwrap();
+        assert_eq!(
+            titles.title(&path, modified, len).as_deref(),
+            Some("Saved apart")
         );
         fs::remove_dir_all(&dir).unwrap();
     }
