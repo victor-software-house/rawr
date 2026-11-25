@@ -26,3 +26,12 @@ While the pointer is on the folded header, the full header SHALL slide out over 
 - **WHEN** the header is folded and the pointer moves onto it
 - **THEN** the full header is drawn over the top of the list, and its Resume button takes a click
 - **AND** the list's rows stay where they were
+
+### Requirement: A folding column slides
+
+While the panes column folds or opens, by its drawer or by a move of focus, its rows SHALL slide with its moving edge, and it SHALL draw as a rail only once the move ends at the rail's width.
+
+#### Scenario: The drawer shuts
+
+- **WHEN** the pointer leaves the open panes drawer
+- **THEN** each frame of the shut shows the pane list cut at the moving edge, and no frame shows a rail with a blank gap beside it

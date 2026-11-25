@@ -4,6 +4,7 @@
 
 - [ ] 1.1 The header folds while the shown tab's list is off its top, and unfolds at the top, with the list keeping its anchor; proved by `TestBackend` tests of the "Scrolling the Activity tab folds the header" and "Back at the top" scenarios in CI.
 - [ ] 1.2 The pointer on the folded row draws the full header out over the list, and it shuts when the pointer leaves; proved by state and `TestBackend` tests of the "Hovering the folded header" scenario in CI.
+- [ ] 1.3 A folding or opening panes column draws cut at its moving edge in every frame, by the drawer and by a focus move; proved by `TestBackend` tests of the "The drawer shuts" scenario that draw each step of the move in CI.
 
 ## 2. Review
 
