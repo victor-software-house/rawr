@@ -47,9 +47,24 @@ enum Msg {
     Daemon(Box<Incoming>),
 }
 
+/// How a window opens.
+#[derive(Debug)]
+pub(crate) enum Mode {
+    /// Every pane, its sessions and the search over every session.
+    Full,
+    /// A pane's own sessions only, for the pane `block` that a restart
+    /// brought back as a fresh shell. `title` names the pane after its
+    /// newest resumable session.
+    StandIn {
+        /// The pane, by Rex block ID.
+        block: String,
+        /// The pane's terminal title, and the title of its status record.
+        title: String,
+    },
+}
+
 /// Opens the app and returns the session the user chose to resume, or
-/// `None` when the user quit. `select` names the pane, by block ID, to
-/// select once the daemon lists it.
+/// `None` when the user quit. A stand-in lists only its own pane.
 ///
 /// # Errors
 ///
@@ -58,7 +73,7 @@ enum Msg {
     clippy::too_many_lines,
     reason = "one loop that draws, waits and handles every message the window gets"
 )]
-pub(crate) fn run(view: Option<u64>, select: Option<String>) -> Result<Option<Agent>> {
+pub(crate) fn run(view: Option<u64>, mode: &Mode) -> Result<Option<Agent>> {
     let (send, receive) = mpsc::channel();
     let input = send.clone();
     thread::spawn(move || {
@@ -75,8 +90,10 @@ pub(crate) fn run(view: Option<u64>, select: Option<String>) -> Result<Option<Ag
     })?;
 
     markup::load();
-    let mut app = App::new(env::var("REX_BLOCK").ok());
-    app.want = select;
+    let mut app = match mode {
+        Mode::Full => App::new(env::var("REX_BLOCK").ok()),
+        Mode::StandIn { block, .. } => App::stand_in(block.clone()),
+    };
     // Whether this window replaces another once it has drawn the panes.
     let mut replacing = false;
     // Whether the daemon's panes have arrived since this window connected.
@@ -85,15 +102,26 @@ pub(crate) fn run(view: Option<u64>, select: Option<String>) -> Result<Option<Ag
     let mut generation: u64 = 0;
     let mut facts: HashMap<PathBuf, Facts> = HashMap::new();
     let mut asked: Option<PathBuf> = None;
+    let title = match mode {
+        Mode::Full => None,
+        Mode::StandIn { title, .. } => Some(title.as_str()),
+    };
     let mut screen = Screen::enter()?;
     execute!(io::stderr(), SetCursorStyle::BlinkingBar).context("set the cursor shape")?;
     let mut reporter = Reporter::default();
+    // A stand-in reports once, before its first frame, and never again; the
+    // full app reports whenever its own state flips.
+    if let Some(title) = title {
+        reporter.send(stand_in_status(title))?;
+    }
     let started = Instant::now();
     loop {
         // Frames come on a fixed beat while the columns move, however long
         // one takes to draw.
         let beat = Instant::now();
-        reporter.send(own_status(&app))?;
+        if matches!(mode, Mode::Full) {
+            reporter.send(own_status(&app))?;
+        }
         app.frame = usize::try_from(started.elapsed().as_millis() / SPIN.as_millis()).unwrap_or(0);
         let mut hits = view::Hits::default();
         let agent = app.current().cloned();
@@ -313,6 +341,16 @@ fn open_file(file: &Path, app: &mut App) {
     }
 }
 
+/// What a stand-in's status record says: idle, under its session's title,
+/// since only the session's origin says rawr.
+fn stand_in_status(title: &str) -> Report {
+    Report {
+        state: State::Idle,
+        title: title.to_owned(),
+        msg: "r resumes it here".to_owned(),
+    }
+}
+
 /// What the full app's own status record says now: blocked while any pane
 /// needs the user, idle otherwise, so a second waiting pane changes nothing.
 fn own_status(app: &App) -> Report {
@@ -380,5 +418,19 @@ mod tests {
             &[Status::Working, Status::NeedsLogin],
         ];
         assert_eq!(sends(&lists), [true, false, false, true, true]);
+    }
+
+    #[test]
+    fn a_stand_ins_one_report_carries_its_session_title() {
+        let mut reporter = Reporter::default();
+        let bytes = reporter
+            .next(stand_in_status("Fix checkout"))
+            .expect("the first report goes out");
+        let text = String::from_utf8(bytes).expect("a report is text");
+        // base64 of "Fix checkout"; "rawr" is cmF3cg==.
+        assert!(text.contains(":app=rawr:"), "{text:?}");
+        assert!(text.contains(":title=Rml4IGNoZWNrb3V0:"), "{text:?}");
+        assert!(!text.contains("title=cmF3cg=="), "{text:?}");
+        assert!(text.starts_with("\x1b]7501;state=idle:"), "{text:?}");
     }
 }

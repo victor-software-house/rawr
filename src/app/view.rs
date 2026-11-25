@@ -112,9 +112,15 @@ pub(crate) fn draw(frame: &mut Frame<'_>, app: &App, shown: Shown<'_>) -> Hits {
         Layout::vertical([Constraint::Fill(1), Constraint::Length(3)]).areas(frame.area());
     // One column and one row in from the outermost ring, which never hovers.
     let body = pad(body, 1, 1);
-    match app.arrangement {
-        Arrangement::Rails => rails(frame, app, body, shown, &mut hits),
-        Arrangement::Single => single(frame, app, body, shown, &mut hits),
+    // A stand-in draws its pane's column across the whole body, with no
+    // panes column to fold, in either arrangement.
+    if app.is_stand_in() {
+        view(frame, app, Focus::Session, body, shown, &mut hits);
+    } else {
+        match app.arrangement {
+            Arrangement::Rails => rails(frame, app, body, shown, &mut hits),
+            Arrangement::Single => single(frame, app, body, shown, &mut hits),
+        }
     }
     if app.focus == Focus::Search {
         search_overlay(frame, app, body, &mut hits);
@@ -124,7 +130,7 @@ pub(crate) fn draw(frame: &mut Frame<'_>, app: &App, shown: Shown<'_>) -> Hits {
         hits.targets.clear();
         hits.rails.clear();
         hits.cursor = None;
-        help(frame);
+        help(frame, app.is_stand_in());
     }
     if let Some(cursor) = hits.cursor {
         frame.set_cursor_position(cursor);
@@ -988,7 +994,7 @@ fn pane_view(frame: &mut Frame<'_>, app: &App, area: Rect, shown: Shown<'_>, hit
     y += 1;
     let actions = row_at(inner, y);
     let mut x = actions.x;
-    if pane.is_some_and(|pane| !pane.closed) {
+    if !app.is_stand_in() && pane.is_some_and(|pane| !pane.closed) {
         let width = 16.min(actions.width);
         action(
             frame,
@@ -2092,12 +2098,15 @@ fn search_box(frame: &mut Frame<'_>, app: &App, area: Rect, hits: &mut Hits) {
         ("", "", String::new())
     };
     let text = if typed.is_empty() && !typing {
+        // A stand-in has no search to point to.
+        let hint = if app.is_stand_in() {
+            format!("filter {name}")
+        } else {
+            format!("filter {name}   ctrl+f search every session")
+        };
         Line::from(vec![
             Span::styled("/ ", theme::dim()),
-            Span::styled(
-                format!("filter {name}   ctrl+f search every session"),
-                theme::dim(),
-            ),
+            Span::styled(hint, theme::dim()),
         ])
     } else {
         Line::from(vec![
@@ -2134,22 +2143,39 @@ fn search_box(frame: &mut Frame<'_>, app: &App, area: Rect, hits: &mut Hits) {
     hits.add(area, Target::Search);
 }
 
-fn help(frame: &mut Frame<'_>) {
-    let keys = [
-        ("1 2", "the panes, or the pane and its session"),
-        ("tab", "panes, the pane's sessions, the session"),
-        ("← → h l", "the session's tabs; past the first, the panes"),
-        ("↑ ↓ j k", "move the selection, or scroll the session"),
-        ("enter", "go to the pane; open the session; resume it"),
-        ("g  r", "go to the pane; resume the session here"),
-        ("[  ]", "the session's tabs"),
-        ("/", "filter what has focus; esc clears it"),
-        ("ctrl+f", "search every session; esc closes it"),
-        ("ctrl+l", "rails or one view at a time"),
-        ("click", "select or focus; click again to act"),
-        ("wheel", "scroll the list under the pointer"),
-        ("esc q", "back to the panes; quit from there"),
-    ];
+fn help(frame: &mut Frame<'_>, stand_in: bool) {
+    let keys: &[(&str, &str)] = if stand_in {
+        // The keys of the panes column and the search do nothing here.
+        &[
+            ("tab", "the pane's sessions, the session"),
+            ("← → h l", "the session's tabs"),
+            ("↑ ↓ j k", "move the selection, or scroll the session"),
+            ("enter", "open the session; resume it"),
+            ("r", "resume the session here"),
+            ("[  ]", "the session's tabs"),
+            ("/", "filter what has focus; esc clears it"),
+            ("ctrl+l", "rails or one view at a time"),
+            ("click", "select or focus; click again to act"),
+            ("wheel", "scroll the list under the pointer"),
+            ("esc q", "quit"),
+        ]
+    } else {
+        &[
+            ("1 2", "the panes, or the pane and its session"),
+            ("tab", "panes, the pane's sessions, the session"),
+            ("← → h l", "the session's tabs; past the first, the panes"),
+            ("↑ ↓ j k", "move the selection, or scroll the session"),
+            ("enter", "go to the pane; open the session; resume it"),
+            ("g  r", "go to the pane; resume the session here"),
+            ("[  ]", "the session's tabs"),
+            ("/", "filter what has focus; esc clears it"),
+            ("ctrl+f", "search every session; esc closes it"),
+            ("ctrl+l", "rails or one view at a time"),
+            ("click", "select or focus; click again to act"),
+            ("wheel", "scroll the list under the pointer"),
+            ("esc q", "back to the panes; quit from there"),
+        ]
+    };
     let lines: Vec<Line<'static>> = keys
         .iter()
         .map(|(key, what)| {
@@ -2638,4 +2664,80 @@ fn scrollbar(frame: &mut Frame<'_>, area: Rect, top: u16, total: u16) {
         area,
         &mut state,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    use super::*;
+    use crate::app::state::fixtures::pane;
+
+    const OWN: &str = "block-own";
+
+    /// The text of `app` drawn on a 100 by 40 screen, one line a row.
+    fn screen(app: &App) -> String {
+        let agent = app.current().cloned();
+        let shown = agent.as_ref().map(|agent| (agent, None));
+        let mut terminal = Terminal::new(TestBackend::new(100, 40)).expect("a test terminal");
+        terminal
+            .draw(|frame| {
+                draw(frame, app, shown);
+            })
+            .expect("the app draws");
+        let buffer = terminal.backend().buffer();
+        (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn panes() -> Vec<Pane> {
+        vec![
+            pane("block-a", "alpha/one", Status::Working, &["Fix login"]),
+            pane(OWN, "work/shell", Status::Stopped, &["Fix checkout"]),
+            pane("block-b", "beta/two", Status::Idle, &["Tune search"]),
+        ]
+    }
+
+    #[test]
+    fn a_stand_in_draws_its_own_pane_and_no_search() {
+        let mut app = App::stand_in(OWN.to_owned());
+        app.set_panes(panes());
+        for arrangement in [Arrangement::Rails, Arrangement::Single] {
+            app.arrangement = arrangement;
+            let text = screen(&app);
+            for shown in ["Fix checkout", "work/shell"] {
+                assert!(
+                    text.contains(shown),
+                    "{arrangement:?} lacks {shown}:\n{text}"
+                );
+            }
+            for hidden in [
+                "alpha/one",
+                "beta/two",
+                "Fix login",
+                "Tune search",
+                "Panes",
+                "ctrl+f",
+            ] {
+                assert!(
+                    !text.contains(hidden),
+                    "{arrangement:?} draws {hidden}:\n{text}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_full_app_points_to_the_search() {
+        let mut app = App::new(None);
+        app.set_panes(panes());
+        assert!(screen(&app).contains("ctrl+f search every session"));
+    }
 }
