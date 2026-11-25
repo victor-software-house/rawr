@@ -23,7 +23,7 @@ use ratatui::widgets::{
 
 use crate::app::facts::{EntryId, Facts, Kind, List, Outcome, Pr, Said};
 use crate::app::feed::Pane;
-use crate::app::history::{Gaps, History, Reach, Shape};
+use crate::app::history::{Gaps, History, NEAR, Reach, Shape};
 use crate::app::layouts::{Laid, Layouts};
 use crate::app::state::{
     self, Anchor, App, Arrangement, Button, FULL, Focus, Grip, Link, RAIL, Scroll, Tab, Target,
@@ -1686,30 +1686,32 @@ fn said(
         lines.push(Line::styled(UNSEARCHED, theme::dim()));
     }
     let filtered = !filter.is_empty();
+    let lead = app.ahead.min(NEAR);
     let reach = shown
         .first()
         .zip(shown.last())
-        .map(|(newest, oldest)| {
-            (
-                newest.id,
-                oldest.id,
-                hi.saturating_sub(top + usize::from(height)),
-                top - lo,
-            )
+        .map(|(newest, oldest)| Reach {
+            list,
+            first: newest.id,
+            last: oldest.id,
+            below: hi.saturating_sub(top + usize::from(height)),
+            above: top - lo,
+            filtered,
+            keep: within(&placed, (newest.id, oldest.id), lead),
         })
         // With no entry shown, the view stands at the oldest held entry, so a
         // filter that shows nothing still loads pages.
         .or_else(|| {
-            let oldest = items.first()?;
-            filtered.then_some((oldest.id, oldest.id, 0, 0))
-        })
-        .map(|(first, last, below, above)| Reach {
-            list,
-            first,
-            last,
-            below,
-            above,
-            filtered,
+            let oldest = items.first()?.id;
+            filtered.then_some(Reach {
+                list,
+                first: oldest,
+                last: oldest,
+                below: 0,
+                above: 0,
+                filtered,
+                keep: (oldest, oldest),
+            })
         });
     // A filter shows held entries only, so it counts none that are not held.
     let counted = if filtered { None } else { reach };
@@ -1726,6 +1728,33 @@ fn said(
             (top, total + usize::from(tail), placed.len()),
         ),
     }
+}
+
+/// The oldest and the newest of the `placed` entries that lie within `lead`
+/// lines of the entries in view, `newest` to `oldest`, the entries in view too.
+fn within(
+    placed: &[Placed],
+    (newest, oldest): (EntryId, EntryId),
+    lead: usize,
+) -> (EntryId, EntryId) {
+    let at = |id: EntryId| placed.iter().position(|entry| entry.id == id).unwrap_or(0);
+    // The entry that lies `lead` lines out along `entries`, else the last.
+    let farthest = |entries: &mut dyn Iterator<Item = &Placed>, from: EntryId| {
+        let mut lines = 0;
+        let mut id = from;
+        for entry in entries {
+            if lines >= lead {
+                break;
+            }
+            lines += entry.height;
+            id = entry.id;
+        }
+        id
+    };
+    (
+        farthest(&mut placed.iter().skip(at(oldest) + 1), oldest),
+        farthest(&mut placed.iter().take(at(newest)).rev(), newest),
+    )
 }
 
 /// The `items` that pass the filter, newest first, placed by the lines before
@@ -3385,6 +3414,33 @@ mod tests {
         let from = end.saturating_sub(ask.count);
         rig.history.land(ask, all[from..end].to_vec(), from > 0);
         true
+    }
+
+    #[test]
+    fn the_lead_keeps_entries_by_their_lines() {
+        let id = |place: u64| EntryId {
+            line: place,
+            index: 0,
+        };
+        // Ten entries of five lines, newest first, the view on the sixth
+        // newest.
+        let placed: Vec<Placed> = (0..10_u64)
+            .rev()
+            .enumerate()
+            .map(|(at, place)| Placed {
+                index: usize::try_from(place).expect("a small number"),
+                id: id(place),
+                open: false,
+                run: 0,
+                start: at * 5,
+                height: 5,
+            })
+            .collect();
+        // Seven lines past the view take two entries each way, not seven.
+        assert_eq!(within(&placed, (id(4), id(4)), 7), (id(2), id(6)));
+        assert_eq!(within(&placed, (id(4), id(4)), 0), (id(4), id(4)));
+        // The ends of the list stop it.
+        assert_eq!(within(&placed, (id(1), id(0)), 100), (id(0), id(9)));
     }
 
     #[test]

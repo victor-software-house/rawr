@@ -159,6 +159,7 @@ pub(crate) fn run(view: Option<u64>, mode: &Mode) -> Result<Option<Agent>> {
             // its turns never holds it still.
             app.frame = spin_at(started, Instant::now());
             drawn_spin = app.frame;
+            app.ahead = app.prefetch.lines(Instant::now());
             let known = agent
                 .as_ref()
                 .and_then(|agent| histories.get(&agent.transcript));
@@ -171,7 +172,7 @@ pub(crate) fn run(view: Option<u64>, mode: &Mode) -> Result<Option<Agent>> {
             // the lead, are asked for before the view reaches them.
             if let (Some(agent), Some(reach)) = (&agent, hits.reach)
                 && let Some(history) = histories.get_mut(&agent.transcript)
-                && let Some(ask) = history.settle(reach, app.prefetch.lines(Instant::now()))
+                && let Some(ask) = history.settle(reach, app.ahead)
             {
                 let path = agent.transcript.clone();
                 daemon.send(match ask.way {
