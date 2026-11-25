@@ -172,7 +172,7 @@ queue:
       - When the stand-in gives the terminal back, the pane title is empty again, as a new shell leaves it.
     notes:
       - 2026-11-23, after rawr --startup, most tabs in the Rex sidebar read rawr plus a folder; the maintainer asked that only the source say rawr, as Claude Code panes say claude.
-    plan: openspec/changes/rawr-app/proposal.md
+    plan: openspec/changes/stand-in/proposal.md
 
   - id: RAWR-031
     title: Split the stand-in from the floating app, and report only own state
@@ -190,7 +190,7 @@ queue:
       - 2026-11-23, the maintainer saw every rawr stand-in jump to the top of Rex Activity at once, because each one reported counts over all panes.
       - '2026-11-23, the maintainer chose: stand-in shows this pane sessions only; full app is the floating window; each reports its own state only.'
       - 2026-11-23, the maintainer restated that only the origin says rawr, as Claude sessions come from claude; RAWR-030 covers the tab title, this row the status record.
-    plan: openspec/changes/rawr-app/proposal.md
+    plan: openspec/changes/stand-in/proposal.md
 archive:
   - id: RAWR-021
     title: Draw the picker search box at the bottom
