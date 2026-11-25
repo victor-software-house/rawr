@@ -2,11 +2,15 @@
 //! is doing, and the way back to a session.
 //!
 //! Two threads feed one channel: the terminal's input and the Rex feed. The
-//! loop drains the channel and draws once after each batch, with no timer.
+//! loop drains the channel and draws once after each batch of anything but
+//! wheel reports. Those wait for a clock of frames, which runs while a
+//! report waits or something moves, and at rest the loop blocks on input.
 
 pub(crate) mod facts;
 pub(crate) mod feed;
+mod layouts;
 mod markup;
+mod pacing;
 mod report;
 mod shell;
 pub(crate) mod state;
@@ -19,14 +23,15 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
-use std::{env, io, thread};
+use std::{env, hint, io, thread};
 
 use anyhow::{Context, Result};
+use pacing::{MIN_SLEEP, Moves, Pacer, Report as Wheel, SPIN_LEAD, Wait, Wake};
 use ratatui::crossterm::cursor::SetCursorStyle;
-use ratatui::crossterm::event::{self, Event};
+use ratatui::crossterm::event::{self, Event, MouseEventKind};
 use ratatui::crossterm::execute;
 use report::{Report, Reporter, State};
-use state::{Action, App, Link};
+use state::{Action, App, Focus, Link};
 use terminal::{Pointer, Screen};
 
 use crate::app::facts::Facts;
@@ -35,15 +40,12 @@ use crate::daemon::link::{self, Incoming};
 use crate::daemon::{FromDaemon, Reach, ToDaemon};
 use crate::session::Agent;
 
-/// How often the spinner turns while a pane works; the loop waits on
-/// input with no timer otherwise.
+/// How often the spinner turns while a pane works.
 const SPIN: Duration = Duration::from_millis(100);
 
-/// How often a moving focus redraws: about 60 frames a second.
-const FRAME: Duration = Duration::from_millis(16);
-
 enum Msg {
-    Input(Event),
+    /// A terminal event, with when the input thread read it.
+    Input(Event, Instant),
     Daemon(Box<Incoming>),
 }
 
@@ -78,7 +80,7 @@ pub(crate) fn run(view: Option<u64>, mode: &Mode) -> Result<Option<Agent>> {
     let input = send.clone();
     thread::spawn(move || {
         while let Ok(event) = event::read() {
-            if input.send(Msg::Input(event)).is_err() {
+            if input.send(Msg::Input(event, Instant::now())).is_err() {
                 break;
             }
         }
@@ -115,15 +117,18 @@ pub(crate) fn run(view: Option<u64>, mode: &Mode) -> Result<Option<Agent>> {
         reporter.send(stand_in_status(title))?;
     }
     let started = Instant::now();
+    let mut pacer = Pacer::new(started);
+    // Where the last frame put what takes a click, which input read before
+    // the next frame is matched against.
+    let mut hits = view::Hits::default();
+    // The spinner's frame in the last frame drawn.
+    let mut drawn_spin = usize::MAX;
+    // The lines each list moves in the frame to draw; none once it is drawn.
+    let mut due = Some(Moves::default());
     loop {
-        // Frames come on a fixed beat while the columns move, however long
-        // one takes to draw.
-        let beat = Instant::now();
         if matches!(mode, Mode::Full) {
             reporter.send(own_status(&app))?;
         }
-        app.frame = usize::try_from(started.elapsed().as_millis() / SPIN.as_millis()).unwrap_or(0);
-        let mut hits = view::Hits::default();
         let agent = app.current().cloned();
         if let Some(agent) = &agent
             && asked.as_ref() != Some(&agent.transcript)
@@ -133,74 +138,78 @@ pub(crate) fn run(view: Option<u64>, mode: &Mode) -> Result<Option<Agent>> {
                 path: agent.transcript.clone(),
             });
         }
-        let known = agent
-            .as_ref()
-            .and_then(|agent| facts.get(&agent.transcript));
-        let shown = agent.as_ref().map(|agent| (agent, known));
-        screen
-            .draw(|frame| hits = view::draw(frame, &app, shown))
-            .context("draw the app")?;
-        app.settle(&hits.tops);
-        app.cols = hits.width;
-        // The window this one replaces stays on screen until this one has
-        // drawn the panes; then the daemon swaps them.
-        if replacing && panes_in && matches!(app.link, Link::Live) {
-            replacing = false;
-            daemon.send(ToDaemon::Drawn);
-        }
-        screen.set_pointer(if app.hover.is_some() || app.dragging.is_some() {
-            Pointer::Hand
-        } else {
-            Pointer::Default
-        })?;
-        // The spinner follows the clock, so input arriving between ticks never
-        // holds it still.
-        let elapsed = started.elapsed();
-        let tick = elapsed.as_millis() / SPIN.as_millis();
-        app.frame = usize::try_from(tick).unwrap_or(0);
-        // A pointer gone past the window's edge shuts the drawer when it
-        // has stayed away a moment; the loop wakes for that too.
-        app.tick();
-        let away = app
-            .wake_at()
-            .map(|at| at.saturating_duration_since(Instant::now()));
-        let wait = if app.moving() {
-            // A moving focus draws at the screen's rate; a spinner at its own.
-            Some(FRAME.saturating_sub(beat.elapsed()))
-        } else if app.animating() {
-            Some(
-                SPIN.saturating_mul(u32::try_from(tick + 1).unwrap_or(u32::MAX))
-                    .saturating_sub(elapsed),
-            )
-        } else {
-            None
-        };
-        let wait = match (wait, away) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        };
-        let first = match wait {
-            Some(wait) => match receive.recv_timeout(wait) {
-                Ok(msg) => Some(msg),
-                Err(mpsc::RecvTimeoutError::Timeout) => None,
-                Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    anyhow::bail!("the app's inputs closed")
+        if let Some(moves) = due.take() {
+            for (list, lines) in Focus::LISTS.into_iter().zip(moves) {
+                if lines != 0 {
+                    app.scroll_lines(list, lines);
                 }
-            },
+            }
+            // The spinner follows its own cadence, so input arriving between
+            // its turns never holds it still.
+            app.frame = spin_at(started, Instant::now());
+            drawn_spin = app.frame;
+            let known = agent
+                .as_ref()
+                .and_then(|agent| facts.get(&agent.transcript));
+            let shown = agent.as_ref().map(|agent| (agent, known));
+            screen
+                .draw(|frame| hits = view::draw(frame, &mut app, shown))
+                .context("draw the app")?;
+            app.settle(&hits.tops, hits.anchor);
+            app.cols = hits.width;
+            // The window this one replaces stays on screen until this one has
+            // drawn the panes; then the daemon swaps them.
+            if replacing && panes_in && matches!(app.link, Link::Live) {
+                replacing = false;
+                daemon.send(ToDaemon::Drawn);
+            }
+            screen.set_pointer(if app.hover.is_some() || app.dragging.is_some() {
+                Pointer::Hand
+            } else {
+                Pointer::Default
+            })?;
+        }
+        // The clock runs while a report waits. Focus on the move wakes the
+        // loop every frame of the move. Otherwise the loop sleeps until
+        // input, until the spinner turns, or until a pointer past the
+        // window's edge has been away long enough to shut the drawer.
+        let spinner = app.animating().then(|| {
+            started + SPIN * u32::try_from(spin_at(started, Instant::now()) + 1).unwrap_or(u32::MAX)
+        });
+        let first = match pacer.wait(app.moving(), &[spinner, app.wake_at()]) {
+            Some(wait) => wait_until(&receive, wait)?,
             None => Some(receive.recv().context("the app's inputs closed")?),
         };
+        let woke = Instant::now();
+        // What reads between frames: the wheel waits for the clock, a key or
+        // a click draws at once, and anything else that changes what is on
+        // screen draws at once while the clock rests, and on its next tick
+        // while it runs.
+        let mut reports = Vec::new();
+        let mut urgent = false;
+        let mut dirty = false;
         for msg in first.into_iter().chain(receive.try_iter()) {
+            let mut wheel = false;
+            let mut calm = matches!(msg, Msg::Daemon(_));
             let action = match msg {
-                Msg::Input(Event::Key(key)) => app.on_key(key),
-                Msg::Input(Event::Mouse(mouse)) => {
-                    app.on_mouse(mouse, hits.under(mouse.column, mouse.row))
+                Msg::Input(Event::Key(key), _) => app.on_key(key),
+                Msg::Input(Event::Mouse(mouse), at) => {
+                    let action = app.on_mouse(mouse, hits.under(mouse.column, mouse.row));
+                    calm = mouse.kind == MouseEventKind::Moved;
+                    if let Action::Wheel(list, rows) = action {
+                        wheel = true;
+                        reports.push(Wheel { list, rows, at });
+                        Action::None
+                    } else {
+                        action
+                    }
                 }
-                Msg::Input(Event::Paste(text)) => app.on_paste(&text),
-                Msg::Input(Event::FocusLost) => {
+                Msg::Input(Event::Paste(text), _) => app.on_paste(&text),
+                Msg::Input(Event::FocusLost, _) => {
                     app.on_blur();
                     Action::None
                 }
-                Msg::Input(_) => Action::None,
+                Msg::Input(_, _) => Action::None,
                 Msg::Daemon(incoming) => match *incoming {
                     Incoming::Connected { carry } => {
                         // What this window asked before the link went.
@@ -238,6 +247,9 @@ pub(crate) fn run(view: Option<u64>, mode: &Mode) -> Result<Option<Agent>> {
                                 };
                             }
                             FromDaemon::Facts { path, facts: read } => {
+                                if let Some(before) = facts.get(&path) {
+                                    app.layouts.refresh(&path, before, &read);
+                                }
                                 facts.insert(path, read);
                             }
                             FromDaemon::Hits {
@@ -264,8 +276,13 @@ pub(crate) fn run(view: Option<u64>, mode: &Mode) -> Result<Option<Agent>> {
                     }
                 },
             };
+            if calm {
+                dirty = true;
+            } else {
+                urgent |= !wheel;
+            }
             match action {
-                Action::None => {}
+                Action::None | Action::Wheel(..) => {}
                 Action::Quit => return Ok(None),
                 Action::OpenFile(index) | Action::FilterFolder(index) => {
                     let file = app
@@ -321,8 +338,58 @@ pub(crate) fn run(view: Option<u64>, mode: &Mode) -> Result<Option<Agent>> {
                     });
                 }
             }
+            // A list whose scroll this message set another way has no use for
+            // the wheel reports read before it, and keeps those read after.
+            pacer.reset(&app.take_cleared(), &mut reports);
+        }
+        // A pointer past the window's edge shuts the drawer once it has
+        // stayed away a moment.
+        if app.tick() {
+            urgent = true;
+        }
+        due = pacer.wake(&Wake {
+            now: woke,
+            reports: &reports,
+            urgent,
+            dirty: dirty || (app.animating() && spin_at(started, woke) != drawn_spin),
+            moving: app.moving(),
+        });
+    }
+}
+
+/// Waits for the next message until `wait.at`. A wait that spins sleeps until
+/// shortly before then and polls for the rest, unless the sleep would be too
+/// short to pay; any other sleeps the whole way.
+fn wait_until(receive: &mpsc::Receiver<Msg>, wait: Wait) -> Result<Option<Msg>> {
+    let lead = if wait.spin { SPIN_LEAD } else { Duration::ZERO };
+    let sleep = wait
+        .at
+        .saturating_duration_since(Instant::now())
+        .saturating_sub(lead);
+    if !wait.spin || sleep >= MIN_SLEEP {
+        match receive.recv_timeout(sleep) {
+            Ok(msg) => return Ok(Some(msg)),
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                anyhow::bail!("the app's inputs closed")
+            }
         }
     }
+    while wait.spin && Instant::now() < wait.at {
+        match receive.try_recv() {
+            Ok(msg) => return Ok(Some(msg)),
+            Err(mpsc::TryRecvError::Empty) => hint::spin_loop(),
+            Err(mpsc::TryRecvError::Disconnected) => anyhow::bail!("the app's inputs closed"),
+        }
+    }
+    Ok(None)
+}
+
+/// The spinner's frame at `now`: it turns every [`SPIN`], whatever the
+/// frames between.
+fn spin_at(started: Instant, now: Instant) -> usize {
+    usize::try_from(now.saturating_duration_since(started).as_millis() / SPIN.as_millis())
+        .unwrap_or(0)
 }
 
 /// Opens `file` in its default app, as a click on a `file://` link would;
@@ -368,9 +435,47 @@ fn own_status(app: &App) -> Report {
 
 #[cfg(test)]
 mod tests {
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
     use super::*;
     use crate::app::state::fixtures::pane;
     use crate::status::Status;
+
+    /// A report, then a key that switches the tab, then a report, in one batch:
+    /// the key sets the scroll another way, so the report read before it is
+    /// dropped and the one read after it moves the list.
+    #[test]
+    fn a_reset_drops_the_wheel_reports_read_before_it_only() {
+        let t0 = Instant::now();
+        let ms = Duration::from_millis;
+        let mut app = App::new(None);
+        app.set_panes(vec![pane(
+            "block-a",
+            "alpha/one",
+            Status::Idle,
+            &["Fix login"],
+        )]);
+        let mut pacer = Pacer::new(t0);
+        let wheel = |at| Wheel {
+            list: Focus::Session,
+            rows: 2,
+            at,
+        };
+        let mut reports = vec![wheel(t0)];
+        app.on_key(KeyEvent::new(KeyCode::Char(']'), KeyModifiers::NONE));
+        pacer.reset(&app.take_cleared(), &mut reports);
+        reports.push(wheel(t0 + ms(1)));
+        let moves = pacer
+            .wake(&Wake {
+                now: t0 + ms(1),
+                reports: &reports,
+                urgent: false,
+                dirty: false,
+                moving: false,
+            })
+            .expect("a frame");
+        assert_eq!(moves[state::slot(Focus::Session)], 2);
+    }
 
     /// Whether the full app sends a report for each list of panes, shown in
     /// turn with these statuses.

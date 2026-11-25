@@ -14,11 +14,21 @@
 
 ## Decisions
 
-1. **A fixed frame clock while anything moves.**
-   - While a wheel report waits, a list moves or a spinner turns, the loop draws on a clock of 125 frames a second, a frame every 8 ms.
+1. **A fixed frame clock while a list scrolls.**
+   - While a wheel report waits, the loop draws on a clock of 125 frames a second, a frame every 8 ms.
      125 Hz is the polling rate of a USB mouse, so a held wheel never outruns the clock.
    - The clock keeps an even beat: a frame a key draws outside it moves the next tick one period on, and a wake after a rest takes the next tick no sooner than a period after the last.
+   - A key or a click draws at once, and moves the beat.
+     Anything else that changes the screen, such as a message from the daemon, the pointer's hover or a spinner's turn, draws on the clock's next tick.
+     At rest that tick is due, so it draws at once.
+   - A spinner turns on its own 100 ms cadence, as now, and a move of focus or of a drawer redraws every 16 ms, as now, with one more frame once it stops.
+     Each frame of a drawer's move changes the width and lays every entry out again, and 3,000 entries held make that frame cost milliseconds, so those frames stay off the 125 Hz clock.
+   - A frame the wheel moves sleeps until 1.4 ms before its tick, then spins to the tick, so it draws on the beat whatever the sleep overshoots by.
+     A sleep under 0.2 ms is spun instead.
+     Every other frame only sleeps.
    - At rest the loop sleeps until input, as now.
+   - Task 1.2's loop test plays timed inputs through the `Pacer` struct, so frame times and moves are tested over synthetic instants.
+     Frame spacing on a real terminal is not measured.
    - Alternative: draw as soon as input arrives, as now.
      It lost: frames then land wherever the reports land, so their spacing follows the trackpad's jitter.
 2. **Wheel reports wait in a queue and are spread over frames.**
@@ -37,8 +47,9 @@
    - Alternative: wheel acceleration, a larger step for reports that follow each other quickly.
      It lost: the trackpad already sends more reports when it moves faster, and the maintainer asked for the motion to follow their hand.
 3. **Each entry is laid out once.**
-   - A window keeps each entry's lines for the width they were laid out at and its fold state.
-     The hover bar and the fold marker are drawn over them, so hovering lays nothing out again.
+   - A window keeps each entry's lines for the width they were laid out at and its fold state, for the transcript shown only.
+     The age, the hover bar and the fold marker are drawn over them, so hovering lays nothing out again.
+   - When the daemon sends facts, each entry that differs from the one held under the same ID is laid out again, so a tool result that arrives later shows.
    - A width change lays out every entry held again, once, in the frame that first draws at the new width.
      Task 1.4 measures that frame beside the scrolling ones.
    - A frame draws only the entries in view.
@@ -49,7 +60,7 @@
    - A new entry above the view adds to the lines above it and moves nothing on screen.
    - At the top with nothing scrolled, the list follows the newest entry, as now.
    - Entries are identified by the byte offset of their transcript line and their place within that line.
-     The open entries and the scroll anchor use that ID, so an entry stays open while its tool result arrives.
+     The open entries, kept for each transcript, and the scroll anchor use that ID, so an entry stays open while its tool result arrives.
 
 ## Risks
 

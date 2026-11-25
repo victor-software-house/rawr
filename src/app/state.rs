@@ -2,16 +2,18 @@
 //! draws or reads the terminal, so every event is a plain function of the
 //! state.
 
-use std::collections::HashSet;
-use std::env;
-use std::path::Path;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
+use std::{env, mem};
 
 use ratatui::crossterm::event::{
     KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 
+use crate::app::facts::EntryId;
 use crate::app::feed::Pane;
+use crate::app::layouts::Layouts;
 use crate::catalog::Hit;
 use crate::session::Agent;
 use crate::status::Status;
@@ -30,6 +32,9 @@ pub(crate) enum Focus {
 }
 
 impl Focus {
+    /// The lists a wheel scrolls, in the order of [`slot`].
+    pub(crate) const LISTS: [Self; 4] = [Self::Panes, Self::Sessions, Self::Session, Self::Search];
+
     /// The columns on screen, left to right: the panes, and the selected
     /// pane with its sessions and the one shown.
     pub(crate) const COLUMNS: [Self; 2] = [Self::Panes, Self::Session];
@@ -122,6 +127,9 @@ pub(crate) enum Action {
     },
     /// The search text changed; the loop asks the daemon for matches.
     Search,
+    /// A wheel report over a list, signed in lines: the loop queues it and
+    /// scrolls the list by what each frame takes.
+    Wheel(Focus, i32),
 }
 
 /// A button; each does what its key does.
@@ -147,8 +155,8 @@ pub(crate) enum Target {
     /// The edge of a column, which a drag moves.
     Edge(Grip),
     /// An entry of the prompts or the activity, which a click opens or
-    /// folds, by the key the view gives it.
-    Entry(u64),
+    /// folds, by its id in the transcript.
+    Entry(EntryId),
     /// The line that stands for the files in temporary folders.
     ScratchFiles,
     /// A chip of the files tab that shows all files, the changed or the
@@ -277,6 +285,22 @@ pub(crate) struct Scroll {
     pub(crate) top: u16,
     /// Whether the next frame brings the selection into view.
     pub(crate) follow: bool,
+    /// For the prompts and the activity: the entry the first line on screen
+    /// belongs to, and how far into it. The view finds the line again by it, so
+    /// entries that arrive above it move nothing on screen. `None` shows `top`,
+    /// which is the newest entry first while it is 0.
+    pub(crate) anchor: Option<Anchor>,
+}
+
+/// A place in a list of entries: a line within an entry, and how many lines
+/// the wheel has moved it since a frame placed it. The sum may lie outside the
+/// entry, before its first line or after its last, which is how a scroll
+/// reaches the entries around it before the next frame places it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Anchor {
+    pub(crate) id: EntryId,
+    pub(crate) line: i32,
+    pub(crate) moved: i32,
 }
 
 #[derive(Debug)]
@@ -328,8 +352,10 @@ pub(crate) struct App {
     pub(crate) files_shown: Shown,
     /// The one file type the files tab lists, by its chip's key.
     pub(crate) file_type: Option<u64>,
-    /// The entries opened by a click, by the view's key.
-    pub(crate) open: HashSet<u64>,
+    /// The entries opened by a click, by id, for each transcript.
+    pub(crate) open: HashMap<PathBuf, HashSet<EntryId>>,
+    /// The entries of the transcript shown, laid out.
+    pub(crate) layouts: Layouts,
     /// The pane to select once the feed lists it, by block ID.
     pub(crate) want: Option<String>,
     /// The block of the pane this window stands in for, when it is a
@@ -338,6 +364,8 @@ pub(crate) struct App {
     stand_in: Option<String>,
     /// The panes, sessions, session and results, in that order.
     scrolls: [Scroll; 4],
+    /// The lists whose scroll was set since [`App::take_cleared`].
+    cleared: [bool; 4],
     /// The width each column takes when it has focus or is drawn out; the
     /// session column takes the rest when it has focus.
     pub(crate) wants: [u16; 3],
@@ -353,7 +381,7 @@ pub(crate) struct App {
 }
 
 /// A list's place in [`App::scrolls`].
-const fn slot(list: Focus) -> usize {
+pub(crate) const fn slot(list: Focus) -> usize {
     match list {
         Focus::Panes => 0,
         Focus::Sessions => 1,
@@ -409,13 +437,15 @@ impl App {
             hover: None,
             frame: 0,
             show_scratch: false,
-            open: HashSet::new(),
+            open: HashMap::new(),
+            layouts: Layouts::default(),
             show_scratch_files: false,
             files_shown: Shown::All,
             file_type: None,
             want: None,
             stand_in: None,
             scrolls: [Scroll::default(); 4],
+            cleared: [false; 4],
             wants: [48, 60, 72],
             drawer: None,
             left: None,
@@ -458,13 +488,40 @@ impl App {
     }
 
     /// Keeps where the last frame scrolled each list to.
-    pub(crate) fn settle(&mut self, tops: &[(Focus, u16)]) {
+    pub(crate) fn settle(&mut self, tops: &[(Focus, u16)], anchor: Option<Anchor>) {
         for (list, top) in tops {
             *self.scroll_mut(*list) = Scroll {
                 top: *top,
                 follow: false,
+                anchor: None,
             };
         }
+        // Only a frame that drew the session list knows where it stands.
+        if tops.iter().any(|(list, _)| *list == Focus::Session) {
+            self.scroll_mut(Focus::Session).anchor = anchor;
+        }
+    }
+
+    /// Puts `list` back at its top, and drops the wheel reports waiting to
+    /// scroll it.
+    fn reset_scroll(&mut self, list: Focus) {
+        self.put_scroll(list, Scroll::default());
+    }
+
+    /// Sets how far `list` is scrolled to something other than where the
+    /// wheel left it, so the wheel reports waiting for it are stale.
+    fn put_scroll(&mut self, list: Focus, scroll: Scroll) {
+        *self.scroll_mut(list) = scroll;
+        self.cleared[slot(list)] = true;
+    }
+
+    /// The lists whose scroll was set since the last call, other than by the
+    /// wheel.
+    pub(crate) fn take_cleared(&mut self) -> Vec<Focus> {
+        Focus::LISTS
+            .into_iter()
+            .filter(|list| mem::take(&mut self.cleared[slot(*list)]))
+            .collect()
     }
 
     pub(crate) fn selected(&self) -> Option<&Pane> {
@@ -934,7 +991,7 @@ impl App {
             KeyCode::Right | KeyCode::Char('l') if self.focus == Focus::Session => {
                 if self.tab != Tab::Files {
                     self.tab = self.tab.shift(1);
-                    *self.scroll_mut(Focus::Session) = Scroll::default();
+                    self.reset_scroll(Focus::Session);
                 }
                 Action::None
             }
@@ -942,7 +999,7 @@ impl App {
                 if self.focus == Focus::Session && self.tab != Tab::Overview =>
             {
                 self.tab = self.tab.shift(-1);
-                *self.scroll_mut(Focus::Session) = Scroll::default();
+                self.reset_scroll(Focus::Session);
                 Action::None
             }
             KeyCode::Char('2' | '3' | 'l') | KeyCode::Right => {
@@ -955,12 +1012,12 @@ impl App {
             }
             KeyCode::Char(']') if self.focus == Focus::Session => {
                 self.tab = self.tab.shift(1);
-                *self.scroll_mut(Focus::Session) = Scroll::default();
+                self.reset_scroll(Focus::Session);
                 Action::None
             }
             KeyCode::Char('[') if self.focus == Focus::Session => {
                 self.tab = self.tab.shift(-1);
-                *self.scroll_mut(Focus::Session) = Scroll::default();
+                self.reset_scroll(Focus::Session);
                 Action::None
             }
             KeyCode::Down | KeyCode::Char('j') => {
@@ -1062,10 +1119,14 @@ impl App {
             self.session = *first;
         }
         for list in [Focus::Panes, Focus::Sessions, Focus::Session] {
-            *self.scroll_mut(list) = Scroll {
-                top: 0,
-                follow: true,
-            };
+            self.put_scroll(
+                list,
+                Scroll {
+                    top: 0,
+                    follow: true,
+                    anchor: None,
+                },
+            );
         }
     }
 
@@ -1160,15 +1221,14 @@ impl App {
                 Action::None
             }
             MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => {
-                let by = if mouse.kind == MouseEventKind::ScrollDown {
+                let by: i16 = if mouse.kind == MouseEventKind::ScrollDown {
                     1
                 } else {
                     -1
                 };
-                if let Some(list) = under.list {
-                    self.scroll(list, by);
-                }
-                Action::None
+                under.list.map_or(Action::None, |list| {
+                    Action::Wheel(list, i32::from(by.saturating_mul(WHEEL)))
+                })
             }
             MouseEventKind::Down(MouseButton::Left) => {
                 self.notice = None;
@@ -1229,15 +1289,20 @@ impl App {
             .map(|since| since + AWAY)
     }
 
-    /// Shuts the drawer once the pointer has stayed past the window's edge.
-    pub(crate) fn tick(&mut self) {
-        if self.outside.is_some_and(|since| since.elapsed() >= AWAY) {
-            self.outside = None;
-            if self.drawer.is_some_and(|drawer| drawer.open) {
-                self.left = Some(Instant::now());
-                self.draw_out(None);
-            }
+    /// Shuts the drawer once the pointer has stayed past the window's edge,
+    /// and returns whether it did. A pointer that has stayed away with the
+    /// drawer shut is forgotten, so a drawer opened later is not shut for it.
+    pub(crate) fn tick(&mut self) -> bool {
+        if self.outside.is_none_or(|since| since.elapsed() < AWAY) {
+            return false;
         }
+        self.outside = None;
+        if !self.drawer.is_some_and(|drawer| drawer.open) {
+            return false;
+        }
+        self.left = Some(Instant::now());
+        self.draw_out(None);
+        true
     }
 
     /// Whether `column` is drawn out over the others.
@@ -1259,7 +1324,8 @@ impl App {
                 }
                 self.pane = index;
                 self.session = self.first_session();
-                *self.scroll_mut(Focus::Sessions) = Scroll::default();
+                self.reset_scroll(Focus::Sessions);
+                self.reset_scroll(Focus::Session);
                 Action::None
             }
             Target::Session(index) => {
@@ -1272,7 +1338,7 @@ impl App {
                     self.focus_here(Focus::Sessions);
                 }
                 self.session = index;
-                *self.scroll_mut(Focus::Session) = Scroll::default();
+                self.reset_scroll(Focus::Session);
                 Action::None
             }
             Target::Result(index) => {
@@ -1299,7 +1365,7 @@ impl App {
             Target::Tab(tab) => {
                 self.focus_here(Focus::Session);
                 self.tab = tab;
-                *self.scroll_mut(Focus::Session) = Scroll::default();
+                self.reset_scroll(Focus::Session);
                 Action::None
             }
             Target::Button(Button::GoTo) => self.go_to(),
@@ -1313,10 +1379,15 @@ impl App {
                 self.dragging = Some(grip);
                 Action::None
             }
-            Target::Entry(key) => {
+            Target::Entry(id) => {
+                // The entry belongs to the session drawn when it was clicked.
+                let transcript = self.current().map(|agent| agent.transcript.clone());
                 self.focus_here(Focus::Session);
-                if !self.open.remove(&key) {
-                    self.open.insert(key);
+                if let Some(transcript) = transcript {
+                    let open = self.open.entry(transcript).or_default();
+                    if !open.remove(&id) {
+                        open.insert(id);
+                    }
                 }
                 Action::None
             }
@@ -1340,11 +1411,23 @@ impl App {
         }
     }
 
-    /// Moves `list`, the list under the pointer, by `by` notches, leaving its
-    /// selection where it is. The next frame clamps it to the list.
+    /// Moves `list` by `by` notches of the wheel, leaving its selection where
+    /// it is. The next frame clamps it to the list.
     fn scroll(&mut self, list: Focus, by: i16) {
+        self.scroll_lines(list, i64::from(by.saturating_mul(WHEEL)));
+    }
+
+    /// Moves `list` by `lines`, leaving its selection where it is. The next
+    /// frame clamps it to the list.
+    pub(crate) fn scroll_lines(&mut self, list: Focus, lines: i64) {
         let scroll = self.scroll_mut(list);
-        scroll.top = scroll.top.saturating_add_signed(by.saturating_mul(WHEEL));
+        if let Some(anchor) = &mut scroll.anchor {
+            let lines = i32::try_from(lines).unwrap_or(if lines < 0 { i32::MIN } else { i32::MAX });
+            anchor.moved = anchor.moved.saturating_add(lines);
+        } else {
+            let lines = i16::try_from(lines).unwrap_or(if lines < 0 { i16::MIN } else { i16::MAX });
+            scroll.top = scroll.top.saturating_add_signed(lines);
+        }
         scroll.follow = false;
     }
 
@@ -1375,7 +1458,7 @@ impl App {
     pub(crate) fn set_results(&mut self, results: Vec<Hit>) {
         self.results = results;
         self.result = 0;
-        *self.scroll_mut(Focus::Search) = Scroll::default();
+        self.reset_scroll(Focus::Search);
     }
 
     /// Adds the transcript matches a deep search found for the current query.
@@ -1456,15 +1539,15 @@ impl App {
                 if let Some(next) = moved_in(&rows, self.pane, by) {
                     self.pane = next;
                     self.session = self.first_session();
-                    *self.scroll_mut(Focus::Sessions) = Scroll::default();
-                    *self.scroll_mut(Focus::Session) = Scroll::default();
+                    self.reset_scroll(Focus::Sessions);
+                    self.reset_scroll(Focus::Session);
                 }
             }
             Focus::Sessions => {
                 let rows = self.visible_sessions();
                 if let Some(next) = moved_in(&rows, self.session, by) {
                     self.session = next;
-                    *self.scroll_mut(Focus::Session) = Scroll::default();
+                    self.reset_scroll(Focus::Session);
                 }
             }
             Focus::Session => {
@@ -1666,6 +1749,107 @@ mod tests {
         let mut app = App::stand_in(OWN.to_owned());
         app.set_panes(three_panes(own_titles));
         app
+    }
+
+    #[test]
+    fn a_frame_without_the_session_list_leaves_its_anchor() {
+        let mut app = App::new(None);
+        let anchor = Anchor {
+            id: EntryId {
+                line: 100,
+                index: 0,
+            },
+            line: 3,
+            moved: 0,
+        };
+        app.scroll_mut(Focus::Session).anchor = Some(anchor);
+        app.settle(&[(Focus::Panes, 0)], None);
+        assert_eq!(app.scroll_of(Focus::Session).anchor, Some(anchor));
+        app.settle(&[(Focus::Session, 5)], None);
+        assert_eq!(app.scroll_of(Focus::Session).anchor, None);
+    }
+
+    #[test]
+    fn a_wheel_step_is_kept_beside_the_anchor_it_moves() {
+        let mut app = App::new(None);
+        app.scroll_lines(Focus::Session, 4);
+        assert_eq!(app.scroll_of(Focus::Session).top, 4);
+        let anchor = Anchor {
+            id: EntryId {
+                line: 100,
+                index: 0,
+            },
+            line: 3,
+            moved: 0,
+        };
+        app.scroll_mut(Focus::Session).anchor = Some(anchor);
+        app.scroll_lines(Focus::Session, 2);
+        app.scroll_lines(Focus::Session, -1);
+        let scroll = app.scroll_of(Focus::Session);
+        assert_eq!(scroll.anchor, Some(Anchor { moved: 1, ..anchor }));
+        assert_eq!(scroll.top, 4);
+    }
+
+    #[test]
+    fn a_drawer_opened_after_the_pointer_left_stays_open() {
+        let mut app = App::new(None);
+        app.set_panes(three_panes(&["Fix checkout"]));
+        // The pointer reports from the window's edge while no drawer is out,
+        // and stays there past the time that shuts a drawer.
+        let edge = MouseEvent {
+            kind: MouseEventKind::Moved,
+            column: 0,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        };
+        let under = Under {
+            size: (100, 40),
+            ..Under::default()
+        };
+        app.on_mouse(edge, under);
+        app.outside = app.outside.and_then(|at| at.checked_sub(AWAY * 2));
+        assert!(app.outside.is_some());
+        // The loop ticks on every wake, so the pointer is forgotten at once.
+        assert!(!app.tick());
+        assert_eq!(app.outside, None);
+        // A window that replaces another opens with the drawer out.
+        let mut carry = app.carry();
+        carry.drawn_out = Some(Focus::Panes);
+        app.restore(carry);
+        assert_eq!(app.wake_at(), None);
+        assert!(!app.tick());
+        assert!(app.out(Focus::Panes));
+    }
+
+    #[test]
+    fn a_click_on_a_pane_puts_the_session_back_at_its_top() {
+        let mut app = App::new(None);
+        app.set_panes(three_panes(&["Fix checkout"]));
+        app.scroll_mut(Focus::Session).anchor = Some(Anchor {
+            id: EntryId {
+                line: 100,
+                index: 0,
+            },
+            line: 3,
+            moved: 0,
+        });
+        app.take_cleared();
+        let click = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 3,
+            row: 3,
+            modifiers: KeyModifiers::NONE,
+        };
+        let under = Under {
+            target: Some(Target::Pane(2)),
+            ..Under::default()
+        };
+        app.on_mouse(click, under);
+        assert_eq!(app.pane, 2);
+        assert_eq!(app.scroll_of(Focus::Session), Scroll::default());
+        // The loop drops the wheel reports waiting for the lists it reset.
+        assert_eq!(app.take_cleared(), [Focus::Sessions, Focus::Session]);
+        assert_eq!(app.take_cleared(), []);
     }
 
     #[test]
