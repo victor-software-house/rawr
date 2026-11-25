@@ -14,6 +14,11 @@
    - A tool call in the page whose result is written after the page's last line still shows its result.
      The daemon also reads forward from the page's end until every call in the page has its result, or 256 KiB.
    - The daemon keeps no page, so its memory stays that of the live facts.
+   - A page stops reading after 4 MiB once it holds an entry, so a list whose entries lie far apart gives a short page and `more`, and the next page goes on.
+     A page with no entry reads on until it finds one.
+     The read for results skips a line longer than 4 MiB.
+   - A transcript the daemon cannot read gets a failure with its reason, never an empty page.
+     The window shows the reason, keeps the list open, and asks again when the view moves.
    - One page per list is in flight at a time.
    - The page size bounds how long the daemon takes to read a page.
      Its round trip is measured in task 1.4 before the size is fixed.
@@ -32,6 +37,15 @@
      It drops beyond the lead on the side the view leaves, and never within the view or the lead.
    - Dropped entries load again as pages when the view comes back.
      The daemon reads a newer page the same way, forward from the newest dropped entry's line.
+   - A window keeps pages for the transcript shown only.
+     When the shown transcript changes, every other transcript's held entries are cut back to the newest 300 of its facts, and its pages, gaps and lead are forgotten.
+     So the entries held stay bounded across sessions, and coming back to a session pages again, which takes about 2 ms a page (task 1.4).
+   - A gap is recorded after the newest entry held below it, with how many entries it misses.
+     Facts that share no entry with the held ones leave a gap too, since ids cannot tell whether entries lie between.
+     Its count is the entries between when both readings cover the whole transcript, and 0 otherwise.
+     A `newer` page fills it, and one more page finds the held entries next to its last, so such a gap costs one extra page.
+   - The trim keeps the entries within the lead's lines of the view, at most 1,000 entries each way, and the entry a page in flight reads from.
+   - After a page fails, the window asks again once the view shows other entries, not when the lines held past it change.
    - Alternative: keep every entry a window ever loaded.
      It lost: a session can hold hundreds of thousands of entries.
 4. **The counts and the scrollbar show the whole session.**
@@ -43,6 +57,11 @@
 5. **The `/` filter covers the entries held.**
    - A filter shows the matching entries among those held.
      Pages keep loading as the view nears the oldest match held, so older matches appear as the reader scrolls.
+     With no match shown, the view stands at the oldest entry held, so pages keep loading until a match comes.
+   - Pages stop once the list holds 3,000 entries.
+     A page that landed would only push another out, and the window would ask for it again at every frame.
+     The tab then ends with one dim line that says older entries are not searched and that `ctrl+f` searches the whole session.
+   - The trim never drops the page that just landed.
    - Searching the whole transcript stays with `ctrl+f`, whose results already come from the daemon.
 
 [smooth-scroll]: ../smooth-scroll/proposal.md

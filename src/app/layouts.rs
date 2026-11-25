@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use ratatui::text::Line;
 
-use crate::app::facts::{EntryId, Facts, Said};
+use crate::app::facts::EntryId;
 
 /// One entry laid out for a width and a fold state.
 #[derive(Debug)]
@@ -62,27 +62,14 @@ impl Layouts {
         })
     }
 
-    /// Facts for `transcript` came, `now` after `before`: forgets the entries
-    /// that are gone or differ from what they were, so each is laid out again
-    /// as it is now.
-    pub(crate) fn refresh(&mut self, transcript: &Path, before: &Facts, now: &Facts) {
-        if self.transcript.as_deref() != Some(transcript) {
+    /// The entries `ids` of `transcript` changed or went: forgets them, so each
+    /// that is shown again is laid out as it is now.
+    pub(crate) fn forget(&mut self, transcript: &Path, ids: &[EntryId]) {
+        if ids.is_empty() || self.transcript.as_deref() != Some(transcript) {
             return;
         }
-        let held: HashMap<EntryId, &Said> = before
-            .log
-            .iter()
-            .chain(&before.activity)
-            .map(|said| (said.id, said))
-            .collect();
-        let same: HashSet<EntryId> = now
-            .log
-            .iter()
-            .chain(&now.activity)
-            .filter(|said| held.get(&said.id).is_some_and(|held| *held == *said))
-            .map(|said| said.id)
-            .collect();
-        self.entries.retain(|(id, _), _| same.contains(id));
+        let gone: HashSet<EntryId> = ids.iter().copied().collect();
+        self.entries.retain(|(id, _), _| !gone.contains(id));
     }
 
     /// How many entries were laid out so far.

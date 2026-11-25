@@ -21,8 +21,9 @@ use ratatui::widgets::{
     Block, BorderType, Clear, Padding, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
 };
 
-use crate::app::facts::{EntryId, Facts, Kind, Outcome, Pr, Said};
+use crate::app::facts::{EntryId, Facts, Kind, List, Outcome, Pr, Said};
 use crate::app::feed::Pane;
+use crate::app::history::{Gaps, History, NEAR, Reach, Shape};
 use crate::app::layouts::{Laid, Layouts};
 use crate::app::state::{
     self, Anchor, App, Arrangement, Button, FULL, Focus, Grip, Link, RAIL, Scroll, Tab, Target,
@@ -62,6 +63,8 @@ pub(crate) struct Hits {
     pub(crate) tops: Vec<(Focus, u16)>,
     /// The entry the session list's first line is in, when it lists entries.
     pub(crate) anchor: Option<Anchor>,
+    /// Where the view stands among the entries held, when it lists entries.
+    pub(crate) reach: Option<Reach>,
 }
 
 impl Hits {
@@ -105,7 +108,7 @@ impl Hits {
 }
 
 /// The session the session column shows, with its facts once read.
-pub(crate) type Shown<'a> = Option<(&'a Agent, Option<&'a Facts>)>;
+pub(crate) type Shown<'a> = Option<(&'a Agent, Option<&'a History>)>;
 
 pub(crate) fn draw(frame: &mut Frame<'_>, app: &mut App, shown: Shown<'_>) -> Hits {
     // The layouts are the app's, and the drawing reads the rest of it.
@@ -461,7 +464,8 @@ fn rail_view(
                     )
                 })
                 .collect();
-            if let Some((_, Some(facts))) = shown
+            if let Some((_, Some(history))) = shown
+                && let facts = &history.facts
                 && !facts.tasks.is_empty()
             {
                 let done = facts
@@ -966,7 +970,7 @@ fn pane_view(
             y += session_list(frame, app, room, pane, hits) + 1;
         }
     }
-    let Some((agent, facts)) = shown else {
+    let Some((agent, history)) = shown else {
         let text = if app.panes.is_empty() {
             empty_text(app)
         } else {
@@ -1058,14 +1062,20 @@ fn pane_view(
         );
     }
     y += 2;
-    tabs(frame, app, row_at(inner, y), facts, hits);
+    tabs(
+        frame,
+        app,
+        row_at(inner, y),
+        history.map(|history| &history.facts),
+        hits,
+    );
     rule(frame, row_at(area, y + 1), theme::line());
     let content = Rect {
         y: y + 2,
         height: bottom.saturating_sub(y + 2),
         ..inner
     };
-    let Some(facts) = facts else {
+    let Some(history) = history else {
         put(
             frame,
             row_at(content, content.y),
@@ -1073,6 +1083,7 @@ fn pane_view(
         );
         return;
     };
+    let facts = &history.facts;
     // The text leaves the scrollbar's columns free, so it keeps its width
     // as the tab grows past the screen.
     let text = Rect {
@@ -1084,15 +1095,15 @@ fn pane_view(
         app,
         layouts,
         agent,
-        facts,
+        history,
         usize::from(text.width),
         content.height,
     );
-    let total = u16::try_from(body.total).unwrap_or(u16::MAX);
     hits.lists.push((content, Focus::Session));
     let skip = body.top;
     hits.tops.push((Focus::Session, skip));
     hits.anchor = body.anchor;
+    hits.reach = body.reach;
     let prs_at = body.prs_at;
     for (at, span, target) in body.rows {
         if let Some(row) = u16::try_from(at)
@@ -1110,7 +1121,7 @@ fn pane_view(
             hits.add(cell, target);
         }
     }
-    scrollbar(frame, content, skip, total);
+    scrollbar(frame, content, body.bar.0, body.bar.1);
     frame.render_widget(
         Paragraph::new(body.lines)
             .style(Style::new().fg(theme::TEXT))
@@ -1266,21 +1277,29 @@ fn session_list(frame: &mut Frame<'_>, app: &App, area: Rect, pane: &Pane, hits:
     used
 }
 
+/// How many entries `list` has in the whole transcript, or in the part read so
+/// far with a `+` while the rest is still being read.
+fn counted(facts: &Facts, list: List) -> String {
+    let plus = if facts.whole { "" } else { "+" };
+    format!("{}{plus}", facts.total(list))
+}
+
 /// The tab bar: each tab's name and how many rows it holds.
 fn tabs(frame: &mut Frame<'_>, app: &App, area: Rect, facts: Option<&Facts>, hits: &mut Hits) {
     let mut x = area.x;
     for tab in Tab::ALL {
         let count = facts.map(|facts| match tab {
             Tab::Overview => None,
-            Tab::Prompts => Some(facts.log.len()),
-            Tab::Activity => Some(facts.activity.len()),
+            Tab::Prompts => Some(counted(facts, List::Log)),
+            Tab::Activity => Some(counted(facts, List::Activity)),
             Tab::Files => Some(
-                facts.files.len()
+                (facts.files.len()
                     + facts
                         .read
                         .iter()
                         .filter(|(path, _)| !facts.files.iter().any(|(file, _)| file == path))
-                        .count(),
+                        .count())
+                .to_string(),
             ),
         });
         let text = match count.flatten() {
@@ -1329,12 +1348,15 @@ struct Body {
     /// The lines to draw, from line `offset` of them on.
     lines: Vec<Line<'static>>,
     offset: u16,
-    /// How many lines the whole tab has.
-    total: usize,
+    /// The scrollbar's position and length: the lines of the whole tab, with
+    /// the entries not held counted in.
+    bar: (usize, usize),
     /// The first line of the tab on screen.
     top: u16,
     /// The entry that line belongs to, when the tab lists entries.
     anchor: Option<Anchor>,
+    /// Where the view stands among the entries held, when the tab lists them.
+    reach: Option<Reach>,
     /// Which line holds the pull requests.
     prs_at: Option<usize>,
     /// Which lines take a click.
@@ -1350,16 +1372,21 @@ fn tab_lines(
     app: &App,
     layouts: &mut Layouts,
     agent: &Agent,
-    facts: &Facts,
+    history: &History,
     width: usize,
     height: u16,
 ) -> Body {
+    let facts = &history.facts;
     let cwd = agent.cwd.as_str();
     let filter = app.filter(Focus::Session);
     let open = app.open.get(&agent.transcript);
     let mut lines = Vec::new();
     let mut rows = Rows::new();
     let mut prs_at = None;
+    // Where the view stands among the held entries even when none is shown, and
+    // whether a filter ended the loading of older ones.
+    let mut reach = None;
+    let mut unsearched = false;
     match app.tab {
         Tab::Overview => {
             let mut first = Vec::new();
@@ -1438,19 +1465,28 @@ fn tab_lines(
             }
         }
         Tab::Prompts | Tab::Activity => {
-            let items = if app.tab == Tab::Prompts {
-                &facts.log
+            let list = if app.tab == Tab::Prompts {
+                List::Log
             } else {
-                &facts.activity
+                List::Activity
             };
-            let entries = said(app, layouts, open, items, width, height);
+            let source = Source {
+                list,
+                items: facts.entries(list),
+                shape: history.shape(list),
+                unsearched: !filter.is_empty() && history.unsearched(list),
+            };
+            unsearched = source.unsearched;
+            let entries = said(app, layouts, open, source, width, height);
+            reach = entries.reach;
             if entries.total > 0 {
                 return Body {
                     lines: entries.lines,
                     offset: 0,
-                    total: entries.total,
+                    bar: entries.bar,
                     top: entries.top,
                     anchor: entries.anchor,
+                    reach: entries.reach,
                     prs_at: None,
                     rows: entries.rows,
                 };
@@ -1465,6 +1501,9 @@ fn tab_lines(
             format!("Nothing matches “{filter}”")
         };
         lines.push(Line::styled(text, theme::dim()));
+        if unsearched {
+            lines.push(Line::styled(UNSEARCHED, theme::dim()));
+        }
     }
     let total = lines.len();
     let top = top_of(
@@ -1476,9 +1515,10 @@ fn tab_lines(
     Body {
         lines,
         offset: top,
-        total,
+        bar: (usize::from(top), total),
         top,
         anchor: None,
+        reach,
         prs_at,
         rows,
     }
@@ -1487,29 +1527,103 @@ fn tab_lines(
 /// The width of the age column and the fold marker before every entry.
 const AGE: usize = 10;
 
-/// An entry of a list, placed by the lines before it.
-struct Placed {
-    /// Its place among the items.
-    index: usize,
-    id: EntryId,
-    open: bool,
-    /// The line of the list its first row is.
-    start: usize,
-    height: usize,
-}
-
 /// What a tab of entries shows: the rows in view, with where the view stands.
 struct Entries {
     /// The rows in view, from the first line on screen.
     lines: Vec<Line<'static>>,
     /// Which line of the list each row that takes a click is.
     rows: Rows,
-    /// How many lines the whole list has.
+    /// How many lines the held entries have.
     total: usize,
     /// The first line on screen.
     top: u16,
     /// The entry that line belongs to, unless it is the first line.
     anchor: Option<Anchor>,
+    /// Where the view stands among the held entries, when it shows any.
+    reach: Option<Reach>,
+    /// The scrollbar's position and length, which count the entries not held.
+    bar: (usize, usize),
+}
+
+/// The entries a tab lists, and what is known of those not held.
+struct Source<'a> {
+    list: List,
+    items: &'a [Said],
+    shape: Shape<'a>,
+    /// Whether the list stopped loading older entries under a filter.
+    unsearched: bool,
+}
+
+/// An entry of a list, placed by the lines before it.
+struct Placed {
+    /// Its place among the items.
+    index: usize,
+    id: EntryId,
+    open: bool,
+    /// The run of held entries it is in, counted from the newest; the entries
+    /// not held in a gap separate two runs.
+    run: usize,
+    /// The line of the list its first row is.
+    start: usize,
+    height: usize,
+}
+
+/// The line of a tab of entries that ends a filtered list the window stopped
+/// loading.
+const UNSEARCHED: &str = "Older entries are not searched; ctrl+f searches the whole session.";
+
+/// Where the view stands among the lines of the held entries.
+struct Stand {
+    /// The first line on screen.
+    top: usize,
+    /// The lines of the run of held entries the view is in.
+    lo: usize,
+    hi: usize,
+    /// Whether the run ends with the line that says older entries are not
+    /// searched, which `hi` counts.
+    tail: bool,
+}
+
+/// Where the view of `height` lines stands among the `placed` entries: at the
+/// scroll's anchor entry, or at its line when it has none, and never out of the
+/// run of held entries that entry is in. `tail` is whether the oldest run ends
+/// with one more line.
+fn stand(app: &App, placed: &[Placed], height: u16, tail: bool) -> Stand {
+    let scroll = app.scroll_of(Focus::Session);
+    let anchored = scroll.anchor.and_then(|anchor| {
+        // The entry itself, else the nearest newer one still listed.
+        let (entry, line) = match placed.iter().find(|entry| entry.id == anchor.id) {
+            Some(entry) => (entry, anchor.line),
+            None => (placed.iter().rfind(|entry| entry.id > anchor.id)?, 0),
+        };
+        // The wheel's steps since the last frame count wherever the view
+        // stands.
+        let line = i64::from(line).saturating_add(i64::from(anchor.moved));
+        Some((entry.run, entry.start, line))
+    });
+    let current = anchored
+        .map(|(run, ..)| run)
+        .or_else(|| placed.first().map(|entry| entry.run))
+        .unwrap_or(0);
+    let wanted = anchored.map_or_else(
+        || i64::from(scroll.top),
+        |(_, start, line)| {
+            i64::try_from(start)
+                .unwrap_or(i64::MAX)
+                .saturating_add(line)
+        },
+    );
+    let mut in_run = placed.iter().filter(|entry| entry.run == current);
+    let lo = in_run.next().map_or(0, |entry| entry.start);
+    let end = in_run
+        .next_back()
+        .map_or(lo, |entry| entry.start + entry.height);
+    let tail = tail && placed.last().is_some_and(|last| last.run == current);
+    let hi = end.max(lo) + usize::from(tail);
+    let top = usize::try_from(wanted.max(0))
+        .unwrap_or(0)
+        .clamp(lo, hi.saturating_sub(usize::from(height)).max(lo));
+    Stand { top, lo, hi, tail }
 }
 
 /// The entries of the prompts or the activity, newest first, as Claude
@@ -1518,57 +1632,24 @@ struct Entries {
 ///
 /// Each entry is laid out once for the width and its fold state. The rows of
 /// the entries in the view of `height` lines are built from that, and the view
-/// stands where the scroll's anchor entry now lies.
+/// stands where the scroll's anchor entry now lies. It never leaves the run of
+/// held entries that entry is in, so it never draws a line it does not hold.
 fn said(
     app: &App,
     layouts: &mut Layouts,
     open: Option<&HashSet<EntryId>>,
-    items: &[Said],
+    Source {
+        list,
+        items,
+        shape,
+        unsearched,
+    }: Source<'_>,
     width: usize,
     height: u16,
 ) -> Entries {
     let filter = app.filter(Focus::Session);
-    let mut placed: Vec<Placed> = Vec::with_capacity(items.len());
-    let mut total = 0;
-    for (index, item) in items.iter().enumerate().rev() {
-        if !filter.is_empty() && !state::passes(filter, &item.searched()) {
-            continue;
-        }
-        let open = open.is_some_and(|open| open.contains(&item.id));
-        let height = layouts
-            .get(item.id, open, || lay_out(item, open, width))
-            .lines
-            .len();
-        placed.push(Placed {
-            index,
-            id: item.id,
-            open,
-            start: total,
-            height,
-        });
-        total += height;
-    }
-    let scroll = app.scroll_of(Focus::Session);
-    let wanted = scroll
-        .anchor
-        .and_then(|anchor| {
-            // The entry itself, else the nearest newer one still listed.
-            let (entry, line) = match placed.iter().find(|entry| entry.id == anchor.id) {
-                Some(entry) => (entry, anchor.line),
-                None => (placed.iter().rfind(|entry| entry.id > anchor.id)?, 0),
-            };
-            Some(
-                i64::try_from(entry.start)
-                    .unwrap_or(i64::MAX)
-                    .saturating_add(i64::from(line)),
-            )
-        })
-        .unwrap_or_else(|| i64::from(scroll.top));
-    // The wheel's steps since the last frame count wherever the view stands.
-    let wanted = wanted.saturating_add(i64::from(scroll.anchor.map_or(0, |anchor| anchor.moved)));
-    let top = usize::try_from(wanted.max(0))
-        .unwrap_or(0)
-        .min(total.saturating_sub(usize::from(height)));
+    let (placed, total) = place(app, layouts, open, (items, shape.gaps), width);
+    let Stand { top, lo, hi, tail } = stand(app, &placed, height, unsearched);
     let anchor = if top == 0 {
         None
     } else {
@@ -1581,13 +1662,14 @@ fn said(
                 moved: 0,
             })
     };
-    let bottom = top + usize::from(height);
+    let bottom = (top + usize::from(height)).min(hi);
     let mut lines = Vec::new();
     let mut rows = Rows::new();
-    for entry in placed
+    let shown: Vec<&Placed> = placed
         .iter()
         .filter(|entry| entry.start < bottom && entry.start + entry.height > top)
-    {
+        .collect();
+    for entry in &shown {
         let item = &items[entry.index];
         let laid = layouts.get(entry.id, entry.open, || lay_out(item, entry.open, width));
         let hovered = app.hover == Some(Target::Entry(entry.id));
@@ -1600,13 +1682,141 @@ fn said(
             }
         }
     }
+    if tail && bottom == hi {
+        lines.push(Line::styled(UNSEARCHED, theme::dim()));
+    }
+    let filtered = !filter.is_empty();
+    let lead = app.ahead.min(NEAR);
+    let reach = shown
+        .first()
+        .zip(shown.last())
+        .map(|(newest, oldest)| Reach {
+            list,
+            first: newest.id,
+            last: oldest.id,
+            below: hi.saturating_sub(top + usize::from(height)),
+            above: top - lo,
+            filtered,
+            keep: within(&placed, (newest.id, oldest.id), lead),
+        })
+        // With no entry shown, the view stands at the oldest held entry, so a
+        // filter that shows nothing still loads pages.
+        .or_else(|| {
+            let oldest = items.first()?.id;
+            filtered.then_some(Reach {
+                list,
+                first: oldest,
+                last: oldest,
+                below: 0,
+                above: 0,
+                filtered,
+                keep: (oldest, oldest),
+            })
+        });
+    // A filter shows held entries only, so it counts none that are not held.
+    let counted = if filtered { None } else { reach };
     Entries {
         lines,
         rows,
         total,
         top: u16::try_from(top).unwrap_or(u16::MAX),
         anchor,
+        reach,
+        bar: bar(
+            shape,
+            counted,
+            (top, total + usize::from(tail), placed.len()),
+        ),
     }
+}
+
+/// The oldest and the newest of the `placed` entries that lie within `lead`
+/// lines of the entries in view, `newest` to `oldest`, the entries in view too.
+fn within(
+    placed: &[Placed],
+    (newest, oldest): (EntryId, EntryId),
+    lead: usize,
+) -> (EntryId, EntryId) {
+    let at = |id: EntryId| placed.iter().position(|entry| entry.id == id).unwrap_or(0);
+    // The entry that lies `lead` lines out along `entries`, else the last.
+    let farthest = |entries: &mut dyn Iterator<Item = &Placed>, from: EntryId| {
+        let mut lines = 0;
+        let mut id = from;
+        for entry in entries {
+            if lines >= lead {
+                break;
+            }
+            lines += entry.height;
+            id = entry.id;
+        }
+        id
+    };
+    (
+        farthest(&mut placed.iter().skip(at(oldest) + 1), oldest),
+        farthest(&mut placed.iter().take(at(newest)).rev(), newest),
+    )
+}
+
+/// The `items` that pass the filter, newest first, placed by the lines before
+/// them, with how many lines they take. A gap is recorded after the newest
+/// entry below it.
+fn place(
+    app: &App,
+    layouts: &mut Layouts,
+    open: Option<&HashSet<EntryId>>,
+    (items, gaps): (&[Said], &Gaps),
+    width: usize,
+) -> (Vec<Placed>, usize) {
+    let filter = app.filter(Focus::Session);
+    let mut placed: Vec<Placed> = Vec::with_capacity(items.len());
+    let mut total = 0;
+    let mut run = 0;
+    for (index, item) in items.iter().enumerate().rev() {
+        if gaps.contains_key(&item.id) {
+            run += 1;
+        }
+        if !filter.is_empty() && !state::passes(filter, &item.searched()) {
+            continue;
+        }
+        let open = open.is_some_and(|open| open.contains(&item.id));
+        let height = layouts
+            .get(item.id, open, || lay_out(item, open, width))
+            .lines
+            .len();
+        placed.push(Placed {
+            index,
+            id: item.id,
+            open,
+            run,
+            start: total,
+            height,
+        });
+        total += height;
+    }
+    (placed, total)
+}
+
+/// The scrollbar's position and length for a view of the held entries that
+/// starts at line `top` of `total` lines, which `held` entries take. The
+/// entries not held count as tall as those held are on average. `reach` is
+/// `None` for a view that counts none.
+fn bar(
+    shape: Shape<'_>,
+    reach: Option<Reach>,
+    (top, total, held): (usize, usize, usize),
+) -> (usize, usize) {
+    let Some(reach) = reach else {
+        return (top, total);
+    };
+    let tall = |entries: usize| entries * total / held.max(1);
+    let not_held = shape.gaps.values().sum::<usize>() + shape.older;
+    // The gaps above the view's first entry move the thumb down.
+    let above: usize = shape
+        .gaps
+        .range(reach.first..)
+        .map(|(_, missing)| *missing)
+        .sum();
+    (top + tall(above), total + tall(not_held))
 }
 
 /// Row `row` of an entry laid out as `laid`, with what a frame draws over it:
@@ -2864,12 +3074,14 @@ fn top_of(scroll: Scroll, total: u16, height: u16, selection: Option<(u16, u16)>
 
 /// A thin scrollbar down the right edge of `area`, when a list `total` lines
 /// tall does not fit in it.
-fn scrollbar(frame: &mut Frame<'_>, area: Rect, top: u16, total: u16) {
-    if total <= area.height {
+fn scrollbar(frame: &mut Frame<'_>, area: Rect, top: impl Into<usize>, total: impl Into<usize>) {
+    let (top, total) = (top.into(), total.into());
+    let height = usize::from(area.height);
+    if total <= height {
         return;
     }
-    let mut state = ScrollbarState::new(usize::from(total - area.height) + 1)
-        .position(usize::from(top))
+    let mut state = ScrollbarState::new(total - height + 1)
+        .position(top)
         .viewport_content_length(usize::from(area.height));
     frame.render_stateful_widget(
         Scrollbar::new(ScrollbarOrientation::VerticalRight)
@@ -2892,6 +3104,7 @@ mod tests {
     use ratatui::crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 
     use super::*;
+    use crate::app::facts::Way;
     use crate::app::state::fixtures::pane;
 
     const OWN: &str = "block-own";
@@ -2965,7 +3178,9 @@ mod tests {
     /// the tests resize.
     struct Rig {
         app: App,
-        facts: Facts,
+        history: History,
+        /// Where the last frame left the view.
+        reach: Option<Reach>,
         terminal: Terminal<TestBackend>,
     }
 
@@ -2987,8 +3202,25 @@ mod tests {
         }
     }
 
+    /// The facts of a transcript read whole, which keep the calls `places`
+    /// among `total`.
+    fn calls(places: Range<usize>, total: usize) -> Facts {
+        Facts {
+            activity: places
+                .map(|place| call(place, &format!("file-{place}.rs")))
+                .collect(),
+            activity_total: total,
+            whole: true,
+            ..Facts::default()
+        }
+    }
+
     impl Rig {
         fn new(count: usize) -> Self {
+            Self::with(calls(0..count, count))
+        }
+
+        fn with(facts: Facts) -> Self {
             let mut app = App::new(None);
             app.set_panes(vec![pane(
                 "block-a",
@@ -2998,16 +3230,12 @@ mod tests {
             )]);
             app.tab = Tab::Activity;
             app.cols = 120;
-            let facts = Facts {
-                activity: (0..count)
-                    .map(|place| call(place, &format!("file-{place}.rs")))
-                    .collect(),
-                whole: true,
-                ..Facts::default()
-            };
+            let mut history = History::default();
+            history.merge(facts);
             Self {
                 app,
-                facts,
+                history,
+                reach: None,
                 terminal: Terminal::new(TestBackend::new(120, 40)).expect("a test terminal"),
             }
         }
@@ -3028,7 +3256,7 @@ mod tests {
         /// Draws a frame and keeps where it scrolled to.
         fn frame(&mut self) {
             let agent = self.app.current().cloned();
-            let shown = agent.as_ref().map(|agent| (agent, Some(&self.facts)));
+            let shown = agent.as_ref().map(|agent| (agent, Some(&self.history)));
             let mut hits = None;
             self.terminal
                 .draw(|frame| hits = Some(draw(frame, &mut self.app, shown)))
@@ -3036,6 +3264,7 @@ mod tests {
             let hits = hits.expect("a frame was drawn");
             self.app.settle(&hits.tops, hits.anchor);
             self.app.cols = hits.width;
+            self.reach = hits.reach;
         }
 
         /// The entries a frame shows, one text each.
@@ -3058,12 +3287,257 @@ mod tests {
     }
 
     #[test]
+    fn a_tab_counts_the_whole_session_once_it_is_read() {
+        let mut rig = Rig::new(300);
+        rig.history.facts.activity_total = 2400;
+        let rows = rig.draw();
+        assert!(
+            rows.iter().any(|row| row.contains("Activity 2400 ")),
+            "{rows:?}"
+        );
+        // The newest 300 are read and the start is not.
+        rig.history.facts.activity_total = 300;
+        rig.history.facts.whole = false;
+        let rows = rig.draw();
+        assert!(
+            rows.iter().any(|row| row.contains("Activity 300+ ")),
+            "{rows:?}"
+        );
+    }
+
+    /// What the daemon answers to the older page `ask`, from calls `places`.
+    fn older_page(places: Range<usize>, texts: impl Fn(usize) -> String) -> Vec<Said> {
+        places.map(|place| call(place, &texts(place))).collect()
+    }
+
+    #[test]
+    fn the_view_waits_at_the_oldest_held_entry_for_its_page() {
+        let mut rig = Rig::with(calls(1000..1300, 2400));
+        rig.scroll(100_000);
+        let shown = rig.entries();
+        // The oldest held entry is the last row, with nothing drawn below it.
+        assert!(
+            shown.last().expect("rows").contains("file-1000.rs"),
+            "{shown:?}"
+        );
+        let reach = rig.reach.expect("the view shows entries");
+        assert_eq!(reach.below, 0);
+        let ask = rig.history.settle(reach, 200).expect("a page is asked for");
+        assert_eq!(
+            (ask.way, ask.at),
+            (Way::Older, rig.history.facts.activity[0].id)
+        );
+        // The reader scrolls on while the page is in flight, and nothing moves.
+        rig.scroll(100_000);
+        assert_eq!(rig.entries(), shown);
+        // The page lands, and the view moves on.
+        let page = older_page(900..1000, |place| format!("file-{place}.rs"));
+        rig.history.land(ask, page, true);
+        rig.scroll(100_000);
+        let shown = rig.entries();
+        assert!(
+            shown.last().expect("rows").contains("file-900.rs"),
+            "{shown:?}"
+        );
+    }
+
+    #[test]
+    fn the_view_does_not_draw_across_a_gap() {
+        let mut rig = Rig::with(calls(1000..1300, 5000));
+        // The facts of the newest 300 come, with the entries between not held.
+        rig.history.merge(calls(4700..5000, 5000));
+        assert_eq!(rig.history.shape(List::Activity).gaps.len(), 1);
+        rig.scroll(100_000);
+        let shown = rig.entries();
+        assert!(
+            shown.last().expect("rows").contains("file-4700.rs"),
+            "{shown:?}"
+        );
+        assert!(shown.iter().all(|row| !row.contains("file-1299.rs")));
+        let reach = rig.reach.expect("the view shows entries");
+        assert_eq!(reach.below, 0);
+        let ask = rig.history.settle(reach, 200).expect("a page is asked for");
+        assert_eq!((ask.way, ask.at), (Way::Older, call(4700, "").id));
+    }
+
+    #[test]
+    fn a_filter_shows_the_held_matches_and_pages_load_as_the_view_nears_the_last() {
+        let text = |place: usize| {
+            if place.is_multiple_of(10) {
+                format!("cargo test {place}")
+            } else {
+                format!("ls {place}")
+            }
+        };
+        let mut facts = calls(1000..1300, 2400);
+        for said in &mut facts.activity {
+            said.text = text(usize::try_from(said.id.line / 100).expect("a small number"));
+        }
+        let mut rig = Rig::with(facts);
+        rig.app.filters[Focus::Session.index()] = "cargo".to_owned();
+        let shown = rig.entries();
+        assert!(
+            shown.iter().all(|row| row.contains("cargo test")),
+            "{shown:?}"
+        );
+        assert!(shown.len() > 5);
+        rig.scroll(100_000);
+        let shown = rig.entries();
+        assert!(
+            shown.last().expect("rows").contains("cargo test 1000"),
+            "{shown:?}"
+        );
+        let reach = rig.reach.expect("the view shows entries");
+        let ask = rig.history.settle(reach, 200).expect("a page is asked for");
+        assert_eq!(ask.way, Way::Older);
+        // Older matches appear as the reader scrolls on.
+        rig.history.land(ask, older_page(900..1000, text), true);
+        rig.scroll(100_000);
+        let shown = rig.entries();
+        assert!(
+            shown.last().expect("rows").contains("cargo test 900"),
+            "{shown:?}"
+        );
+    }
+
+    /// Draws a frame and answers the page the view asks for from `all`, as the
+    /// daemon does. Whether it asked for one.
+    fn load_older(rig: &mut Rig, all: &[Said]) -> bool {
+        rig.frame();
+        let Some(reach) = rig.reach else {
+            return false;
+        };
+        let Some(ask) = rig.history.settle(reach, 200) else {
+            return false;
+        };
+        let end = all.partition_point(|said| said.id < ask.at);
+        let from = end.saturating_sub(ask.count);
+        rig.history.land(ask, all[from..end].to_vec(), from > 0);
+        true
+    }
+
+    #[test]
+    fn the_lead_keeps_entries_by_their_lines() {
+        let id = |place: u64| EntryId {
+            line: place,
+            index: 0,
+        };
+        // Ten entries of five lines, newest first, the view on the sixth
+        // newest.
+        let placed: Vec<Placed> = (0..10_u64)
+            .rev()
+            .enumerate()
+            .map(|(at, place)| Placed {
+                index: usize::try_from(place).expect("a small number"),
+                id: id(place),
+                open: false,
+                run: 0,
+                start: at * 5,
+                height: 5,
+            })
+            .collect();
+        // Seven lines past the view take two entries each way, not seven.
+        assert_eq!(within(&placed, (id(4), id(4)), 7), (id(2), id(6)));
+        assert_eq!(within(&placed, (id(4), id(4)), 0), (id(4), id(4)));
+        // The ends of the list stop it.
+        assert_eq!(within(&placed, (id(1), id(0)), 100), (id(0), id(9)));
+    }
+
+    #[test]
+    fn a_filter_without_a_match_pages_to_the_bound_and_then_says_so() {
+        let all: Vec<Said> = (0..5000)
+            .map(|place| call(place, &format!("file-{place}.rs")))
+            .collect();
+        let mut rig = Rig::with(calls(4700..5000, 5000));
+        rig.app.filters[Focus::Session.index()] = "nothing".to_owned();
+        let mut pages = 0;
+        while load_older(&mut rig, &all) {
+            pages += 1;
+            assert!(rig.history.facts.activity.len() <= 3000);
+            assert!(pages < 100, "pages keep coming");
+        }
+        // 2,700 entries more than the newest 300, a page of 100 at a time.
+        assert_eq!(pages, 27);
+        let rows = rig.draw();
+        assert!(
+            rows.iter().any(|row| row.contains("Nothing matches")),
+            "{rows:?}"
+        );
+        assert!(
+            rows.iter()
+                .any(|row| row.contains("ctrl+f searches the whole session")),
+            "{rows:?}"
+        );
+    }
+
+    #[test]
+    fn a_filter_whose_matches_are_the_newest_stops_at_the_bound() {
+        let all: Vec<Said> = (0..5000)
+            .map(|place| call(place, &format!("file-{place}.rs")))
+            .collect();
+        let mut rig = Rig::with(calls(4700..5000, 5000));
+        // The calls 4900 to 4999 match, and nothing older that is held.
+        rig.app.filters[Focus::Session.index()] = "file-49".to_owned();
+        let mut pages = 0;
+        while load_older(&mut rig, &all) {
+            pages += 1;
+            assert!(rig.history.facts.activity.len() <= 3000);
+            assert!(pages < 100, "pages keep coming");
+        }
+        assert_eq!(pages, 27);
+        assert_eq!(rig.history.facts.activity.len(), 3000);
+        rig.scroll(100_000);
+        let rows = rig.draw();
+        assert!(
+            rows.iter()
+                .any(|row| row.contains("ctrl+f searches the whole session")),
+            "{rows:?}"
+        );
+        assert!(
+            rows.iter().any(|row| row.contains("file-4900.rs")),
+            "{rows:?}"
+        );
+    }
+
+    #[test]
+    fn the_scrollbar_counts_the_entries_not_held_as_tall_as_those_held() {
+        let mut rig = Rig::with(calls(1000..1300, 2400));
+        let path = rig.app.current().expect("a session").transcript.clone();
+        let mut layouts = Layouts::default();
+        layouts.show(&path, 100);
+        let bar = |rig: &Rig, layouts: &mut Layouts| {
+            let source = Source {
+                list: List::Activity,
+                items: &rig.history.facts.activity,
+                shape: rig.history.shape(List::Activity),
+                unsearched: false,
+            };
+            said(&rig.app, layouts, None, source, 100, 20).bar
+        };
+        // 300 held, one line each, and 2,100 not held at the same height.
+        assert_eq!(bar(&rig, &mut layouts), (0, 2400));
+        rig.scroll(10);
+        assert_eq!(bar(&rig, &mut layouts), (10, 2400));
+        // A page lands: the thumb's length does not change.
+        rig.scroll(100_000);
+        rig.frame();
+        let ask = rig
+            .history
+            .settle(rig.reach.expect("the view shows entries"), 200)
+            .expect("a page is asked for");
+        assert_eq!(ask.way, Way::Older);
+        let page = older_page(900..1000, |place| format!("file-{place}.rs"));
+        rig.history.land(ask, page, true);
+        assert_eq!(bar(&rig, &mut layouts).1, 2400);
+    }
+
+    #[test]
     fn hovering_and_scrolling_lay_nothing_out_again() {
         let mut rig = Rig::new(3000);
         rig.draw();
         assert_eq!(rig.laid(), 3000);
         for place in [2999, 2000, 17] {
-            rig.app.hover = Some(Target::Entry(rig.facts.activity[place].id));
+            rig.app.hover = Some(Target::Entry(rig.history.facts.activity[place].id));
             rig.draw();
         }
         rig.scroll(40);
@@ -3084,7 +3558,7 @@ mod tests {
             modifiers: KeyModifiers::NONE,
         };
         let under = Under {
-            target: Some(Target::Entry(rig.facts.activity[2990].id)),
+            target: Some(Target::Entry(rig.history.facts.activity[2990].id)),
             ..Under::default()
         };
         rig.app.on_mouse(click, under);
@@ -3110,13 +3584,17 @@ mod tests {
     fn a_changed_entry_is_laid_out_again_and_a_kept_one_is_not() {
         let mut rig = Rig::new(300);
         rig.draw();
-        let before = rig.facts.clone();
-        rig.facts.activity[299].result = Some(Outcome {
+        // The daemon's facts, with the result of the newest call now read.
+        let mut read = rig.history.facts.clone();
+        read.activity[299].result = Some(Outcome {
             text: "ok".to_owned(),
             error: false,
         });
+        let changed = read.activity[299].id;
+        let stale = rig.history.merge(read);
+        assert_eq!(stale, [changed]);
         let path = rig.app.current().expect("a session").transcript.clone();
-        rig.app.layouts.refresh(&path, &before, &rig.facts);
+        rig.app.layouts.forget(&path, &stale);
         rig.draw();
         assert_eq!(rig.laid(), 301);
     }
@@ -3132,7 +3610,7 @@ mod tests {
         // The same wheel step, with and without a call arriving in its frame.
         still.scroll(2);
         busy.scroll(2);
-        busy.facts.activity.push(call(300, "file-new.rs"));
+        busy.history.facts.activity.push(call(300, "file-new.rs"));
         let shown = still.entries();
         assert!(shown[0].contains("file-257.rs"), "{shown:?}");
         assert_eq!(busy.entries(), shown);
@@ -3146,7 +3624,7 @@ mod tests {
         assert!(shown[0].contains("file-257.rs"), "{shown:?}");
         // The entry the view is anchored in goes, as when the daemon's facts
         // keep fewer of the older entries, or a filter hides it.
-        rig.facts.activity.remove(257);
+        rig.history.facts.activity.remove(257);
         let shown = rig.entries();
         assert!(shown[0].contains("file-258.rs"), "{shown:?}");
     }
@@ -3159,7 +3637,7 @@ mod tests {
         assert!(shown[0].contains("file-257.rs"), "{shown:?}");
         // The entry goes in the frame the wheel steps 2 lines: the view stays
         // at the nearest newer entry, 41 lines down, and then moves the 2.
-        rig.facts.activity.remove(257);
+        rig.history.facts.activity.remove(257);
         rig.scroll(2);
         let shown = rig.entries();
         assert!(shown[0].contains("file-255.rs"), "{shown:?}");
@@ -3169,7 +3647,7 @@ mod tests {
     fn an_unscrolled_list_follows_the_newest_entry() {
         let mut rig = Rig::new(300);
         assert!(rig.entries()[0].contains("file-299.rs"));
-        rig.facts.activity.push(call(300, "file-new.rs"));
+        rig.history.facts.activity.push(call(300, "file-new.rs"));
         assert!(rig.entries()[0].contains("file-new.rs"));
     }
 
@@ -3188,7 +3666,7 @@ mod tests {
     fn frame_time_with_three_thousand_entries() {
         let mut rig = Rig::new(3000);
         // Some entries open to a longer text, and some have a result.
-        for (place, call) in rig.facts.activity.iter_mut().enumerate() {
+        for (place, call) in rig.history.facts.activity.iter_mut().enumerate() {
             if place % 3 == 0 {
                 call.more = Some(format!(
                     "# Step {place}\n\nRead the file, then change the total\nand the tax code in it.\n\n- first\n- second"
@@ -3205,7 +3683,7 @@ mod tests {
         let mut scrolling = Vec::new();
         for step in 0..2000 {
             rig.scroll(if step % 800 < 400 { 2 } else { -2 });
-            rig.app.hover = Some(Target::Entry(rig.facts.activity[step % 3000].id));
+            rig.app.hover = Some(Target::Entry(rig.history.facts.activity[step % 3000].id));
             let began = Instant::now();
             rig.frame();
             scrolling.push(began.elapsed());

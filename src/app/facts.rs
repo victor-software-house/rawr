@@ -9,7 +9,7 @@
 
 use std::borrow::Cow;
 use std::fmt::Write as _;
-use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
+use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 use std::{env, fs, mem};
 
@@ -47,6 +47,11 @@ pub(crate) struct Facts {
     pub(crate) log: Vec<Said>,
     /// The tools Claude called, oldest first, the last [`KEEP`] of them.
     pub(crate) activity: Vec<Said>,
+    /// How many entries the conversation has in the lines read so far, past
+    /// the [`KEEP`] it keeps.
+    pub(crate) log_total: usize,
+    /// How many tool calls the lines read so far hold.
+    pub(crate) activity_total: usize,
     /// Whether every line of the transcript is read. The daemon reads from
     /// the newest line back, so until then the counts, the start and the
     /// task list cover only the newest part.
@@ -56,6 +61,61 @@ pub(crate) struct Facts {
 
 /// How many prompts and tool calls the facts keep.
 pub(crate) const KEEP: usize = 300;
+
+/// One of the two lists of entries a transcript gives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum List {
+    /// The conversation: what the user typed and Claude's replies.
+    Log,
+    /// The tools Claude called.
+    Activity,
+}
+
+impl List {
+    /// Both lists, in the order a window keeps them.
+    pub(crate) const BOTH: [Self; 2] = [Self::Log, Self::Activity];
+
+    /// This list's place in an array of both.
+    pub(crate) const fn index(self) -> usize {
+        match self {
+            Self::Log => 0,
+            Self::Activity => 1,
+        }
+    }
+}
+
+impl Facts {
+    /// The entries of `list` the facts keep, to change.
+    pub(crate) const fn entries_mut(&mut self, list: List) -> &mut Vec<Said> {
+        match list {
+            List::Log => &mut self.log,
+            List::Activity => &mut self.activity,
+        }
+    }
+
+    /// The entries of `list` the facts keep.
+    pub(crate) fn entries(&self, list: List) -> &[Said] {
+        match list {
+            List::Log => &self.log,
+            List::Activity => &self.activity,
+        }
+    }
+
+    /// How many entries `list` has in the lines read so far.
+    pub(crate) const fn total(&self, list: List) -> usize {
+        match list {
+            List::Log => self.log_total,
+            List::Activity => self.activity_total,
+        }
+    }
+
+    /// Whether `list` may have entries older than the ones kept: the lines
+    /// are not all read, or they gave more than were kept.
+    pub(crate) fn older(&self, list: List) -> bool {
+        !self.whole || self.total(list) > self.entries(list).len()
+    }
+}
 
 /// One task of a session's list.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, Deserialize)]
@@ -415,6 +475,195 @@ impl Reading {
     }
 }
 
+/// How far past a page's last line the daemon reads for the results of the
+/// page's calls.
+const AHEAD: u64 = 256 << 10;
+
+/// How many bytes a page reads before it stops, once it holds an entry: a list
+/// whose entries lie far apart gives a short page and `more`, and the next page
+/// goes on from it. A page with no entry reads on until it finds one.
+const PAGE_BYTES: u64 = 4 << 20;
+
+/// The longest line read for the results of a page's calls.
+const LINE_MOST: u64 = 4 << 20;
+
+/// Which way a page reads from the entry it starts at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum Way {
+    /// The entries just before it.
+    Older,
+    /// The entries just after it.
+    Newer,
+}
+
+/// Some entries of one list, oldest first.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Page {
+    pub(crate) entries: Vec<Said>,
+    /// Whether the transcript has more entries of the list beyond the page, in
+    /// the way it was read. It is `false` for an older page only once the first
+    /// line is read.
+    pub(crate) more: bool,
+}
+
+/// Up to `count` (at most [`KEEP`]) entries of `list` just before or after the
+/// entry `at`, read from the transcript at `path` and kept nowhere. The ids are
+/// those the whole transcript's reading gives the same lines. A tool call's
+/// result written after the page shows, when it is within [`AHEAD`] of it.
+/// An error when the transcript cannot be opened or read.
+pub(crate) fn page(
+    path: &Path,
+    way: Way,
+    list: List,
+    at: EntryId,
+    count: usize,
+) -> io::Result<Page> {
+    let count = count.clamp(1, KEEP);
+    let mut file = fs::File::open(path)?;
+    let len = file.metadata()?.len();
+    match way {
+        Way::Older => older(&mut file, path, len, list, at, count),
+        Way::Newer => newer(&mut file, len, list, at, count),
+    }
+    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "a line could not be read"))
+}
+
+/// The entries of `list` in `stretch`.
+fn list_of(stretch: &mut Stretch, list: List) -> &mut Vec<Said> {
+    match list {
+        List::Log => &mut stretch.facts.log,
+        List::Activity => &mut stretch.facts.activity,
+    }
+}
+
+fn older(
+    file: &mut fs::File,
+    path: &Path,
+    len: u64,
+    list: List,
+    before: EntryId,
+    count: usize,
+) -> Option<Page> {
+    // The line `before` is in gives the entries before it on that line too.
+    let mut here = read_lines(&line_at(file, before.line)?, before.line);
+    here.facts.log.retain(|said| said.id < before);
+    here.facts.activity.retain(|said| said.id < before);
+    here.facts.log_total = here.facts.log.len();
+    here.facts.activity_total = here.facts.activity.len();
+    let mut reading = Reading {
+        len,
+        back: before.line,
+        end: before.line,
+        started: true,
+        stretch: here,
+    };
+    loop {
+        let found = list_of(&mut reading.stretch, list).len();
+        let read = before.line - reading.back;
+        if reading.back == 0 || found >= count || (found > 0 && read >= PAGE_BYTES) {
+            break;
+        }
+        reading.step_back(path)?;
+    }
+    let total = reading.stretch.facts.total(list);
+    let mut entries = mem::take(list_of(&mut reading.stretch, list));
+    entries.drain(..entries.len().saturating_sub(count));
+    if list == List::Activity {
+        reading.stretch.facts.activity = entries;
+        results_after(file, before.line, len, &mut reading.stretch)?;
+        entries = mem::take(&mut reading.stretch.facts.activity);
+    }
+    Some(Page {
+        entries,
+        more: reading.back > 0 || total > count,
+    })
+}
+
+fn newer(file: &mut fs::File, len: u64, list: List, after: EntryId, count: usize) -> Option<Page> {
+    file.seek(SeekFrom::Start(after.line)).ok()?;
+    let mut lines = BufReader::with_capacity(1 << 18, &mut *file);
+    let mut line = Vec::new();
+    let mut stretch = Stretch::default();
+    let mut at = after.line;
+    // Where the lines read so far end, and how many entries of the list are
+    // after `after`.
+    let mut end = at;
+    let mut found = 0;
+    while found < count && (found == 0 || end - after.line < PAGE_BYTES) {
+        line.clear();
+        let read = lines.read_until(b'\n', &mut line).ok()?;
+        if read == 0 || line.last() != Some(&b'\n') {
+            break;
+        }
+        if let Ok(record) = serde_json::from_slice::<Record<'_>>(&line) {
+            add(&mut stretch, record, at);
+        }
+        at += u64::try_from(read).ok()?;
+        end = at;
+        list_of(&mut stretch, list).retain(|said| said.id > after);
+        found = list_of(&mut stretch, list).len();
+    }
+    drop(lines);
+    let entries = list_of(&mut stretch, list);
+    let more = found > count || end < len;
+    entries.truncate(count);
+    if list == List::Activity {
+        results_after(file, end, len, &mut stretch)?;
+    }
+    Some(Page {
+        entries: mem::take(list_of(&mut stretch, list)),
+        more,
+    })
+}
+
+/// The bytes of the line that starts at `at`, with its line break.
+fn line_at(file: &mut fs::File, at: u64) -> Option<Vec<u8>> {
+    file.seek(SeekFrom::Start(at)).ok()?;
+    let mut line = Vec::new();
+    BufReader::new(file).read_until(b'\n', &mut line).ok()?;
+    (line.last() == Some(&b'\n')).then_some(line)
+}
+
+/// Gives the calls of `stretch`'s activity the results written from byte `from`
+/// on, up to [`AHEAD`] of it and up to `len`, until every call has one.
+fn results_after(file: &mut fs::File, from: u64, len: u64, stretch: &mut Stretch) -> Option<()> {
+    let stop = len.min(from.saturating_add(AHEAD));
+    file.seek(SeekFrom::Start(from)).ok()?;
+    let mut lines = BufReader::with_capacity(1 << 18, file);
+    let mut line = Vec::new();
+    let mut at = from;
+    while at < stop
+        && stretch
+            .facts
+            .activity
+            .iter()
+            .any(|said| said.result.is_none())
+    {
+        line.clear();
+        // A line longer than the most is not read whole.
+        let read = lines
+            .by_ref()
+            .take(LINE_MOST)
+            .read_until(b'\n', &mut line)
+            .ok()?;
+        if read == 0 || line.last() != Some(&b'\n') {
+            break;
+        }
+        at += u64::try_from(read).ok()?;
+        if let Ok(record) = serde_json::from_slice::<Record<'_>>(&line)
+            && record.kind == "user"
+            && !record.is_meta
+            && !record.summary
+            && !record.sidechain
+            && let Some(content) = record.message.and_then(|message| message.content)
+        {
+            results(stretch, content);
+        }
+    }
+    Some(())
+}
+
 /// The task list Claude Code keeps for the session whose transcript is
 /// at `transcript`, one file per task under `~/.claude/tasks`: in the
 /// folder of the session's team, `session-` and the first 8 characters
@@ -510,6 +759,8 @@ impl Stretch {
         for (path, count) in newer.read {
             touch(&mut facts.read, &path, count);
         }
+        facts.log_total += newer.log_total;
+        facts.activity_total += newer.activity_total;
         facts.log.extend(newer.log);
         trim(&mut facts.log);
         // Results that reached this stretch's calls from the newer one.
@@ -707,6 +958,7 @@ fn add(stretch: &mut Stretch, record: Record<'_>, line: u64) {
                             if !text.is_empty() && text != "(no content)" {
                                 keep(
                                     &mut stretch.facts.log,
+                                    &mut stretch.facts.log_total,
                                     Said {
                                         id: place.take(),
                                         at: at.map(str::to_owned),
@@ -740,6 +992,7 @@ fn add(stretch: &mut Stretch, record: Record<'_>, line: u64) {
                 }
                 keep(
                     &mut facts.log,
+                    &mut facts.log_total,
                     Said {
                         id: place.take(),
                         at: record.timestamp.as_deref().map(str::to_owned),
@@ -1095,8 +1348,10 @@ fn attribute<'text>(text: &'text str, name: &str) -> Option<&'text str> {
     text.get(start..end)
 }
 
-/// Adds `item` to the end of `list`, keeping the last [`KEEP`].
-fn keep(list: &mut Vec<Said>, item: Said) {
+/// Adds `item` to the end of `list`, keeping the last [`KEEP`], and counts it
+/// in `total`.
+fn keep(list: &mut Vec<Said>, total: &mut usize, item: Said) {
+    *total += 1;
     list.push(item);
     if list.len() > KEEP {
         list.drain(..list.len() - KEEP);
@@ -1172,6 +1427,7 @@ fn call(
     if let Some((shown, what, more)) = tool_line(name, &input, part.input, cwd) {
         keep(
             &mut facts.activity,
+            &mut facts.activity_total,
             Said {
                 id: place.take(),
                 at: at.map(str::to_owned),
@@ -1324,11 +1580,18 @@ fn shown_path(path: &str, cwd: Option<&str>) -> String {
 mod tests {
     use std::fmt::Write as _;
     use std::fs::{self, File, OpenOptions};
-    use std::io::Write as _;
+    use std::io::{BufRead, BufReader, ErrorKind, Write as _};
+    use std::os::unix::net::UnixStream;
     use std::path::PathBuf;
-    use std::{env, process};
+    use std::time::{Duration, Instant};
+    use std::{env, process, thread};
 
-    use super::{EntryId, Facts, KEEP, Reading, read_forward, tasks};
+    use serde_json::{Value, json};
+
+    use super::{
+        AHEAD, EntryId, Facts, KEEP, LINE_MOST, List, Reading, Said, Way, page, read_forward, tasks,
+    };
+    use crate::daemon::{FromDaemon, ToDaemon};
 
     /// A transcript of `turns` turns: a prompt, then a reply that creates
     /// a task, edits a file and, every fifth turn, carries a long text, so
@@ -1459,6 +1722,437 @@ mod tests {
         assert_eq!(facts.last_prompt.as_deref(), Some("prompt 399"));
         assert_eq!(facts.model.as_deref(), Some("m7"));
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn every_entry_is_counted_past_the_ones_kept() {
+        let path = file("totals", &transcript(400));
+        let mut reading = Reading::default();
+        reading.catch_up(&path).expect("catch up");
+        reading.step_back(&path).expect("step back");
+        // Part of the transcript is read: the count is of the lines so far,
+        // and older entries may exist.
+        let partial = reading.facts();
+        assert!(!partial.whole);
+        assert!(partial.activity_total < 400, "{}", partial.activity_total);
+        assert!(partial.older(List::Activity));
+        while !reading.whole() {
+            reading.step_back(&path).expect("step back");
+        }
+        let facts = reading.facts();
+        // Each turn has one prompt and one edit, and every fifth turn a reply.
+        assert_eq!((facts.log_total, facts.activity_total), (480, 400));
+        assert_eq!((facts.log.len(), facts.activity.len()), (KEEP, KEEP));
+        assert!(facts.older(List::Log) && facts.older(List::Activity));
+        assert_eq!(facts, forward(&path));
+        let _ = fs::remove_file(path);
+
+        // A transcript that fits in the facts has nothing older.
+        let path = file("small", &transcript(40));
+        let mut reading = Reading::default();
+        reading.catch_up(&path).expect("catch up");
+        while !reading.whole() {
+            reading.step_back(&path).expect("step back");
+        }
+        let facts = reading.facts();
+        assert_eq!(facts.activity_total, 40);
+        assert!(!facts.older(List::Log) && !facts.older(List::Activity));
+        let _ = fs::remove_file(path);
+    }
+
+    /// One line of a transcript.
+    fn line(value: &Value) -> String {
+        format!("{value}\n")
+    }
+
+    fn prompt(text: &str) -> String {
+        line(&json!({
+            "type": "user",
+            "timestamp": "2026-01-01T00:00:00Z",
+            "message": {"content": text},
+        }))
+    }
+
+    /// A reply with `parts`, such as text and tool calls.
+    fn reply(parts: &[Value]) -> String {
+        line(&json!({
+            "type": "assistant",
+            "timestamp": "2026-01-01T00:00:01Z",
+            "message": {"model": "m", "content": parts},
+        }))
+    }
+
+    fn text(text: &str) -> Value {
+        json!({"type": "text", "text": text})
+    }
+
+    fn bash(id: &str, command: &str) -> Value {
+        json!({"type": "tool_use", "id": id, "name": "Bash", "input": {"command": command}})
+    }
+
+    /// What the call `id` gave back.
+    fn output(id: &str, out: &str) -> String {
+        line(&json!({
+            "type": "user",
+            "timestamp": "2026-01-01T00:00:02Z",
+            "message": {"content": [{"type": "tool_result", "tool_use_id": id, "content": out}]},
+        }))
+    }
+
+    /// `count` turns, each of three lines: a prompt, a reply with a call, and
+    /// the call's result.
+    fn turns(count: usize) -> Vec<String> {
+        (0..count)
+            .map(|turn| {
+                [
+                    prompt(&format!("prompt {turn}")),
+                    reply(&[
+                        text(&format!("reply {turn}")),
+                        bash(&format!("c{turn}"), &format!("echo {turn}")),
+                    ]),
+                    output(&format!("c{turn}"), &format!("out {turn}")),
+                ]
+                .concat()
+            })
+            .collect()
+    }
+
+    /// What `list` has of a transcript's facts.
+    fn of(facts: &Facts, list: List) -> Vec<Said> {
+        facts.entries(list).to_vec()
+    }
+
+    #[test]
+    fn a_page_holds_the_entries_before_the_one_asked() {
+        let all = turns(1000);
+        let path = file("older", &all.concat());
+        // The same lines, ending where the page ends, read as the daemon reads
+        // them for the facts.
+        let ends = |turns: usize| forward(&file("prefix", &all[..turns].concat()));
+        let window = forward(&path);
+        for (list, ended) in [(List::Activity, 700), (List::Log, 850)] {
+            let first = of(&window, list)[0].id;
+            let got = page(&path, Way::Older, list, first, 100).expect("a page");
+            assert_eq!(got.entries, of(&ends(ended), list)[200..], "{list:?}");
+            assert!(got.more, "{list:?}");
+        }
+        let got = page(
+            &path,
+            Way::Older,
+            List::Activity,
+            of(&window, List::Activity)[0].id,
+            100,
+        )
+        .expect("a page");
+        // Counted from the newest of 1,000 calls, the newest 300 are held, and
+        // the page is calls 301 to 400.
+        let texts: Vec<_> = got.entries.iter().map(|said| said.text.as_str()).collect();
+        assert_eq!(texts.first(), Some(&"echo 600"));
+        assert_eq!(texts.last(), Some(&"echo 699"));
+        assert!(got.entries.iter().all(|said| said.result.is_some()));
+        let _ = fs::remove_file(path);
+        let _ = fs::remove_file(
+            env::temp_dir().join(format!("rawr-facts-prefix-{}.jsonl", process::id())),
+        );
+    }
+
+    #[test]
+    fn the_first_entries_of_a_session() {
+        let path = file("first-entries", &turns(3).concat());
+        let all = of(&forward(&path), List::Activity);
+        let got = page(&path, Way::Older, List::Activity, all[1].id, 100).expect("a page");
+        assert_eq!(got.entries, all[..1]);
+        assert!(!got.more);
+        let got = page(&path, Way::Older, List::Activity, all[0].id, 100).expect("a page");
+        assert_eq!((got.entries.len(), got.more), (0, false));
+        let _ = fs::remove_file(path);
+    }
+
+    /// A reply with the calls `one` and `two`, then the result of `one`, that
+    /// is `one_out`, after `between`, then the result of `two`.
+    fn two_calls(between: &str, one_out: &str) -> String {
+        [
+            prompt("run both"),
+            reply(&[
+                text("both"),
+                bash("one", "echo one"),
+                bash("two", "echo two"),
+            ]),
+            between.to_owned(),
+            output("one", one_out),
+            output("two", "two out"),
+        ]
+        .concat()
+    }
+
+    #[test]
+    fn a_result_just_past_the_page() {
+        let path = file("past", &two_calls("", "one out"));
+        let both = of(&forward(&path), List::Activity);
+        // The page ends inside the reply that makes both calls, so the result
+        // of the first is on a line after the page's last.
+        let got = page(&path, Way::Older, List::Activity, both[1].id, 100).expect("a page");
+        assert_eq!(got.entries.len(), 1);
+        assert_eq!(got.entries[0].id, both[0].id);
+        assert_eq!(
+            got.entries[0]
+                .result
+                .as_ref()
+                .map(|outcome| outcome.text.as_str()),
+            Some("one out")
+        );
+        assert!(!got.more);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn a_result_far_past_the_page_is_left_out() {
+        let filler = line(&json!({
+            "type": "user",
+            "timestamp": "2026-01-01T00:00:01Z",
+            "message": {"content": [{"type": "text", "text": "x".repeat(usize::try_from(AHEAD).expect("a size"))}]},
+        }));
+        let path = file("far", &two_calls(&filler, "one out"));
+        let both = of(&forward(&path), List::Activity);
+        let got = page(&path, Way::Older, List::Activity, both[1].id, 100).expect("a page");
+        assert_eq!(got.entries.len(), 1);
+        assert_eq!(got.entries[0].result, None);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn a_result_in_a_line_longer_than_the_cap_is_left_out() {
+        let long = "x".repeat(usize::try_from(LINE_MOST).expect("a size") + (1 << 20));
+        let path = file("long", &two_calls("", &long));
+        let both = of(&forward(&path), List::Activity);
+        let got = page(&path, Way::Older, List::Activity, both[1].id, 100).expect("a page");
+        assert_eq!(got.entries.len(), 1);
+        assert_eq!(got.entries[0].result, None);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn a_page_of_a_sparse_list_stops_at_the_cap_and_the_next_goes_on() {
+        // Ten prompts, each followed by a call that gives no entry of the
+        // conversation and a result of 1.5 MiB.
+        let turns: Vec<String> = (0..10)
+            .map(|turn| {
+                [
+                    prompt(&format!("prompt {turn}")),
+                    reply(&[bash(&format!("c{turn}"), "echo")]),
+                    output(&format!("c{turn}"), &"x".repeat(3 << 19)),
+                ]
+                .concat()
+            })
+            .collect();
+        let path = file("sparse", &turns.concat());
+        let last = of(&forward(&path), List::Log)[9].id;
+        let mut at = last;
+        let mut found = Vec::new();
+        let mut pages = 0;
+        loop {
+            let got = page(&path, Way::Older, List::Log, at, 100).expect("a page");
+            pages += 1;
+            // A page reads about 4 MiB past its first entry, and holds the
+            // entries it found, so a long list takes several.
+            assert!(got.entries.len() < 5, "{} entries", got.entries.len());
+            found.splice(0..0, got.entries.iter().map(|said| said.text.clone()));
+            let Some(first) = got.entries.first() else {
+                break;
+            };
+            at = first.id;
+            if !got.more {
+                break;
+            }
+            assert!(pages < 20);
+        }
+        assert!(pages > 2);
+        let expected: Vec<String> = (0..9).map(|turn| format!("prompt {turn}")).collect();
+        assert_eq!(found, expected);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn pages_chain_back_to_the_first_line() {
+        let path = file("chain", &turns(1000).concat());
+        let window = of(&forward(&path), List::Activity);
+        let mut at = window[0].id;
+        let mut texts = Vec::new();
+        let mut pages = 0;
+        loop {
+            let got = page(&path, Way::Older, List::Activity, at, 100).expect("a page");
+            pages += 1;
+            texts.splice(0..0, got.entries.iter().map(|said| said.text.clone()));
+            let Some(first) = got.entries.first() else {
+                break;
+            };
+            at = first.id;
+            if !got.more {
+                break;
+            }
+        }
+        assert_eq!(pages, 7);
+        let expected: Vec<String> = (0..700).map(|turn| format!("echo {turn}")).collect();
+        assert_eq!(texts, expected);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn a_newer_page_reloads_what_follows_an_entry() {
+        let path = file("newer", &turns(1000).concat());
+        let window = of(&forward(&path), List::Activity);
+        let got = page(&path, Way::Newer, List::Activity, window[10].id, 50).expect("a page");
+        assert_eq!(got.entries, window[11..61]);
+        assert!(got.more);
+        let end = page(&path, Way::Newer, List::Activity, window[290].id, 50).expect("a page");
+        assert_eq!(end.entries, window[291..]);
+        assert!(!end.more);
+        let log = of(&forward(&path), List::Log);
+        let got = page(&path, Way::Newer, List::Log, log[10].id, 50).expect("a page");
+        assert_eq!(got.entries, log[11..61]);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn a_page_of_a_transcript_that_is_gone_is_an_error() {
+        let path = env::temp_dir().join("rawr-facts-gone.jsonl");
+        let id = EntryId { line: 0, index: 0 };
+        let error = page(&path, Way::Older, List::Log, id, 100).expect_err("no page");
+        assert_eq!(error.kind(), ErrorKind::NotFound);
+    }
+
+    /// The size of the result of tool call `turn` of the timing transcript: a
+    /// few calls give long results, as a build or a file read does.
+    const fn result_size(turn: usize) -> usize {
+        match turn % 50 {
+            0 => 120_000,
+            1..=5 => 12_000,
+            _ => 1_500,
+        }
+    }
+
+    /// The time at the 95th percentile of `times`.
+    fn p95(times: &mut [Duration]) -> Duration {
+        times.sort();
+        times[times.len() * 95 / 100]
+    }
+
+    /// Round trips of a page of 100 entries of each list, over a socket pair as
+    /// the daemon and a window talk, on an invented transcript of 50 MB, in a
+    /// release build:
+    /// `cargo test --release -- --ignored page_round_trip --nocapture`.
+    #[test]
+    #[ignore = "a timing run, in a release build"]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one run that writes the transcript, serves the pages and times them"
+    )]
+    fn page_round_trip_on_a_transcript_of_fifty_megabytes() {
+        // Turns of a prompt, a reply with a call, and its result, until the
+        // transcript is 50 MB; the offsets of the lines the pages start at.
+        let mut body = String::new();
+        let mut starts = Vec::new();
+        while body.len() < 50 << 20 {
+            let turn = starts.len();
+            let prompt_at = body.len();
+            body.push_str(&prompt(&format!("prompt {turn}: change the tax code")));
+            let reply_at = body.len();
+            body.push_str(&reply(&[
+                text(&format!("reply {turn}: reading the file first")),
+                bash(&format!("c{turn}"), &format!("grep -rn tax src/part{turn}")),
+            ]));
+            let out = "a line of the output of the command\n".repeat(result_size(turn) / 36);
+            body.push_str(&output(&format!("c{turn}"), &out));
+            starts.push((prompt_at, reply_at));
+        }
+        let path = file("timing", &body);
+        let turns = starts.len();
+        drop(body);
+        let (client, server) = UnixStream::pair().expect("a socket pair");
+        let daemon = {
+            let path = path.clone();
+            thread::spawn(move || {
+                let mut requests = BufReader::new(server.try_clone().expect("a clone"));
+                let mut server = server;
+                let mut line = String::new();
+                while requests.read_line(&mut line).is_ok_and(|read| read > 0) {
+                    let ToDaemon::Older {
+                        list,
+                        before,
+                        count,
+                        ..
+                    } = serde_json::from_str(&line).expect("a request")
+                    else {
+                        panic!("the request is an older");
+                    };
+                    let got = page(&path, Way::Older, list, before, count).expect("a page");
+                    let mut answer = serde_json::to_vec(&FromDaemon::Page {
+                        path: path.clone(),
+                        list,
+                        way: Way::Older,
+                        at: before,
+                        entries: got.entries,
+                        more: got.more,
+                        failed: None,
+                    })
+                    .expect("an answer");
+                    answer.push(b'\n');
+                    server.write_all(&answer).expect("write the answer");
+                    line.clear();
+                }
+            })
+        };
+        let mut answers = BufReader::new(client.try_clone().expect("a clone"));
+        let mut client = client;
+        let mut times = Vec::new();
+        let mut line = String::new();
+        // A fixed run of pseudo-random places in the transcript, past the first
+        // pages, for both lists.
+        let mut seed: u64 = 7;
+        for round in 0..400 {
+            seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            let turn = 150 + usize::try_from(seed >> 33).expect("a number") % (turns - 150);
+            let (list, line_at, index) = if round % 2 == 0 {
+                (List::Activity, starts[turn].1, 1)
+            } else {
+                (List::Log, starts[turn].0, 0)
+            };
+            let before = EntryId {
+                line: u64::try_from(line_at).expect("an offset"),
+                index,
+            };
+            let began = Instant::now();
+            let mut request = serde_json::to_vec(&ToDaemon::Older {
+                path: path.clone(),
+                list,
+                before,
+                count: 100,
+            })
+            .expect("a request");
+            request.push(b'\n');
+            client.write_all(&request).expect("send the request");
+            line.clear();
+            answers.read_line(&mut line).expect("read the answer");
+            let FromDaemon::Page { entries, .. } = serde_json::from_str(&line).expect("an answer")
+            else {
+                panic!("the answer is a page");
+            };
+            times.push(began.elapsed());
+            assert_eq!(entries.len(), 100);
+        }
+        drop(client);
+        drop(answers);
+        daemon.join().expect("the daemon thread ends");
+        let size = fs::metadata(&path).expect("the file").len();
+        times.sort();
+        let (median, slowest) = (times[times.len() / 2], times[times.len() - 1]);
+        let p95 = p95(&mut times);
+        eprintln!(
+            "{turns} turns, {} MiB; 400 pages of 100 entries: median {median:?}, p95 {p95:?}, max {slowest:?}",
+            size >> 20,
+        );
+        let _ = fs::remove_file(path);
+        assert!(p95 < Duration::from_millis(20), "p95 {p95:?}");
     }
 
     #[test]

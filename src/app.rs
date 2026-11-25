@@ -8,6 +8,7 @@
 
 pub(crate) mod facts;
 pub(crate) mod feed;
+pub(crate) mod history;
 mod layouts;
 mod markup;
 mod pacing;
@@ -34,7 +35,8 @@ use report::{Report, Reporter, State};
 use state::{Action, App, Focus, Link};
 use terminal::{Pointer, Screen};
 
-use crate::app::facts::Facts;
+use crate::app::facts::Way;
+use crate::app::history::{Ask, History, PAGE};
 use crate::catalog;
 use crate::daemon::link::{self, Incoming};
 use crate::daemon::{FromDaemon, Reach, ToDaemon};
@@ -102,8 +104,11 @@ pub(crate) fn run(view: Option<u64>, mode: &Mode) -> Result<Option<Agent>> {
     let mut panes_in = false;
     // The newest search this window sent; hits for an older one are dropped.
     let mut generation: u64 = 0;
-    let mut facts: HashMap<PathBuf, Facts> = HashMap::new();
+    let mut histories: HashMap<PathBuf, History> = HashMap::new();
     let mut asked: Option<PathBuf> = None;
+    // The transcript shown last frame, whose held entries are the only ones
+    // kept.
+    let mut shown_path: Option<PathBuf> = None;
     let title = match mode {
         Mode::Full => None,
         Mode::StandIn { title, .. } => Some(title.as_str()),
@@ -131,6 +136,12 @@ pub(crate) fn run(view: Option<u64>, mode: &Mode) -> Result<Option<Agent>> {
         }
         let agent = app.current().cloned();
         if let Some(agent) = &agent
+            && shown_path.as_ref() != Some(&agent.transcript)
+        {
+            history::keep_only(&mut histories, &agent.transcript);
+            shown_path = Some(agent.transcript.clone());
+        }
+        if let Some(agent) = &agent
             && asked.as_ref() != Some(&agent.transcript)
         {
             asked = Some(agent.transcript.clone());
@@ -148,14 +159,37 @@ pub(crate) fn run(view: Option<u64>, mode: &Mode) -> Result<Option<Agent>> {
             // its turns never holds it still.
             app.frame = spin_at(started, Instant::now());
             drawn_spin = app.frame;
+            app.ahead = app.prefetch.lines(Instant::now());
             let known = agent
                 .as_ref()
-                .and_then(|agent| facts.get(&agent.transcript));
+                .and_then(|agent| histories.get(&agent.transcript));
             let shown = agent.as_ref().map(|agent| (agent, known));
             screen
                 .draw(|frame| hits = view::draw(frame, &mut app, shown))
                 .context("draw the app")?;
             app.settle(&hits.tops, hits.anchor);
+            // Entries held past the view toward what is not held, no more than
+            // the lead, are asked for before the view reaches them.
+            if let (Some(agent), Some(reach)) = (&agent, hits.reach)
+                && let Some(history) = histories.get_mut(&agent.transcript)
+                && let Some(ask) = history.settle(reach, app.ahead)
+            {
+                let path = agent.transcript.clone();
+                daemon.send(match ask.way {
+                    Way::Older => ToDaemon::Older {
+                        path,
+                        list: ask.list,
+                        before: ask.at,
+                        count: ask.count,
+                    },
+                    Way::Newer => ToDaemon::Newer {
+                        path,
+                        list: ask.list,
+                        after: ask.at,
+                        count: ask.count,
+                    },
+                });
+            }
             app.cols = hits.width;
             // The window this one replaces stays on screen until this one has
             // drawn the panes; then the daemon swaps them.
@@ -215,6 +249,9 @@ pub(crate) fn run(view: Option<u64>, mode: &Mode) -> Result<Option<Agent>> {
                         // What this window asked before the link went.
                         asked = None;
                         panes_in = false;
+                        for history in histories.values_mut() {
+                            history.lost();
+                        }
                         if let Some(carry) = carry {
                             replacing = true;
                             app.restore(carry);
@@ -247,10 +284,33 @@ pub(crate) fn run(view: Option<u64>, mode: &Mode) -> Result<Option<Agent>> {
                                 };
                             }
                             FromDaemon::Facts { path, facts: read } => {
-                                if let Some(before) = facts.get(&path) {
-                                    app.layouts.refresh(&path, before, &read);
+                                let stale = histories.entry(path.clone()).or_default().merge(read);
+                                app.layouts.forget(&path, &stale);
+                            }
+                            FromDaemon::Page {
+                                path,
+                                list,
+                                way,
+                                at,
+                                entries,
+                                more,
+                                failed,
+                            } => {
+                                if let Some(history) = histories.get_mut(&path) {
+                                    let ask = Ask {
+                                        way,
+                                        list,
+                                        at,
+                                        count: PAGE,
+                                    };
+                                    if let Some(reason) = failed {
+                                        history.fail(ask);
+                                        app.notice = Some(reason);
+                                    } else {
+                                        let stale = history.land(ask, entries, more);
+                                        app.layouts.forget(&path, &stale);
+                                    }
                                 }
-                                facts.insert(path, read);
                             }
                             FromDaemon::Hits {
                                 id,
@@ -287,9 +347,10 @@ pub(crate) fn run(view: Option<u64>, mode: &Mode) -> Result<Option<Agent>> {
                 Action::OpenFile(index) | Action::FilterFolder(index) => {
                     let file = app
                         .current()
-                        .and_then(|agent| facts.get(&agent.transcript))
+                        .and_then(|agent| histories.get(&agent.transcript))
                         .and_then(|known| {
                             // Past the changed files come the ones only read.
+                            let known = &known.facts;
                             known
                                 .files
                                 .get(index)

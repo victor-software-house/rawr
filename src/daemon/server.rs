@@ -18,7 +18,7 @@ use anyhow::{Context, Result, bail};
 use rustix::process::setsid;
 
 use super::{Build, FromDaemon, Here, Reach, ToDaemon, actions, folder, socket};
-use crate::app::facts::{self, Reading};
+use crate::app::facts::{self, EntryId, List, Reading, Way};
 use crate::app::feed::{self, Pane, Update};
 use crate::app::state::Carry;
 use crate::catalog::{self, Found};
@@ -283,6 +283,7 @@ fn serve(hub: &Arc<Hub>, stream: UnixStream, socket: &Path) {
             read_facts(hub, send, &asked, job);
         })
     };
+    let pages = pager(send.clone());
     let generation = Arc::new(AtomicU64::new(0));
     let searches = {
         let generation = Arc::clone(&generation);
@@ -300,6 +301,34 @@ fn serve(hub: &Arc<Hub>, stream: UnixStream, socket: &Path) {
             ToDaemon::Facts { path } => {
                 let id = asked.fetch_add(1, Ordering::AcqRel) + 1;
                 let _ = facts.send((id, path));
+            }
+            ToDaemon::Older {
+                path,
+                list,
+                before,
+                count,
+            } => {
+                let _ = pages.send(Job {
+                    path,
+                    way: Way::Older,
+                    list,
+                    at: before,
+                    count,
+                });
+            }
+            ToDaemon::Newer {
+                path,
+                list,
+                after,
+                count,
+            } => {
+                let _ = pages.send(Job {
+                    path,
+                    way: Way::Newer,
+                    list,
+                    at: after,
+                    count,
+                });
             }
             ToDaemon::Search { id, query, pane } => {
                 generation.store(id, Ordering::Release);
@@ -438,6 +467,54 @@ fn worker<J: Send + 'static>(
     jobs
 }
 
+/// One page a window asked for.
+struct Job {
+    path: PathBuf,
+    way: Way,
+    list: List,
+    at: EntryId,
+    count: usize,
+}
+
+/// A thread that answers every page request, in order. It drops none, unlike
+/// [`worker`], since a window waits for the answer to each. A transcript that
+/// cannot be read is answered with a failure, so no request goes unanswered and
+/// none looks like the start of the session.
+fn pager(send: SyncSender<FromDaemon>) -> mpsc::Sender<Job> {
+    let (jobs, inbox) = mpsc::channel::<Job>();
+    thread::spawn(move || {
+        for job in inbox {
+            let answer = match facts::page(&job.path, job.way, job.list, job.at, job.count) {
+                Ok(page) => FromDaemon::Page {
+                    list: job.list,
+                    way: job.way,
+                    at: job.at,
+                    entries: page.entries,
+                    more: page.more,
+                    failed: None,
+                    path: job.path,
+                },
+                Err(error) => FromDaemon::Page {
+                    failed: Some(format!(
+                        "could not read the transcript {}: {error}",
+                        job.path.display()
+                    )),
+                    list: job.list,
+                    way: job.way,
+                    at: job.at,
+                    entries: Vec::new(),
+                    more: true,
+                    path: job.path,
+                },
+            };
+            if send.send(answer).is_err() {
+                break;
+            }
+        }
+    });
+    jobs
+}
+
 /// Reads the transcript at `path` from its newest line back, sending the
 /// facts after the first part and then every [`SEND_EVERY`], and stops as
 /// soon as the window asks for another transcript. What it read stays, so
@@ -565,5 +642,46 @@ fn search(
         {
             return;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::env;
+
+    use super::*;
+
+    #[test]
+    fn a_transcript_that_cannot_be_read_is_answered_with_a_failure() {
+        let (send, receive) = mpsc::sync_channel(4);
+        let jobs = pager(send);
+        let path = env::temp_dir().join(format!("rawr-pager-gone-{}.jsonl", process::id()));
+        jobs.send(Job {
+            path,
+            way: Way::Older,
+            list: List::Activity,
+            at: EntryId { line: 0, index: 0 },
+            count: 100,
+        })
+        .expect("the pager takes the job");
+        let FromDaemon::Page {
+            way,
+            at,
+            entries,
+            failed,
+            ..
+        } = receive.recv().expect("the pager answers")
+        else {
+            panic!("the answer is a page");
+        };
+        // The answer names the request it is for.
+        assert_eq!((way, at), (Way::Older, EntryId { line: 0, index: 0 }));
+        assert_eq!(entries.len(), 0);
+        let reason = failed.clone().unwrap_or_default();
+        assert!(reason.contains("No such file"), "{reason}");
+        assert!(
+            failed.is_some_and(|reason| reason.contains("could not read the transcript")),
+            "a failure names its reason"
+        );
     }
 }

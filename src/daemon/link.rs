@@ -77,6 +77,10 @@ fn keep(
                 wait = BACKOFF.0;
                 // A reconnect asks for the same view.
                 view = Some(id);
+                // Requests queued while the link was down are stale. They go
+                // before the window hears of the connection, so a request the
+                // window sends because of it is not among them.
+                drain(outbox);
                 if !deliver(Incoming::Connected { carry }) {
                     return;
                 }
@@ -95,6 +99,12 @@ fn keep(
     }
 }
 
+/// Drops the requests waiting in `outbox`.
+fn drain(outbox: &Mutex<Receiver<ToDaemon>>) {
+    let held = outbox.lock().unwrap_or_else(PoisonError::into_inner);
+    while held.try_recv().is_ok() {}
+}
+
 /// Moves messages both ways until the connection ends; `None` when the
 /// window is gone.
 fn pump(
@@ -105,11 +115,6 @@ fn pump(
     let Ok(mut writer) = stream.try_clone() else {
         return Some("copy the connection".to_owned());
     };
-    // Requests queued while the link was down are stale.
-    {
-        let held = outbox.lock().unwrap_or_else(PoisonError::into_inner);
-        while held.try_recv().is_ok() {}
-    }
     let (done, ended) = mpsc::channel::<()>();
     thread::scope(|scope| {
         scope.spawn(move || {
@@ -252,6 +257,7 @@ fn hello(mut stream: UnixStream, build: &Build, view: Option<u64>) -> Result<Hel
         | FromDaemon::Panes { .. }
         | FromDaemon::Link { .. }
         | FromDaemon::Facts { .. }
+        | FromDaemon::Page { .. }
         | FromDaemon::Hits { .. } => bail!("the rawr daemon did not answer the hello"),
     }
 }

@@ -10,12 +10,23 @@ It SHALL read them from the transcript on disk and keep none of them.
 #### Scenario: A page of older activity
 
 - **WHEN** a session has 1,000 tool calls and a window that holds the newest 300 asks `older` before the oldest of them, with a count of 100
-- **THEN** the daemon answers with calls 601 to 700 counted from the newest, oldest first, and that older ones remain
+- **THEN** the daemon answers with calls 301 to 400 counted from the newest, oldest first, and that older ones remain
 
 #### Scenario: The first entries of a session
 
 - **WHEN** a window asks `older` before the second tool call of a session, with a count of 100
 - **THEN** the daemon answers with the first call and that no older ones remain
+
+### Requirement: A page that cannot be read
+
+The daemon SHALL answer `older` or `newer` for a transcript it cannot read with a failure that names the reason, never with an empty page.
+The window SHALL show the reason as a notice and keep the list open, and SHALL ask again only when the view moves.
+
+#### Scenario: An unreadable transcript
+
+- **WHEN** the transcript is gone when a window asks for a page
+- **THEN** the daemon answers with a failure and its reason, and the window shows it
+- **AND** the list does not end, and the window asks again only after the view moves
 
 ### Requirement: Results across a page's edge
 
@@ -83,10 +94,24 @@ The scrollbar SHALL count entries not held at the average height of those laid o
 
 ### Requirement: The filter covers held entries
 
-The `/` filter SHALL show the matching entries among those held, and pages SHALL keep loading as the view nears the oldest match held.
+The `/` filter SHALL show the matching entries among those held.
+Pages SHALL keep loading as the view nears the oldest match held, and while no match is held, until the list holds 3,000 entries.
+Then the tab SHALL end with one dim line that says older entries are not searched and that `ctrl+f` searches the whole session.
 
 #### Scenario: Filtering a partly loaded list
 
 - **WHEN** the reader filters the Activity tab for `cargo` while 300 of 2,400 calls are held
 - **THEN** the tab shows the matching calls among the 300
 - **AND** older matching calls appear as the reader scrolls down
+
+#### Scenario: No match held
+
+- **WHEN** the reader filters for a word that none of the 300 held calls of 5,000 contains
+- **THEN** pages load until 3,000 calls are held, or a match comes
+- **AND** if none comes, the tab reads that nothing matches, and ends with the dim line
+
+#### Scenario: A filter at the bound
+
+- **WHEN** every match is among the newest calls, and 3,000 calls are held
+- **THEN** the window asks for no more pages, and holds no more than 3,000
+- **AND** the tab ends with the dim line
