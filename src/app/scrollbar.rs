@@ -49,15 +49,29 @@ impl Geometry {
         self.total > self.visible && self.visible > 0
     }
 
-    /// The thumb's first row in the track and its size.
+    /// Whether the track has the rows to draw a thumb in: one row is the
+    /// thumb's own size, and leaves it nowhere to stand.
+    const fn has_room(&self) -> bool {
+        self.shown() && self.visible > 1
+    }
+
+    /// The thumb's size, once the track has room for one.
+    fn size(&self) -> u64 {
+        let (visible, total) = (u64::from(self.visible), u64::from(self.total));
+        // Integer rounding of a share of the track, halves up.
+        ((2 * visible * visible + total) / (2 * total)).clamp(1, visible.saturating_sub(1).max(1))
+    }
+
+    /// The thumb's first row in the track and its size, or `(0, 0)` for none:
+    /// a track of one row has no thumb, and a track with one row of room has
+    /// none while the view is between its ends, since the thumb there would
+    /// touch an end.
     pub(crate) fn thumb(&self) -> (u32, u32) {
-        if !self.shown() {
+        if !self.has_room() {
             return (0, 0);
         }
         let (visible, total) = (u64::from(self.visible), u64::from(self.total));
-        // Integer rounding of a share of the track, halves up.
-        let size = ((2 * visible * visible + total) / (2 * total))
-            .clamp(1, visible.saturating_sub(1).max(1));
+        let size = self.size();
         let room = visible - size;
         let scrollable = total - visible;
         let offset = u64::from(self.offset);
@@ -66,13 +80,11 @@ impl Geometry {
         } else if offset >= scrollable {
             room
         } else {
-            let top = (2 * offset * room + scrollable) / (2 * scrollable);
             // Only the ends of the view touch the ends of the track.
             if room < 2 {
-                top
-            } else {
-                top.clamp(1, room - 1)
+                return (0, 0);
             }
+            ((2 * offset * room + scrollable) / (2 * scrollable)).clamp(1, room - 1)
         };
         (
             u32::try_from(top).unwrap_or(u32::MAX),
@@ -83,11 +95,10 @@ impl Geometry {
     /// The first line in view for a thumb whose first row is `top`, which may
     /// lie outside the track: the inverse of [`Geometry::thumb`].
     pub(crate) fn offset_for_top(&self, top: i64) -> u32 {
-        if !self.shown() {
+        if !self.has_room() {
             return 0;
         }
-        let (_, size) = self.thumb();
-        let room = i64::from(self.visible - size);
+        let room = i64::from(self.visible) - i64::try_from(self.size()).unwrap_or(0);
         let scrollable = i64::from(self.total - self.visible);
         let line = |lines: i64| u32::try_from(lines).unwrap_or(u32::MAX);
         if top <= 0 || room == 0 {
@@ -278,6 +289,32 @@ mod tests {
                 "offset_for_top({top})"
             );
         }
+    }
+
+    #[test]
+    fn a_track_of_one_row_has_no_thumb() {
+        let geometry = Geometry::new(3, 1, 100);
+        assert!(geometry.shown());
+        assert_eq!(geometry.thumb(), (0, 0));
+        assert_eq!(geometry.offset_for_top(1), 0);
+    }
+
+    #[test]
+    fn a_view_between_the_ends_has_no_thumb_where_one_row_of_room_would_put_it_at_an_end() {
+        // 3 rows in view of 6 lines: the thumb takes 2 rows, so there is 1 row
+        // of room, which are the two ends.
+        let thumb = |offset| {
+            Geometry {
+                offset,
+                visible: 3,
+                total: 6,
+            }
+            .thumb()
+        };
+        assert_eq!(thumb(0), (0, 2));
+        assert_eq!(thumb(1), (0, 0));
+        assert_eq!(thumb(2), (0, 0));
+        assert_eq!(thumb(3), (1, 2));
     }
 
     #[test]

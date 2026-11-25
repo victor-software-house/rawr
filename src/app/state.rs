@@ -1705,8 +1705,12 @@ impl App {
         let Some(track) = self.track(list) else {
             return;
         };
-        self.fades[slot(list)].touch(self.now);
         let thumb = track.geometry.thumb();
+        // A track with no thumb has nothing to press.
+        if thumb.1 == 0 {
+            return;
+        }
+        self.fades[slot(list)].touch(self.now);
         match scrollbar::press(thumb, u32::from(row.saturating_sub(track.area.y))) {
             Press::Thumb { grab } => {
                 self.dragging = Some(Drag::Thumb(Held {
@@ -2560,5 +2564,20 @@ mod tests {
                 ask: 1,
             })
         );
+    }
+    #[test]
+    fn a_press_on_a_track_with_no_thumb_does_nothing() {
+        let mut app = App::new(None);
+        // A track of one row has no thumb.
+        app.settle(
+            &[(Focus::Panes, 0)],
+            None,
+            &[track(Focus::Panes, 1, (0, 100))],
+        );
+        app.on_mouse(pointer(MouseEventKind::Down(LEFT), 4), on_bar(Focus::Panes));
+        assert_eq!(app.held_thumb(Focus::Panes), None);
+        assert_eq!(app.scroll_of(Focus::Panes).top, 0);
+        assert_eq!(app.take_cleared(), []);
+        assert_eq!(app.bar_shade(Focus::Panes, Instant::now()), Shade::Hidden);
     }
 }
