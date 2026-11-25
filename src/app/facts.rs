@@ -72,7 +72,28 @@ pub(crate) enum List {
     Activity,
 }
 
+impl List {
+    /// Both lists, in the order a window keeps them.
+    pub(crate) const BOTH: [Self; 2] = [Self::Log, Self::Activity];
+
+    /// This list's place in an array of both.
+    pub(crate) const fn index(self) -> usize {
+        match self {
+            Self::Log => 0,
+            Self::Activity => 1,
+        }
+    }
+}
+
 impl Facts {
+    /// The entries of `list` the facts keep, to change.
+    pub(crate) const fn entries_mut(&mut self, list: List) -> &mut Vec<Said> {
+        match list {
+            List::Log => &mut self.log,
+            List::Activity => &mut self.activity,
+        }
+    }
+
     /// The entries of `list` the facts keep.
     pub(crate) fn entries(&self, list: List) -> &[Said] {
         match list {
