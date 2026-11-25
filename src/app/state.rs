@@ -3,9 +3,9 @@
 //! state.
 
 use std::collections::{HashMap, HashSet};
-use std::env;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
+use std::{env, mem};
 
 use ratatui::crossterm::event::{
     KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
@@ -362,6 +362,8 @@ pub(crate) struct App {
     stand_in: Option<String>,
     /// The panes, sessions, session and results, in that order.
     scrolls: [Scroll; 4],
+    /// The lists whose scroll was set since [`App::take_cleared`].
+    cleared: [bool; 4],
     /// The width each column takes when it has focus or is drawn out; the
     /// session column takes the rest when it has focus.
     pub(crate) wants: [u16; 3],
@@ -441,6 +443,7 @@ impl App {
             want: None,
             stand_in: None,
             scrolls: [Scroll::default(); 4],
+            cleared: [false; 4],
             wants: [48, 60, 72],
             drawer: None,
             left: None,
@@ -491,7 +494,32 @@ impl App {
                 anchor: None,
             };
         }
-        self.scroll_mut(Focus::Session).anchor = anchor;
+        // Only a frame that drew the session list knows where it stands.
+        if tops.iter().any(|(list, _)| *list == Focus::Session) {
+            self.scroll_mut(Focus::Session).anchor = anchor;
+        }
+    }
+
+    /// Puts `list` back at its top, and drops the wheel reports waiting to
+    /// scroll it.
+    fn reset_scroll(&mut self, list: Focus) {
+        self.put_scroll(list, Scroll::default());
+    }
+
+    /// Sets how far `list` is scrolled to something other than where the
+    /// wheel left it, so the wheel reports waiting for it are stale.
+    fn put_scroll(&mut self, list: Focus, scroll: Scroll) {
+        *self.scroll_mut(list) = scroll;
+        self.cleared[slot(list)] = true;
+    }
+
+    /// The lists whose scroll was set since the last call, other than by the
+    /// wheel.
+    pub(crate) fn take_cleared(&mut self) -> Vec<Focus> {
+        Focus::LISTS
+            .into_iter()
+            .filter(|list| mem::take(&mut self.cleared[slot(*list)]))
+            .collect()
     }
 
     pub(crate) fn selected(&self) -> Option<&Pane> {
@@ -961,7 +989,7 @@ impl App {
             KeyCode::Right | KeyCode::Char('l') if self.focus == Focus::Session => {
                 if self.tab != Tab::Files {
                     self.tab = self.tab.shift(1);
-                    *self.scroll_mut(Focus::Session) = Scroll::default();
+                    self.reset_scroll(Focus::Session);
                 }
                 Action::None
             }
@@ -969,7 +997,7 @@ impl App {
                 if self.focus == Focus::Session && self.tab != Tab::Overview =>
             {
                 self.tab = self.tab.shift(-1);
-                *self.scroll_mut(Focus::Session) = Scroll::default();
+                self.reset_scroll(Focus::Session);
                 Action::None
             }
             KeyCode::Char('2' | '3' | 'l') | KeyCode::Right => {
@@ -982,12 +1010,12 @@ impl App {
             }
             KeyCode::Char(']') if self.focus == Focus::Session => {
                 self.tab = self.tab.shift(1);
-                *self.scroll_mut(Focus::Session) = Scroll::default();
+                self.reset_scroll(Focus::Session);
                 Action::None
             }
             KeyCode::Char('[') if self.focus == Focus::Session => {
                 self.tab = self.tab.shift(-1);
-                *self.scroll_mut(Focus::Session) = Scroll::default();
+                self.reset_scroll(Focus::Session);
                 Action::None
             }
             KeyCode::Down | KeyCode::Char('j') => {
@@ -1089,11 +1117,14 @@ impl App {
             self.session = *first;
         }
         for list in [Focus::Panes, Focus::Sessions, Focus::Session] {
-            *self.scroll_mut(list) = Scroll {
-                top: 0,
-                follow: true,
-                anchor: None,
-            };
+            self.put_scroll(
+                list,
+                Scroll {
+                    top: 0,
+                    follow: true,
+                    anchor: None,
+                },
+            );
         }
     }
 
@@ -1286,7 +1317,8 @@ impl App {
                 }
                 self.pane = index;
                 self.session = self.first_session();
-                *self.scroll_mut(Focus::Sessions) = Scroll::default();
+                self.reset_scroll(Focus::Sessions);
+                self.reset_scroll(Focus::Session);
                 Action::None
             }
             Target::Session(index) => {
@@ -1299,7 +1331,7 @@ impl App {
                     self.focus_here(Focus::Sessions);
                 }
                 self.session = index;
-                *self.scroll_mut(Focus::Session) = Scroll::default();
+                self.reset_scroll(Focus::Session);
                 Action::None
             }
             Target::Result(index) => {
@@ -1326,7 +1358,7 @@ impl App {
             Target::Tab(tab) => {
                 self.focus_here(Focus::Session);
                 self.tab = tab;
-                *self.scroll_mut(Focus::Session) = Scroll::default();
+                self.reset_scroll(Focus::Session);
                 Action::None
             }
             Target::Button(Button::GoTo) => self.go_to(),
@@ -1419,7 +1451,7 @@ impl App {
     pub(crate) fn set_results(&mut self, results: Vec<Hit>) {
         self.results = results;
         self.result = 0;
-        *self.scroll_mut(Focus::Search) = Scroll::default();
+        self.reset_scroll(Focus::Search);
     }
 
     /// Adds the transcript matches a deep search found for the current query.
@@ -1500,15 +1532,15 @@ impl App {
                 if let Some(next) = moved_in(&rows, self.pane, by) {
                     self.pane = next;
                     self.session = self.first_session();
-                    *self.scroll_mut(Focus::Sessions) = Scroll::default();
-                    *self.scroll_mut(Focus::Session) = Scroll::default();
+                    self.reset_scroll(Focus::Sessions);
+                    self.reset_scroll(Focus::Session);
                 }
             }
             Focus::Sessions => {
                 let rows = self.visible_sessions();
                 if let Some(next) = moved_in(&rows, self.session, by) {
                     self.session = next;
-                    *self.scroll_mut(Focus::Session) = Scroll::default();
+                    self.reset_scroll(Focus::Session);
                 }
             }
             Focus::Session => {
@@ -1710,6 +1742,53 @@ mod tests {
         let mut app = App::stand_in(OWN.to_owned());
         app.set_panes(three_panes(own_titles));
         app
+    }
+
+    #[test]
+    fn a_frame_without_the_session_list_leaves_its_anchor() {
+        let mut app = App::new(None);
+        let anchor = Anchor {
+            id: EntryId {
+                line: 100,
+                index: 0,
+            },
+            line: 3,
+        };
+        app.scroll_mut(Focus::Session).anchor = Some(anchor);
+        app.settle(&[(Focus::Panes, 0)], None);
+        assert_eq!(app.scroll_of(Focus::Session).anchor, Some(anchor));
+        app.settle(&[(Focus::Session, 5)], None);
+        assert_eq!(app.scroll_of(Focus::Session).anchor, None);
+    }
+
+    #[test]
+    fn a_click_on_a_pane_puts_the_session_back_at_its_top() {
+        let mut app = App::new(None);
+        app.set_panes(three_panes(&["Fix checkout"]));
+        app.scroll_mut(Focus::Session).anchor = Some(Anchor {
+            id: EntryId {
+                line: 100,
+                index: 0,
+            },
+            line: 3,
+        });
+        app.take_cleared();
+        let click = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 3,
+            row: 3,
+            modifiers: KeyModifiers::NONE,
+        };
+        let under = Under {
+            target: Some(Target::Pane(2)),
+            ..Under::default()
+        };
+        app.on_mouse(click, under);
+        assert_eq!(app.pane, 2);
+        assert_eq!(app.scroll_of(Focus::Session), Scroll::default());
+        // The loop drops the wheel reports waiting for the lists it reset.
+        assert_eq!(app.take_cleared(), [Focus::Sessions, Focus::Session]);
+        assert_eq!(app.take_cleared(), []);
     }
 
     #[test]

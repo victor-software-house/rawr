@@ -2,7 +2,8 @@ use std::mem;
 use std::time::{Duration, Instant};
 
 use super::{
-    BEAT_REPORTS, BEAT_STEP, Clock, FPS, Focus, Pacer, Report, Wake, WheelBeat, WheelQueue, state,
+    BEAT_REPORTS, BEAT_STEP, Clock, FPS, Focus, Pacer, Report, Wait, Wake, WheelBeat, WheelQueue,
+    state,
 };
 
 /// Lines one wheel report moves in these tests.
@@ -137,42 +138,96 @@ fn a_peeked_tick_stays_due_until_it_is_taken() {
     assert_eq!(clock.peek(t0 + us(30_000)), Some(t0 + us(38_000)));
 }
 
-/// Plays `reads` (when each was read, and its lines) through `pacer` as the
-/// loop does: it wakes at the next read when that comes before the clock's
-/// tick or the clock rests, and at the tick otherwise, and the wake takes the
-/// reads at that moment. Returns each frame drawn: when, and the lines it
-/// moved the list.
-fn play(pacer: &mut Pacer, reads: &[(Instant, i32)]) -> Vec<(Instant, i64)> {
-    let mut reads = reads.iter().copied().peekable();
+/// What reaches the loop.
+#[derive(Debug, Clone, Copy)]
+enum Input {
+    /// A wheel report of this many lines.
+    Wheel(i32),
+    /// A key.
+    Key,
+    /// A message from the daemon.
+    Daemon,
+}
+
+/// What else is on screen, as offsets from the start.
+#[derive(Debug, Default, Clone, Copy)]
+struct Scene {
+    /// Focus is on the move until then.
+    moving_until: Duration,
+    /// A pane is at work until then, so the spinner turns.
+    spinner_until: Duration,
+}
+
+/// How often the spinner turns.
+const SPIN: Duration = Duration::from_millis(100);
+
+/// Plays `script` through `pacer` as the loop does, from `t0`: it wakes at the
+/// next input when that comes before the pacer's own wake, and at that wake
+/// otherwise, and an input wake takes the inputs at that moment. Returns each
+/// frame drawn: when, and the lines it moved the list.
+fn play_scene(
+    pacer: &mut Pacer,
+    t0: Instant,
+    script: &[(Instant, Input)],
+    scene: Scene,
+) -> Vec<(Instant, i64)> {
+    let spin_at = |at: Instant| {
+        usize::try_from(at.saturating_duration_since(t0).as_millis() / SPIN.as_millis())
+            .unwrap_or(0)
+    };
+    let mut script = script.iter().copied().peekable();
     let mut frames = Vec::new();
+    let mut now = t0;
+    let mut drawn_spin = usize::MAX;
     for _ in 0..100_000 {
-        let next = reads.peek().map(|read| read.0);
-        let (now, by_read) = match (next, pacer.due(false)) {
-            (Some(at), Some(due)) if at >= due => (due, false),
-            (Some(at), _) => (at, true),
-            (None, Some(due)) => (due, false),
+        let spinner = (now < t0 + scene.spinner_until)
+            .then(|| t0 + SPIN * u32::try_from(spin_at(now) + 1).expect("a small number"));
+        let wait = pacer.wait(now < t0 + scene.moving_until, &[spinner]);
+        let next = script.peek().map(|input| input.0);
+        let (at, by_input) = match (next, wait) {
+            (Some(input), Some(wait)) if input >= wait.at => (wait.at, false),
+            (Some(input), _) => (input, true),
+            (None, Some(wait)) => (wait.at, false),
             (None, None) => return frames,
         };
-        let mut batch = Vec::new();
-        while by_read && let Some((at, rows)) = reads.next_if(|read| read.0 <= now) {
-            batch.push(Report {
-                list: Focus::Session,
-                rows,
-                at,
-            });
+        let mut reports = Vec::new();
+        let (mut urgent, mut dirty) = (false, false);
+        while by_input && let Some((read, input)) = script.next_if(|input| input.0 <= at) {
+            match input {
+                Input::Wheel(rows) => reports.push(Report {
+                    list: Focus::Session,
+                    rows,
+                    at: read,
+                }),
+                Input::Key => urgent = true,
+                Input::Daemon => dirty = true,
+            }
         }
+        let spun = at < t0 + scene.spinner_until && spin_at(at) != drawn_spin;
         let wake = Wake {
-            now,
-            reports: &batch,
-            urgent: false,
-            moving: false,
-            spun: false,
+            now: at,
+            reports: &reports,
+            urgent,
+            dirty: dirty || spun,
+            moving: at < t0 + scene.moving_until,
         };
         if let Some(moves) = pacer.wake(&wake) {
-            frames.push((now, moves[state::slot(Focus::Session)]));
+            frames.push((at, moves[state::slot(Focus::Session)]));
+            drawn_spin = spin_at(at);
         }
+        now = at;
     }
     panic!("the pacer never came to rest");
+}
+
+/// Plays wheel `reads` (when each was read, and its lines) through `pacer`.
+fn play(pacer: &mut Pacer, reads: &[(Instant, i32)]) -> Vec<(Instant, i64)> {
+    let t0 = reads.first().map_or_else(Instant::now, |read| read.0);
+    let script: Vec<_> = reads
+        .iter()
+        .map(|&(at, rows)| (at, Input::Wheel(rows)))
+        .collect();
+    play_scene(pacer, t0, &script, Scene::default())
 }
 
 /// The frames of a gesture, played from a fresh clock, and the pacer at its
@@ -217,7 +272,7 @@ fn a_gesture_draws_evenly_spaced_frames() {
             "{gap:?}"
         );
     }
-    assert_eq!(pacer.due(false), None);
+    assert_eq!(pacer.wait(false, &[None]), None);
 }
 
 /// A batch of 6 reports every 16 ms moves 6 lines on each of the 2 frames
@@ -493,4 +548,162 @@ fn a_wheel_batch_read_in_two_parts_keeps_the_beat_of_its_first_frame() {
             .collect::<Vec<_>>(),
         [us(0), us(8700), us(16700), us(24700)]
     );
+}
+
+/// A held wheel at 4 ms, so a report waits at every tick, as a script, with
+/// §start§ as the time of the first.
+fn stream(t0: Instant) -> Vec<(Instant, Input)> {
+    (0..100)
+        .map(|i| (t0 + Duration::from_millis(4) * i, Input::Wheel(LINES)))
+        .collect()
+}
+
+/// A change from the daemon while a list scrolls draws on the clock's next
+/// tick, which draws anyway: no frame is added or moved, and no report is
+/// lost. With the clock at rest its tick is due, so it draws at once, and so
+/// does a key.
+#[test]
+fn a_daemon_change_mid_gesture_adds_no_frame() {
+    let t0 = Instant::now();
+    let ms = Duration::from_millis;
+    let baseline = play_scene(&mut Pacer::new(t0), t0, &stream(t0), Scene::default());
+    let mut script = stream(t0);
+    script.extend((1..8).map(|k| (t0 + ms(50) * k + ms(3), Input::Daemon)));
+    script.sort_by_key(|input| input.0);
+    let changed = play_scene(&mut Pacer::new(t0), t0, &script, Scene::default());
+    assert_eq!(changed, baseline);
+    assert_eq!(
+        baseline.iter().map(|frame| frame.1).sum::<i64>(),
+        100 * i64::from(LINES)
+    );
+    // Once the list has stopped, a daemon change and a key each draw at once.
+    let later = t0 + ms(1000);
+    let at_rest = [(later, Input::Daemon), (later + ms(50), Input::Key)];
+    let frames = play_scene(&mut Pacer::new(t0), t0, &at_rest, Scene::default());
+    assert_eq!(frames, [(later, 0), (later + ms(50), 0)]);
+}
+
+/// A key draws at once, outside the clock, and the next tick comes a period
+/// after it, so frames keep an even spacing. No report is lost.
+#[test]
+fn a_key_mid_gesture_draws_at_once_and_moves_the_beat() {
+    let t0 = Instant::now();
+    let ms = Duration::from_millis;
+    let mut script = stream(t0);
+    let key = t0 + ms(203);
+    script.push((key, Input::Key));
+    script.sort_by_key(|input| input.0);
+    let frames = play_scene(&mut Pacer::new(t0), t0, &script, Scene::default());
+    let at = frames
+        .iter()
+        .position(|frame| frame.0 == key)
+        .expect("the key drew a frame");
+    // The next frame comes within a period of the key, and no sooner than it.
+    assert!(frames[at + 1].0 > key && frames[at + 1].0 <= key + ms(8));
+    assert_eq!(
+        frames.iter().map(|frame| frame.1).sum::<i64>(),
+        100 * i64::from(LINES)
+    );
+}
+
+/// Focus on the move draws every 16 ms, and once more when it has stopped, so
+/// the last frame shows where it came to rest.
+#[test]
+fn the_last_frame_of_a_move_draws() {
+    let t0 = Instant::now();
+    let ms = Duration::from_millis;
+    let scene = Scene {
+        moving_until: ms(50),
+        ..Scene::default()
+    };
+    let frames = play_scene(&mut Pacer::new(t0), t0, &[], scene);
+    assert_eq!(
+        frames,
+        [
+            (t0 + ms(16), 0),
+            (t0 + ms(32), 0),
+            (t0 + ms(48), 0),
+            (t0 + ms(64), 0)
+        ]
+    );
+}
+
+/// A spinner draws each turn and wakes the loop for nothing else.
+#[test]
+fn a_spinner_draws_each_turn_and_nothing_between() {
+    let t0 = Instant::now();
+    let ms = Duration::from_millis;
+    let scene = Scene {
+        spinner_until: ms(450),
+        ..Scene::default()
+    };
+    let frames = play_scene(&mut Pacer::new(t0), t0, &[], scene);
+    assert_eq!(
+        frames.iter().map(|frame| frame.0 - t0).collect::<Vec<_>>(),
+        [ms(100), ms(200), ms(300), ms(400)]
+    );
+}
+
+/// While a list scrolls, a spinner's turn waits for the clock's next tick,
+/// which draws anyway.
+#[test]
+fn a_spinner_turn_while_a_list_scrolls_adds_no_frame() {
+    let t0 = Instant::now();
+    let baseline = play_scene(&mut Pacer::new(t0), t0, &stream(t0), Scene::default());
+    let scene = Scene {
+        spinner_until: Duration::from_secs(1),
+        ..Scene::default()
+    };
+    let spun = play_scene(&mut Pacer::new(t0), t0, &stream(t0), scene);
+    assert_eq!(spun[..baseline.len()], baseline);
+}
+
+/// Only a frame the wheel moves spins to its tick. Any other sleeps to its
+/// time, and a list at rest never wakes the loop.
+#[test]
+fn only_a_frame_the_wheel_moves_spins() {
+    let t0 = Instant::now();
+    let ms = Duration::from_millis;
+    let mut pacer = Pacer::new(t0);
+    assert_eq!(pacer.wait(false, &[None]), None);
+    assert_eq!(
+        pacer.wait(true, &[None]),
+        Some(Wait {
+            at: t0 + ms(16),
+            spin: false
+        })
+    );
+    let report = Report {
+        list: Focus::Session,
+        rows: LINES,
+        at: t0 + ms(1),
+    };
+    let wake = Wake {
+        now: t0 + ms(1),
+        reports: &[report],
+        urgent: false,
+        dirty: false,
+        moving: false,
+    };
+    pacer.wake(&wake);
+    let next = pacer.clock.next();
+    assert_eq!(pacer.wait(false, &[None]), None);
+    pacer.queues[state::slot(Focus::Session)].push(LINES, t0 + ms(2));
+    assert_eq!(
+        pacer.wait(false, &[Some(next + ms(5))]),
+        Some(Wait {
+            at: next,
+            spin: true
+        })
+    );
+    assert_eq!(
+        pacer.wait(false, &[Some(t0 + ms(2))]),
+        Some(Wait {
+            at: t0 + ms(2),
+            spin: false
+        })
+    );
+    // A list whose scroll was set another way has no report left to move it.
+    pacer.clear(Focus::Session);
+    assert_eq!(pacer.wait(false, &[None]), None);
 }
