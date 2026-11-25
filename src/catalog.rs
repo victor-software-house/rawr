@@ -240,11 +240,20 @@ const SNIPPET_CHARS: usize = 160;
 /// occurs, on one line and safe to draw.
 pub(crate) fn around(text: &str, term: &str) -> String {
     let flat = sanitize(&text.split_whitespace().collect::<Vec<_>>().join(" "));
-    let lower = flat.to_lowercase();
+    // Lowercasing can lengthen a character, so `starts` maps each byte of
+    // `lower` back to the character of `flat` it came from.
+    let mut lower = String::new();
+    let mut starts = Vec::new();
+    for c in flat.chars() {
+        starts.push(lower.len());
+        lower.extend(c.to_lowercase());
+    }
     let chars: Vec<char> = flat.chars().collect();
-    let at = lower
-        .find(term)
-        .map_or(0, |byte| lower[..byte].chars().count());
+    let at = lower.find(term).map_or(0, |byte| {
+        starts
+            .partition_point(|&start| start <= byte)
+            .saturating_sub(1)
+    });
     let start = at.saturating_sub(SNIPPET_CHARS / 3);
     let end = (start + SNIPPET_CHARS).min(chars.len());
     let mut cut: String = chars[start..end].iter().collect();
@@ -515,5 +524,20 @@ mod tests {
         assert!(cut.chars().count() <= TITLE_CHARS + 1);
         assert_eq!(title("  \n\n"), "Untitled session");
         assert_eq!(title("\u{1b}[2Jhi"), "[2Jhi");
+    }
+
+    #[test]
+    fn a_snippet_stays_around_the_match_after_lowercasing_lengthens_the_text() {
+        let before = "İ".repeat(300);
+        let text = format!("{before} needle {}", "x".repeat(300));
+        assert!(around(&text, "needle").contains("needle"));
+        let text = format!("{before} needle");
+        assert!(around(&text, "needle").contains("needle"));
+    }
+
+    #[test]
+    fn a_snippet_of_plain_text_is_cut_around_the_match() {
+        let text = format!("{} needle {}", "a".repeat(100), "b".repeat(200));
+        assert_eq!(around(&text, "needle"), format!("…{}…", &text[48..208]));
     }
 }
