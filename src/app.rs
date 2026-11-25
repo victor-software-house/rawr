@@ -25,7 +25,7 @@ use anyhow::{Context, Result};
 use ratatui::crossterm::cursor::SetCursorStyle;
 use ratatui::crossterm::event::{self, Event};
 use ratatui::crossterm::execute;
-use report::{Report, Reporter};
+use report::{Report, Reporter, State};
 use state::{Action, App, Link};
 use terminal::{Pointer, Screen};
 
@@ -34,7 +34,6 @@ use crate::catalog;
 use crate::daemon::link::{self, Incoming};
 use crate::daemon::{FromDaemon, Reach, ToDaemon};
 use crate::session::Agent;
-use crate::status::Status;
 
 /// How often the spinner turns while a pane works; the loop waits on
 /// input with no timer otherwise.
@@ -314,32 +313,72 @@ fn open_file(file: &Path, app: &mut App) {
     }
 }
 
-/// What the app's own status record says now.
+/// What the full app's own status record says now: blocked while any pane
+/// needs the user, idle otherwise, so a second waiting pane changes nothing.
 fn own_status(app: &App) -> Report {
-    match &app.link {
-        Link::Connecting => Report::Working("Reading Rex".to_owned()),
-        Link::Offline(_) => Report::Idle("Rex is not running here".to_owned()),
-        Link::Live | Link::Stale(_) => {
-            let count = |status| {
-                app.panes
+    let (state, msg) = if app.panes.iter().any(|pane| pane.status.needs_user()) {
+        (State::Blocked, "An agent needs you")
+    } else {
+        (State::Idle, "Every pane and session")
+    };
+    Report {
+        state,
+        title: "rawr".to_owned(),
+        msg: msg.to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::state::fixtures::pane;
+    use crate::status::Status;
+
+    /// Whether the full app sends a report for each list of panes, shown in
+    /// turn with these statuses.
+    fn sends(lists: &[&[Status]]) -> Vec<bool> {
+        let mut app = App::new(None);
+        let mut reporter = Reporter::default();
+        lists
+            .iter()
+            .map(|statuses| {
+                let panes = statuses
                     .iter()
-                    .filter(|pane| pane.status == status)
-                    .count()
-            };
-            let waiting = app
-                .panes
-                .iter()
-                .filter(|pane| pane.status.needs_user())
-                .count();
-            let working = count(Status::Working);
-            let mut parts = vec![format!("{} panes", app.panes.len())];
-            if waiting > 0 {
-                parts.push(format!("{waiting} need input"));
-            }
-            if working > 0 {
-                parts.push(format!("{working} working"));
-            }
-            Report::Idle(parts.join(" · "))
-        }
+                    .enumerate()
+                    .map(|(place, status)| {
+                        pane(
+                            &format!("block-{place}"),
+                            &format!("work/{place}"),
+                            *status,
+                            &["Fix checkout"],
+                        )
+                    })
+                    .collect();
+                app.set_panes(panes);
+                reporter.next(own_status(&app)).is_some()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_full_app_sends_nothing_while_no_pane_needs_the_user() {
+        let lists: [&[Status]; 3] = [
+            &[Status::Idle],
+            &[Status::Idle, Status::Working],
+            &[Status::Working, Status::Working],
+        ];
+        assert_eq!(sends(&lists), [true, false, false]);
+    }
+
+    #[test]
+    fn the_full_app_sends_only_when_it_flips_between_idle_and_blocked() {
+        let lists: [&[Status]; 5] = [
+            &[Status::NeedsInput],
+            &[Status::NeedsInput, Status::NeedsPermission],
+            &[Status::NeedsInput, Status::NeedsPermission, Status::Working],
+            &[Status::Working, Status::Idle],
+            &[Status::Working, Status::NeedsLogin],
+        ];
+        assert_eq!(sends(&lists), [true, false, false, true, true]);
     }
 }
