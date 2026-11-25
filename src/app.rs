@@ -341,9 +341,8 @@ pub(crate) fn run(view: Option<u64>, mode: &Mode) -> Result<Option<Agent>> {
         }
         // A pointer past the window's edge shuts the drawer once it has
         // stayed away a moment.
-        if app.wake_at().is_some_and(|at| at <= woke) {
-            app.tick();
-            dirty = true;
+        if app.tick() {
+            urgent = true;
         }
         // A list whose scroll was set another way has no wheel report left to
         // move it.
