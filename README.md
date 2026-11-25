@@ -53,7 +53,8 @@ Press `⌥⌘R` (`cmd+alt+r`) to open rawr.
 It shows the full app floating over the window in view, and hides it on the next press.
 Only one copy runs at a time: opening it in another window closes the copy in the first.
 
-Add this to Rex's `init.lua`:
+<details>
+<summary>The action to add to Rex's <code>init.lua</code></summary>
 
 ```lua
 local terminal = "com.superlogical.terminal"
@@ -133,6 +134,8 @@ rex.action{
 
 rex.bind("cmd+alt+r", "rawr_open")
 ```
+
+</details>
 
 After a Rex restart, each pane where Claude ran shows only its own sessions, in a stand-in you can resume from or quit.
 
@@ -279,7 +282,7 @@ rawr completion fish | source    # ~/.config/fish/config.fish
 | Command | Run by | Does |
 | --- | :-: | --- |
 | `rawr` | You | Opens the app |
-| `rawr --startup` | Your shell, at start | Opens the app if the pane has a session to resume; otherwise exits quietly |
+| `rawr --startup` | Your shell, at start | Opens a stand-in with the pane's own sessions if one can be resumed; otherwise exits quietly |
 | `rawr record` | A Claude Code `SessionStart` hook | Adds the session to the pane's index and removes the indexes of closed panes |
 | `rawr daemon` | The first `rawr` window | Watches Rex and reads transcripts and search data for every window |
 | `rawr status` | You | Lists the panes with sessions: newest title, folder, and what Claude is doing. `--format json` prints JSON |
