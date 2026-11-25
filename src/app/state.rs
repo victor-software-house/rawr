@@ -293,6 +293,18 @@ pub(crate) struct Drawer {
     open: bool,
 }
 
+/// Whether the session header is folded to one row, and where its slide began.
+#[derive(Debug, Clone, Copy)]
+struct Fold {
+    folded: bool,
+    at: Instant,
+    /// How far it was folded when the slide began, from 0 to 1.
+    from: f32,
+}
+
+/// How many rows the session header takes before a frame has drawn it.
+const HEADER_ROWS: u16 = 9;
+
 /// A move of focus on screen: the column it left, the widths the columns
 /// had then, and when.
 #[derive(Debug, Clone, Copy)]
@@ -467,6 +479,13 @@ pub(crate) struct App {
     stand_in: Option<String>,
     /// The panes, sessions, session and results, in that order.
     scrolls: [Scroll; 4],
+    /// Whether the session's header is folded, which the session list's place
+    /// decides. It moves by [`App::now`], the clock the loop reads at each
+    /// wake.
+    fold: Fold,
+    /// How many rows the header takes unfolded, as the last frame that drew it
+    /// found.
+    header_rows: u16,
     /// The lists whose scroll was set since [`App::take_cleared`].
     cleared: [bool; 4],
     /// The width each column takes when it has focus or is drawn out; the
@@ -571,6 +590,14 @@ impl App {
             want: None,
             stand_in: None,
             scrolls: [Scroll::default(); 4],
+            fold: Fold {
+                folded: false,
+                at: Instant::now()
+                    .checked_sub(Duration::from_secs(1))
+                    .unwrap_or_else(Instant::now),
+                from: 0.0,
+            },
+            header_rows: HEADER_ROWS,
             cleared: [false; 4],
             wants: [48, 60, 72],
             drawer: None,
@@ -632,6 +659,10 @@ impl App {
                 anchor: None,
                 seek: None,
             };
+        }
+        // The header folds while the session list is off its top.
+        if let Some((_, top)) = tops.iter().find(|(list, _)| *list == Focus::Session) {
+            self.fold_to(*top > 0);
         }
         // Only a frame that drew the session list knows where it stands.
         if tops.iter().any(|(list, _)| *list == Focus::Session) {
@@ -709,6 +740,7 @@ impl App {
         // The place the thumb was going to is in the session left behind.
         if list == Focus::Session {
             self.reaching = None;
+            self.fold_to(false);
         }
         self.put_scroll(list, Scroll::default());
     }
@@ -848,6 +880,45 @@ impl App {
             from,
             at: Instant::now(),
         });
+    }
+
+    /// How long the header takes to fold or unfold.
+    fn header_span(&self) -> Duration {
+        span(self.header_rows.saturating_sub(1))
+    }
+
+    /// How far the session header is folded to one row, from 0 to 1, eased.
+    pub(crate) fn folded(&self) -> f32 {
+        let to = if self.fold.folded { 1.0 } else { 0.0 };
+        let (t, eased) = eased(
+            self.now.saturating_duration_since(self.fold.at),
+            self.header_span(),
+        );
+        if t >= 1.0 {
+            to
+        } else {
+            self.fold.from + (to - self.fold.from) * eased
+        }
+    }
+
+    /// Folds the header, or unfolds it, from where it stands now so a
+    /// reversal never jumps.
+    fn fold_to(&mut self, folded: bool) {
+        if self.fold.folded == folded {
+            return;
+        }
+        self.fold = Fold {
+            folded,
+            at: self.now,
+            from: self.folded(),
+        };
+    }
+
+    /// Notes how many rows the unfolded header took in the last frame.
+    pub(crate) const fn note_header(&mut self, rows: Option<u16>) {
+        if let Some(rows) = rows {
+            self.header_rows = rows;
+        }
     }
 
     /// How wide `column` is when drawn out all the way.
@@ -1108,6 +1179,7 @@ impl App {
             || self
                 .drawer
                 .is_some_and(|drawer| drawer.at.elapsed() < self.drawer_span(drawer.column))
+            || self.now.saturating_duration_since(self.fold.at) < self.header_span()
     }
 
     /// The session `r` resumes: the one shown, or the selected pane's newest

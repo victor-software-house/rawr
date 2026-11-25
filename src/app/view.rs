@@ -49,6 +49,10 @@ pub(crate) struct Hits {
     lists: Vec<(Rect, Focus)>,
     /// The folded columns, which draw out when the pointer comes over them.
     rails: Vec<(Rect, Focus)>,
+    /// The row of the folded session header.
+    folded: Option<Rect>,
+    /// How many rows the session header takes unfolded, when a frame drew it.
+    pub(crate) header: Option<u16>,
     /// Where the pointer keeps the drawer out: as wide as it opens, and a
     /// little past its edge, so a pointer that slips over the edge stays.
     keep: Option<Rect>,
@@ -150,6 +154,7 @@ pub(crate) fn draw(frame: &mut Frame<'_>, app: &mut App, shown: Shown<'_>) -> Hi
     let mut layouts = mem::take(&mut app.layouts);
     let hits = draw_with(frame, app, &mut layouts, shown);
     app.layouts = layouts;
+    app.note_header(hits.header);
     hits
 }
 
@@ -180,6 +185,7 @@ fn draw_with(frame: &mut Frame<'_>, app: &App, layouts: &mut Layouts, shown: Sho
     if app.help {
         hits.targets.clear();
         hits.rails.clear();
+        hits.folded = None;
         hits.bars.clear();
         hits.cursor = None;
         help(frame, app.is_stand_in());
@@ -720,6 +726,20 @@ fn paste(buf: &mut Buffer, from: &Buffer, area: Rect) {
     }
 }
 
+/// The whole number of rows that lies `t` of the way from `from` to `to`.
+fn mix(from: u16, to: u16, t: f32) -> u16 {
+    #[expect(
+        clippy::as_conversions,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "the value is rounded and floored at zero, and lies between two u16 values"
+    )]
+    let rows = (f32::from(from) + (f32::from(to) - f32::from(from)) * t)
+        .round()
+        .max(0.0) as u16;
+    rows
+}
+
 /// Moves the cells of `area` `by` columns, right when positive, and blanks
 /// the columns left behind.
 fn shift(buf: &mut Buffer, area: Rect, by: i32) {
@@ -1002,11 +1022,8 @@ fn session_glyph(app: &App, agent: &Agent, held: bool) -> (&'static str, Style) 
 /// The selected pane and the session it shows: where the pane is and what
 /// its Claude says, its sessions when it has more than one, then the
 /// session's title, the actions, and a tab of its tasks and pull requests,
-/// its prompts, its tool calls, or the files it touched.
-#[expect(
-    clippy::too_many_lines,
-    reason = "draws the pane's header, sessions and tabs in one pass over the area"
-)]
+/// its prompts, its tool calls, or the files it touched. While the session's
+/// list is off its top, the header folds into one row.
 fn pane_view(
     frame: &mut Frame<'_>,
     app: &App,
@@ -1015,15 +1032,41 @@ fn pane_view(
     shown: Shown<'_>,
     hits: &mut Hits,
 ) {
+    // The pane, unless the session shown is a search hit.
+    let pane = app.selected().filter(|_| app.focus != Focus::Search);
+    let fold = shown.map_or(0.0, |_| app.folded());
+    let tabs_at = match shown {
+        Some(shown) if fold > 0.0 => folding(frame, app, area, pane, (shown, fold), hits),
+        Some(_) | None => head(frame, app, area, pane, shown, hits),
+    };
+    let (Some(tabs_at), Some((agent, history))) = (tabs_at, shown) else {
+        return;
+    };
+    tabbed(frame, app, layouts, area, tabs_at, (agent, history), hits);
+}
+
+/// The rows of the header above the tabs: the pane, its status, its
+/// sessions when it has more than one, then the session's title, the actions.
+/// Returns the row the tabs go in, or none when there is nothing more to draw.
+#[expect(
+    clippy::too_many_lines,
+    reason = "draws the pane's header and sessions in one pass over the area"
+)]
+fn head(
+    frame: &mut Frame<'_>,
+    app: &App,
+    area: Rect,
+    pane: Option<&Pane>,
+    shown: Shown<'_>,
+    hits: &mut Hits,
+) -> Option<u16> {
     let inner = pad(area, 1, 0);
     let width = usize::from(inner.width);
     let bottom = inner.bottom();
     let mut y = inner.y;
-    // The pane, unless the session shown is a search hit.
-    let pane = app.selected().filter(|_| app.focus != Focus::Search);
     if let Some(pane) = pane {
         if bottom.saturating_sub(y) < 3 {
-            return;
+            return None;
         }
         let mut place = vec![
             Span::styled(pane.name.clone(), Style::new().add_modifier(Modifier::BOLD)),
@@ -1063,7 +1106,7 @@ fn pane_view(
             y += session_list(frame, app, room, pane, hits) + 1;
         }
     }
-    let Some((agent, history)) = shown else {
+    let Some((agent, _)) = shown else {
         let text = if app.panes.is_empty() {
             empty_text(app)
         } else {
@@ -1074,10 +1117,10 @@ fn pane_view(
             row_at(inner, y),
             Line::styled(text.to_owned(), theme::dim()),
         );
-        return;
+        return None;
     };
     if bottom.saturating_sub(y) < 8 {
-        return;
+        return None;
     }
     put(
         frame,
@@ -1155,6 +1198,92 @@ fn pane_view(
         );
     }
     y += 2;
+    hits.header = Some(y - inner.y);
+    Some(y)
+}
+
+/// The header while it folds or unfolds, `fold` of the way to one row, or
+/// stays folded. Returns the row the tabs go in.
+fn folding(
+    frame: &mut Frame<'_>,
+    app: &App,
+    area: Rect,
+    pane: Option<&Pane>,
+    (shown, fold): ((&Agent, Option<&History>), f32),
+    hits: &mut Hits,
+) -> Option<u16> {
+    let inner = pad(area, 1, 0);
+    if inner.height < 4 {
+        return None;
+    }
+    if fold >= 1.0 {
+        stub(frame, app, area, pane, shown.0, hits);
+        return Some(inner.y + 1);
+    }
+    // Between, the whole header is drawn and cut at the rows the fold has
+    // reached, so its rows slide with its bottom edge.
+    let mut rows = None;
+    hits.within(false, |hits| {
+        let mut tabs_at = None;
+        let cells = scratch(area.right(), area.bottom(), |screen| {
+            tabs_at = head(screen, app, area, pane, Some(shown), hits);
+        });
+        let height = tabs_at.map_or(0, |at| mix(at - inner.y, 1, fold).min(inner.height));
+        rows = tabs_at.map(|_| height);
+        let visible = Rect {
+            y: inner.y,
+            height,
+            ..area
+        };
+        paste(frame.buffer_mut(), &cells, visible);
+        visible
+    });
+    rows.map(|rows| inner.y + rows)
+}
+
+/// The folded header: the pane's status and name, and the session's title.
+fn stub(
+    frame: &mut Frame<'_>,
+    app: &App,
+    area: Rect,
+    pane: Option<&Pane>,
+    agent: &Agent,
+    hits: &mut Hits,
+) {
+    let inner = pad(area, 1, 0);
+    let mut spans = Vec::new();
+    let mut used = 0;
+    if let Some(pane) = pane {
+        let status = pill(pane.status, app.frame);
+        let name = format!("  {}", pane.name);
+        used = status.width() + name.chars().count() + 3;
+        spans.push(status);
+        spans.push(Span::styled(
+            name,
+            Style::new().add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled(" · ", theme::dim()));
+    }
+    spans.push(Span::raw(truncate(
+        &agent.title,
+        usize::from(inner.width).saturating_sub(used),
+    )));
+    put(frame, row_at(inner, inner.y), Line::from(spans));
+    hits.folded = Some(row_at(area, inner.y));
+}
+
+/// The tabs under the header at row `y`, and the tab's list below them.
+fn tabbed(
+    frame: &mut Frame<'_>,
+    app: &App,
+    layouts: &mut Layouts,
+    area: Rect,
+    y: u16,
+    (agent, history): (&Agent, Option<&History>),
+    hits: &mut Hits,
+) {
+    let inner = pad(area, 1, 0);
+    let bottom = inner.bottom();
     tabs(
         frame,
         app,
@@ -4038,11 +4167,17 @@ mod tests {
     #[test]
     fn the_bar_shows_while_the_list_scrolls_and_is_gone_a_second_after() {
         let mut rig = Rig::new(300);
-        let t0 = Instant::now();
-        rig.app.now = t0;
+        let base = Instant::now();
+        let t0 = at(base, 1000);
+        rig.app.now = base;
         rig.draw();
         assert!(rig.glyphs().iter().all(|glyph| glyph == " "));
+        // The list leaves its top and the header folds, a second before the
+        // scroll that the bar's clock starts from.
         rig.scroll(10);
+        rig.draw();
+        rig.app.now = t0;
+        rig.scroll(0);
         let mut seen = Vec::new();
         let mut first_rows: Option<Vec<String>> = None;
         for ms in [0, 799, 800, 899, 999, 1000, 1500] {
@@ -4294,14 +4429,18 @@ mod tests {
         rig.app.now = at(t0, 10);
         rig.draw();
         assert_eq!(thumb(&rig), [0]);
+        // The list is off its top now, so the header folds and the list takes
+        // its rows, which moves the row the thumb glides to.
+        rig.app.now = at(t0, 80);
+        rig.draw();
         let end = usize::try_from(rig.track().geometry.thumb().0).expect("a small number");
         assert!(end > 4, "the thumb has a way to go: {end}");
-        rig.app.now = at(t0, 60);
+        rig.app.now = at(t0, 130);
         rig.draw();
         let half = thumb(&rig)[0];
         assert!(half > 0 && half < end, "{half} of {end}");
-        assert_eq!(rig.app.bars_wake(), Some(at(t0, 76)));
-        rig.app.now = at(t0, 110);
+        assert_eq!(rig.app.bars_wake(), Some(at(t0, 146)));
+        rig.app.now = at(t0, 180);
         rig.draw();
         assert_eq!(thumb(&rig), [end]);
         // The pointer is on the bar, so it is not fading either.
@@ -4645,5 +4784,66 @@ mod tests {
         let (frames, narrowest) = frames_cut_at_the_edge(&mut rig, &open, App::moving);
         assert!(frames > 3, "{frames} frames");
         assert!(narrowest < usize::from(FULL), "narrowest {narrowest}");
+    }
+
+    /// The call each row of `entries` shows.
+    fn called(entries: &[String]) -> Vec<&str> {
+        entries
+            .iter()
+            .filter_map(|row| {
+                row.split_whitespace()
+                    .find(|word| word.starts_with("Read("))
+            })
+            .collect()
+    }
+
+    /// The row the tabs are in, as the last frame drew it.
+    fn header_rows_of(rows: &[String]) -> usize {
+        rows.iter()
+            .position(|row| row.contains("Activity"))
+            .expect("the tabs are drawn")
+    }
+
+    #[test]
+    fn scrolling_the_activity_tab_folds_the_header_and_the_list_gains_eight_rows() {
+        let mut rig = Rig::new(300);
+        let unfolded = rig.entries();
+        let tabs_unfolded = header_rows_of(&rig.draw());
+        rig.scroll(10);
+        rig.draw();
+        // The anchor entry stays on the top row as the header folds.
+        let first = rig.entries()[0].clone();
+        assert!(first.contains("file-289.rs"), "{first}");
+        rig.app.now += Duration::from_millis(30);
+        assert!(rig.entries()[0].contains("file-289.rs"));
+        rig.app.now += Duration::from_secs(1);
+        let folded = rig.entries();
+        assert!(folded[0].contains("file-289.rs"), "{:?}", folded[0]);
+        assert_eq!(folded.len(), unfolded.len() + 8);
+        let rows = rig.draw();
+        assert_eq!(header_rows_of(&rows), 4, "{rows:?}");
+        assert!(tabs_unfolded > 8, "{tabs_unfolded}");
+        // One row holds the status, the pane's name and the session's title.
+        let stub = &rows[3];
+        for part in ["alpha/one", "Fix login"] {
+            assert!(stub.contains(part), "{stub}");
+        }
+    }
+
+    #[test]
+    fn back_at_the_top_the_header_returns_and_the_list_keeps_its_first_entry() {
+        let mut rig = Rig::new(300);
+        let unfolded = rig.entries();
+        rig.scroll(10);
+        rig.draw();
+        rig.app.now += Duration::from_secs(1);
+        assert_eq!(rig.entries().len(), unfolded.len() + 8);
+        rig.scroll(-1000);
+        rig.draw();
+        rig.app.now += Duration::from_secs(1);
+        let back = rig.entries();
+        assert_eq!(called(&back), called(&unfolded));
+        assert!(back[0].contains("file-299.rs"), "{:?}", back[0]);
+        assert!(rig.draw().iter().any(|row| row.contains("Resume")));
     }
 }
