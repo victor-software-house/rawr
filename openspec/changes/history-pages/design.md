@@ -14,6 +14,9 @@
    - A tool call in the page whose result is written after the page's last line still shows its result.
      The daemon also reads forward from the page's end until every call in the page has its result, or 256 KiB.
    - The daemon keeps no page, so its memory stays that of the live facts.
+   - A page stops reading after 4 MiB once it holds an entry, so a list whose entries lie far apart gives a short page and `more`, and the next page goes on.
+     A page with no entry reads on until it finds one.
+     The read for results skips a line longer than 4 MiB.
    - A transcript the daemon cannot read gets a failure with its reason, never an empty page.
      The window shows the reason, keeps the list open, and asks again when the view moves.
    - One page per list is in flight at a time.

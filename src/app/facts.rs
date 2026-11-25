@@ -479,6 +479,14 @@ impl Reading {
 /// page's calls.
 const AHEAD: u64 = 256 << 10;
 
+/// How many bytes a page reads before it stops, once it holds an entry: a list
+/// whose entries lie far apart gives a short page and `more`, and the next page
+/// goes on from it. A page with no entry reads on until it finds one.
+const PAGE_BYTES: u64 = 4 << 20;
+
+/// The longest line read for the results of a page's calls.
+const LINE_MOST: u64 = 4 << 20;
+
 /// Which way a page reads from the entry it starts at.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -550,7 +558,12 @@ fn older(
         started: true,
         stretch: here,
     };
-    while reading.back > 0 && list_of(&mut reading.stretch, list).len() < count {
+    loop {
+        let found = list_of(&mut reading.stretch, list).len();
+        let read = before.line - reading.back;
+        if reading.back == 0 || found >= count || (found > 0 && read >= PAGE_BYTES) {
+            break;
+        }
         reading.step_back(path)?;
     }
     let total = reading.stretch.facts.total(list);
@@ -577,7 +590,7 @@ fn newer(file: &mut fs::File, len: u64, list: List, after: EntryId, count: usize
     // after `after`.
     let mut end = at;
     let mut found = 0;
-    while found < count {
+    while found < count && (found == 0 || end - after.line < PAGE_BYTES) {
         line.clear();
         let read = lines.read_until(b'\n', &mut line).ok()?;
         if read == 0 || line.last() != Some(&b'\n') {
@@ -628,7 +641,12 @@ fn results_after(file: &mut fs::File, from: u64, len: u64, stretch: &mut Stretch
             .any(|said| said.result.is_none())
     {
         line.clear();
-        let read = lines.read_until(b'\n', &mut line).ok()?;
+        // A line longer than the most is not read whole.
+        let read = lines
+            .by_ref()
+            .take(LINE_MOST)
+            .read_until(b'\n', &mut line)
+            .ok()?;
         if read == 0 || line.last() != Some(&b'\n') {
             break;
         }
@@ -1570,7 +1588,9 @@ mod tests {
 
     use serde_json::{Value, json};
 
-    use super::{AHEAD, EntryId, Facts, KEEP, List, Reading, Said, Way, page, read_forward, tasks};
+    use super::{
+        AHEAD, EntryId, Facts, KEEP, LINE_MOST, List, Reading, Said, Way, page, read_forward, tasks,
+    };
     use crate::daemon::{FromDaemon, ToDaemon};
 
     /// A transcript of `turns` turns: a prompt, then a reply that creates
@@ -1848,9 +1868,9 @@ mod tests {
         let _ = fs::remove_file(path);
     }
 
-    /// A reply with the calls `one` and `two`, then the result of `one` after
-    /// `between`, then the result of `two`.
-    fn two_calls(between: &str) -> String {
+    /// A reply with the calls `one` and `two`, then the result of `one`, that
+    /// is `one_out`, after `between`, then the result of `two`.
+    fn two_calls(between: &str, one_out: &str) -> String {
         [
             prompt("run both"),
             reply(&[
@@ -1859,7 +1879,7 @@ mod tests {
                 bash("two", "echo two"),
             ]),
             between.to_owned(),
-            output("one", "one out"),
+            output("one", one_out),
             output("two", "two out"),
         ]
         .concat()
@@ -1867,7 +1887,7 @@ mod tests {
 
     #[test]
     fn a_result_just_past_the_page() {
-        let path = file("past", &two_calls(""));
+        let path = file("past", &two_calls("", "one out"));
         let both = of(&forward(&path), List::Activity);
         // The page ends inside the reply that makes both calls, so the result
         // of the first is on a line after the page's last.
@@ -1892,11 +1912,63 @@ mod tests {
             "timestamp": "2026-01-01T00:00:01Z",
             "message": {"content": [{"type": "text", "text": "x".repeat(usize::try_from(AHEAD).expect("a size"))}]},
         }));
-        let path = file("far", &two_calls(&filler));
+        let path = file("far", &two_calls(&filler, "one out"));
         let both = of(&forward(&path), List::Activity);
         let got = page(&path, Way::Older, List::Activity, both[1].id, 100).expect("a page");
         assert_eq!(got.entries.len(), 1);
         assert_eq!(got.entries[0].result, None);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn a_result_in_a_line_longer_than_the_cap_is_left_out() {
+        let long = "x".repeat(usize::try_from(LINE_MOST).expect("a size") + (1 << 20));
+        let path = file("long", &two_calls("", &long));
+        let both = of(&forward(&path), List::Activity);
+        let got = page(&path, Way::Older, List::Activity, both[1].id, 100).expect("a page");
+        assert_eq!(got.entries.len(), 1);
+        assert_eq!(got.entries[0].result, None);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn a_page_of_a_sparse_list_stops_at_the_cap_and_the_next_goes_on() {
+        // Ten prompts, each followed by a call that gives no entry of the
+        // conversation and a result of 1.5 MiB.
+        let turns: Vec<String> = (0..10)
+            .map(|turn| {
+                [
+                    prompt(&format!("prompt {turn}")),
+                    reply(&[bash(&format!("c{turn}"), "echo")]),
+                    output(&format!("c{turn}"), &"x".repeat(3 << 19)),
+                ]
+                .concat()
+            })
+            .collect();
+        let path = file("sparse", &turns.concat());
+        let last = of(&forward(&path), List::Log)[9].id;
+        let mut at = last;
+        let mut found = Vec::new();
+        let mut pages = 0;
+        loop {
+            let got = page(&path, Way::Older, List::Log, at, 100).expect("a page");
+            pages += 1;
+            // A page reads about 4 MiB past its first entry, and holds the
+            // entries it found, so a long list takes several.
+            assert!(got.entries.len() < 5, "{} entries", got.entries.len());
+            found.splice(0..0, got.entries.iter().map(|said| said.text.clone()));
+            let Some(first) = got.entries.first() else {
+                break;
+            };
+            at = first.id;
+            if !got.more {
+                break;
+            }
+            assert!(pages < 20);
+        }
+        assert!(pages > 2);
+        let expected: Vec<String> = (0..9).map(|turn| format!("prompt {turn}")).collect();
+        assert_eq!(found, expected);
         let _ = fs::remove_file(path);
     }
 
