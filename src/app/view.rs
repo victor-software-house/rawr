@@ -4835,4 +4835,19 @@ mod tests {
         assert_eq!(rig.app.peeked(), None);
         assert!(!rig.draw().iter().any(|row| row.contains("Resume")));
     }
+
+    #[test]
+    fn a_list_that_fits_only_once_folded_keeps_the_header_folded() {
+        // Twenty-eight calls overflow the unfolded room and fit the folded one.
+        let mut rig = Rig::new(28);
+        rig.scroll(2);
+        rig.draw();
+        for _ in 0..4 {
+            rig.app.now += Duration::from_secs(1);
+            rig.draw();
+        }
+        let rows = rig.draw();
+        assert_eq!(header_rows_of(&rows), 4, "{rows:?}");
+        assert_eq!(rig.entries().len(), 28);
+    }
 }

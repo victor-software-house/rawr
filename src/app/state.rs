@@ -682,9 +682,13 @@ impl App {
                 seek: None,
             };
         }
-        // The header folds while the session list is off its top.
+        // The header folds while the session list is off its top. A folded
+        // header whose list fits the room folding gave it stays folded: that
+        // top is only the room clamping the list, and unfolding would take
+        // the room away again.
         if let Some((_, top)) = tops.iter().find(|(list, _)| *list == Focus::Session) {
-            self.fold_to(*top > 0);
+            let fits = !bars.iter().any(|track| track.list == Focus::Session);
+            self.fold_to(*top > 0 || (self.fold.folded && fits));
         }
         // A header that has slid back has nothing left to draw.
         if self.peek.is_some_and(|peek| !peek.open) && self.peeked().is_none() {
