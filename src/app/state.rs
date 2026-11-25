@@ -30,6 +30,9 @@ pub(crate) enum Focus {
 }
 
 impl Focus {
+    /// The lists a wheel scrolls, in the order of [`slot`].
+    pub(crate) const LISTS: [Self; 4] = [Self::Panes, Self::Sessions, Self::Session, Self::Search];
+
     /// The columns on screen, left to right: the panes, and the selected
     /// pane with its sessions and the one shown.
     pub(crate) const COLUMNS: [Self; 2] = [Self::Panes, Self::Session];
@@ -122,6 +125,9 @@ pub(crate) enum Action {
     },
     /// The search text changed; the loop asks the daemon for matches.
     Search,
+    /// A wheel report over a list, signed in lines: the loop queues it and
+    /// scrolls the list by what each frame takes.
+    Wheel(Focus, i32),
 }
 
 /// A button; each does what its key does.
@@ -353,7 +359,7 @@ pub(crate) struct App {
 }
 
 /// A list's place in [`App::scrolls`].
-const fn slot(list: Focus) -> usize {
+pub(crate) const fn slot(list: Focus) -> usize {
     match list {
         Focus::Panes => 0,
         Focus::Sessions => 1,
@@ -1160,15 +1166,14 @@ impl App {
                 Action::None
             }
             MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => {
-                let by = if mouse.kind == MouseEventKind::ScrollDown {
+                let by: i16 = if mouse.kind == MouseEventKind::ScrollDown {
                     1
                 } else {
                     -1
                 };
-                if let Some(list) = under.list {
-                    self.scroll(list, by);
-                }
-                Action::None
+                under.list.map_or(Action::None, |list| {
+                    Action::Wheel(list, i32::from(by.saturating_mul(WHEEL)))
+                })
             }
             MouseEventKind::Down(MouseButton::Left) => {
                 self.notice = None;
@@ -1340,11 +1345,18 @@ impl App {
         }
     }
 
-    /// Moves `list`, the list under the pointer, by `by` notches, leaving its
-    /// selection where it is. The next frame clamps it to the list.
+    /// Moves `list` by `by` notches of the wheel, leaving its selection where
+    /// it is. The next frame clamps it to the list.
     fn scroll(&mut self, list: Focus, by: i16) {
+        self.scroll_lines(list, i64::from(by.saturating_mul(WHEEL)));
+    }
+
+    /// Moves `list` by `lines`, leaving its selection where it is. The next
+    /// frame clamps it to the list.
+    pub(crate) fn scroll_lines(&mut self, list: Focus, lines: i64) {
         let scroll = self.scroll_mut(list);
-        scroll.top = scroll.top.saturating_add_signed(by.saturating_mul(WHEEL));
+        let lines = i16::try_from(lines).unwrap_or(if lines < 0 { i16::MIN } else { i16::MAX });
+        scroll.top = scroll.top.saturating_add_signed(lines);
         scroll.follow = false;
     }
 
