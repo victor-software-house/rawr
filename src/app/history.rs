@@ -7,8 +7,9 @@
 //! window drops the ones farthest from the view first, so the held entries may
 //! have gaps, each recorded after the newest entry below it.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::mem;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crate::app::facts::{EntryId, Facts, KEEP, List, Said, Way};
@@ -93,6 +94,17 @@ pub(crate) struct Shape<'held> {
     pub(crate) gaps: &'held Gaps,
     /// How many entries older than the oldest held are not held.
     pub(crate) older: usize,
+}
+
+/// Keeps the held entries of the transcript `shown` alone: every other history
+/// shrinks to the facts' newest entries, so the entries held stay bounded
+/// across the sessions a window has shown.
+pub(crate) fn keep_only(histories: &mut HashMap<PathBuf, History>, shown: &Path) {
+    for (path, history) in histories {
+        if path != shown {
+            history.shrink();
+        }
+    }
 }
 
 /// A transcript's facts, with the entries of each list that the window holds.
@@ -203,6 +215,20 @@ impl History {
         let held = &mut self.lists[list.index()];
         if held.flight.take().is_some() {
             held.stalled = held.view.map(|(reach, _)| reach);
+        }
+    }
+
+    /// The window shows another transcript: cuts the held entries back to the
+    /// newest [`KEEP`] of the facts, and forgets the pages, the gaps and the
+    /// view. Coming back to this one loads pages again.
+    fn shrink(&mut self) {
+        for list in List::BOTH {
+            let mine = self.facts.entries_mut(list);
+            mine.drain(..mine.len().saturating_sub(KEEP));
+            self.lists[list.index()] = Held {
+                older: self.facts.older(list),
+                ..Held::default()
+            };
         }
     }
 
@@ -407,10 +433,12 @@ impl Held {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::ops::Range;
+    use std::path::{Path, PathBuf};
     use std::time::{Duration, Instant};
 
-    use super::{Ask, HELD, History, LEAD_MIN, Lead, PAGE, Reach};
+    use super::{Ask, HELD, History, LEAD_MIN, Lead, PAGE, Reach, keep_only};
     use crate::app::facts::{EntryId, Facts, Kind, List, Said, Way};
 
     /// The tool call number `place` of a transcript.
@@ -556,6 +584,40 @@ mod tests {
                 .settle(view(&history, (0, 10), (0, 100)), LEAD_MIN)
                 .is_some()
         );
+    }
+
+    #[test]
+    fn showing_another_session_cuts_the_held_entries_back_to_the_facts() {
+        let all = world(5000);
+        let mut a = History::default();
+        a.merge(facts_of(&all, 4700..5000));
+        while held(&a) < HELD {
+            let ask = a
+                .settle(view(&a, (0, 39), (0, 1000)), LEAD_MIN)
+                .expect("a page is asked for");
+            let (entries, more) = answer(&all, ask);
+            a.land(List::Activity, entries, more);
+        }
+        let other = world(400);
+        let mut b = History::default();
+        b.merge(facts_of(&other, 100..400));
+        let mut histories =
+            HashMap::from([(PathBuf::from("a.jsonl"), a), (PathBuf::from("b.jsonl"), b)]);
+        // The window shows B: A holds the facts' newest 300 and nothing else.
+        keep_only(&mut histories, Path::new("b.jsonl"));
+        let a = &histories[Path::new("a.jsonl")];
+        let newest: Vec<_> = all[4700..].iter().map(|said| said.id).collect();
+        let kept: Vec<_> = a.facts.activity.iter().map(|said| said.id).collect();
+        assert_eq!(kept, newest);
+        assert!(a.shape(List::Activity).gaps.is_empty());
+        assert_eq!(a.shape(List::Activity).older, 4700);
+        assert_eq!(held(&histories[Path::new("b.jsonl")]), 300);
+        // Coming back to A pages again.
+        let a = histories
+            .get_mut(Path::new("a.jsonl"))
+            .expect("history of A");
+        let ask = a.settle(view(a, (0, 39), (0, 1000)), LEAD_MIN);
+        assert_eq!(ask.map(|ask| ask.way), Some(Way::Older));
     }
 
     #[test]
