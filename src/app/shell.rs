@@ -259,6 +259,10 @@ fn commands(command: &str) -> Vec<Vec<Token>> {
                 if chars.peek() == Some(&'<') {
                     // A here-string: its word is input.
                     chars.next();
+                    words.push(Token {
+                        kind: Word::Input,
+                        text: String::new(),
+                    });
                     continue;
                 }
                 if chars.peek() == Some(&'-') {
@@ -378,6 +382,14 @@ mod tests {
         assert_eq!(written("make 2> errors.txt"), ["/work/app/errors.txt"]);
         assert_eq!(written("ls >/dev/null 2>&1"), Vec::<String>::new());
         assert_eq!(written("cmd 2>&1 | rg x"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_here_string_word_is_input_not_a_file() {
+        assert_eq!(
+            writes("tee <<< data out.log", Some("/work")),
+            ["/work/out.log"]
+        );
     }
 
     #[test]
