@@ -18,7 +18,7 @@ use anyhow::{Context, Result, bail};
 use rustix::process::setsid;
 
 use super::{Build, FromDaemon, Here, Reach, ToDaemon, actions, folder, socket};
-use crate::app::facts::{self, Reading};
+use crate::app::facts::{self, EntryId, List, Reading, Way};
 use crate::app::feed::{self, Pane, Update};
 use crate::app::state::Carry;
 use crate::catalog::{self, Found};
@@ -283,6 +283,7 @@ fn serve(hub: &Arc<Hub>, stream: UnixStream, socket: &Path) {
             read_facts(hub, send, &asked, job);
         })
     };
+    let pages = pager(send.clone());
     let generation = Arc::new(AtomicU64::new(0));
     let searches = {
         let generation = Arc::clone(&generation);
@@ -300,6 +301,34 @@ fn serve(hub: &Arc<Hub>, stream: UnixStream, socket: &Path) {
             ToDaemon::Facts { path } => {
                 let id = asked.fetch_add(1, Ordering::AcqRel) + 1;
                 let _ = facts.send((id, path));
+            }
+            ToDaemon::Older {
+                path,
+                list,
+                before,
+                count,
+            } => {
+                let _ = pages.send(Job {
+                    path,
+                    way: Way::Older,
+                    list,
+                    at: before,
+                    count,
+                });
+            }
+            ToDaemon::Newer {
+                path,
+                list,
+                after,
+                count,
+            } => {
+                let _ = pages.send(Job {
+                    path,
+                    way: Way::Newer,
+                    list,
+                    at: after,
+                    count,
+                });
             }
             ToDaemon::Search { id, query, pane } => {
                 generation.store(id, Ordering::Release);
@@ -433,6 +462,43 @@ fn worker<J: Send + 'static>(
                 job = newer;
             }
             work(&hub, &send, job);
+        }
+    });
+    jobs
+}
+
+/// One page a window asked for.
+struct Job {
+    path: PathBuf,
+    way: Way,
+    list: List,
+    at: EntryId,
+    count: usize,
+}
+
+/// A thread that answers every page request, in order. It drops none, unlike
+/// [`worker`], since a window waits for the answer to each. A transcript that
+/// cannot be read is answered with an empty page that ends the list, so no
+/// request goes unanswered.
+fn pager(send: SyncSender<FromDaemon>) -> mpsc::Sender<Job> {
+    let (jobs, inbox) = mpsc::channel::<Job>();
+    thread::spawn(move || {
+        for job in inbox {
+            let page = facts::page(&job.path, job.way, job.list, job.at, job.count).unwrap_or(
+                facts::Page {
+                    entries: Vec::new(),
+                    more: false,
+                },
+            );
+            let answer = FromDaemon::Page {
+                path: job.path,
+                list: job.list,
+                entries: page.entries,
+                more: page.more,
+            };
+            if send.send(answer).is_err() {
+                break;
+            }
         }
     });
     jobs

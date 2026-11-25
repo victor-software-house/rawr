@@ -269,6 +269,7 @@ pub(crate) fn run(view: Option<u64>, mode: &Mode) -> Result<Option<Agent>> {
                             FromDaemon::Exec { agent } => return Ok(Some(agent)),
                             FromDaemon::Notice { text } => app.notice = Some(text),
                             FromDaemon::Hits { .. }
+                            | FromDaemon::Page { .. }
                             | FromDaemon::Welcome { .. }
                             | FromDaemon::Refused { .. } => {}
                         }

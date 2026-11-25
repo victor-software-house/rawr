@@ -18,7 +18,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 pub(crate) use server::run as serve;
 
-use crate::app::facts::Facts;
+use crate::app::facts::{EntryId, Facts, List, Said};
 use crate::app::feed::Pane;
 use crate::app::state::Carry;
 use crate::catalog::Hit;
@@ -54,6 +54,22 @@ pub(crate) enum ToDaemon {
     /// The facts of one transcript.
     Facts {
         path: PathBuf,
+    },
+    /// Up to `count` entries of `list` just before the entry `before`, which
+    /// the daemon answers with `page`.
+    Older {
+        path: PathBuf,
+        list: List,
+        before: EntryId,
+        count: usize,
+    },
+    /// Up to `count` entries of `list` just after the entry `after`, which the
+    /// daemon answers with `page`.
+    Newer {
+        path: PathBuf,
+        list: List,
+        after: EntryId,
+        count: usize,
     },
     /// Every session that matches `query`, those of the pane `pane` first.
     /// A newer search from the same client ends this one.
@@ -100,6 +116,14 @@ pub(crate) enum FromDaemon {
     Facts {
         path: PathBuf,
         facts: Facts,
+    },
+    /// The answer to `older` or `newer`: the entries, oldest first, and whether
+    /// the transcript has more beyond them in the way they were asked for.
+    Page {
+        path: PathBuf,
+        list: List,
+        entries: Vec<Said>,
+        more: bool,
     },
     /// A batch of matches for search `id`, after `read` of `total`
     /// transcripts. The first batch, with `read` 0, replaces the results.

@@ -252,6 +252,7 @@ fn hello(mut stream: UnixStream, build: &Build, view: Option<u64>) -> Result<Hel
         | FromDaemon::Panes { .. }
         | FromDaemon::Link { .. }
         | FromDaemon::Facts { .. }
+        | FromDaemon::Page { .. }
         | FromDaemon::Hits { .. } => bail!("the rawr daemon did not answer the hello"),
     }
 }
