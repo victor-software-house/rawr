@@ -106,7 +106,7 @@ pub(crate) fn run(view: Option<u64>, mode: &Mode) -> Result<Option<Agent>> {
         Mode::Full => None,
         Mode::StandIn { title, .. } => Some(title.as_str()),
     };
-    let mut screen = Screen::enter()?;
+    let mut screen = Screen::enter(title)?;
     execute!(io::stderr(), SetCursorStyle::BlinkingBar).context("set the cursor shape")?;
     let mut reporter = Reporter::default();
     // A stand-in reports once, before its first frame, and never again; the
