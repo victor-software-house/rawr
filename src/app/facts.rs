@@ -71,6 +71,9 @@ pub(crate) struct Task {
 /// Claude Code shows after the entry's mark, on one line.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, Deserialize)]
 pub(crate) struct Said {
+    /// Where the entry sits in its transcript; the same entry has the same id
+    /// however its line is read.
+    pub(crate) id: EntryId,
     pub(crate) at: Option<String>,
     pub(crate) text: String,
     #[serde(default)]
@@ -85,6 +88,34 @@ pub(crate) struct Said {
     /// What a tool call gave back, once its result is read.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) result: Option<Outcome>,
+}
+
+/// Where an entry sits in its transcript: the byte offset of its line, and its
+/// place among the entries that line gives. It is unique within one
+/// transcript, so a view keeps its place by it as the entries around it change.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, Deserialize,
+)]
+pub(crate) struct EntryId {
+    pub(crate) line: u64,
+    pub(crate) index: u16,
+}
+
+/// The ids of the entries one transcript line gives, in order.
+struct Place {
+    line: u64,
+    next: u16,
+}
+
+impl Place {
+    fn take(&mut self) -> EntryId {
+        let id = EntryId {
+            line: self.line,
+            index: self.next,
+        };
+        self.next = self.next.saturating_add(1);
+        id
+    }
 }
 
 /// What a tool call gave back: its text, cut to [`RESULT_CHARS`], and
@@ -354,7 +385,10 @@ impl Reading {
                 size = size.saturating_mul(2);
                 continue;
             };
-            let mut older = read_lines(bytes.get(start..).unwrap_or_default());
+            let mut older = read_lines(
+                bytes.get(start..).unwrap_or_default(),
+                from + u64::try_from(start).ok()?,
+            );
             older.then(mem::take(&mut self.stretch));
             self.stretch = older;
             self.back = from + u64::try_from(start).ok()?;
@@ -599,26 +633,32 @@ fn read_forward(file: &mut fs::File, offset: u64) -> Option<(Stretch, u64)> {
         if read == 0 || line.last() != Some(&b'\n') {
             break;
         }
+        let line_at = at;
         at += u64::try_from(read).ok()?;
         if let Ok(record) = serde_json::from_slice::<Record<'_>>(&line) {
-            add(&mut stretch, record);
+            add(&mut stretch, record, line_at);
         }
     }
     Some((stretch, at))
 }
 
-/// What a run of whole lines gives.
-fn read_lines(bytes: &[u8]) -> Stretch {
+/// What a run of whole lines gives, the first of them starting at byte `base`
+/// of the transcript.
+fn read_lines(bytes: &[u8], base: u64) -> Stretch {
     let mut stretch = Stretch::default();
+    let mut at = base;
     for line in bytes.split(|byte| *byte == b'\n') {
         if let Ok(record) = serde_json::from_slice::<Record<'_>>(line) {
-            add(&mut stretch, record);
+            add(&mut stretch, record, at);
         }
+        at += u64::try_from(line.len()).unwrap_or(0) + 1;
     }
     stretch
 }
 
-fn add(stretch: &mut Stretch, record: Record<'_>) {
+/// Adds what `record`, the transcript line that starts at byte `line`, gives.
+fn add(stretch: &mut Stretch, record: Record<'_>, line: u64) {
+    let mut place = Place { line, next: 0 };
     if record.sidechain {
         return;
     }
@@ -660,7 +700,7 @@ fn add(stretch: &mut Stretch, record: Record<'_>) {
                 let cwd = record.cwd.as_deref();
                 for part in &parts {
                     match part.kind.as_ref() {
-                        "tool_use" => call(stretch, at, cwd, part),
+                        "tool_use" => call(stretch, at, cwd, part, &mut place),
                         // Claude's own words, as its reply rows show them.
                         "text" => {
                             let text = clean(part.text.as_deref().unwrap_or_default());
@@ -668,6 +708,7 @@ fn add(stretch: &mut Stretch, record: Record<'_>) {
                                 keep(
                                     &mut stretch.facts.log,
                                     Said {
+                                        id: place.take(),
                                         at: at.map(str::to_owned),
                                         text,
                                         kind: Kind::Reply,
@@ -700,6 +741,7 @@ fn add(stretch: &mut Stretch, record: Record<'_>) {
                 keep(
                     &mut facts.log,
                     Said {
+                        id: place.take(),
                         at: record.timestamp.as_deref().map(str::to_owned),
                         text,
                         kind,
@@ -1063,7 +1105,13 @@ fn keep(list: &mut Vec<Said>, item: Said) {
 
 /// What one tool call adds: its line in the activity, a task change, a sub-
 /// agent, or a file it changed.
-fn call(stretch: &mut Stretch, at: Option<&str>, cwd: Option<&str>, part: &Part<'_>) {
+fn call(
+    stretch: &mut Stretch,
+    at: Option<&str>,
+    cwd: Option<&str>,
+    part: &Part<'_>,
+    place: &mut Place,
+) {
     let name = part.name.as_deref().unwrap_or("tool");
     let input = part
         .input
@@ -1125,6 +1173,7 @@ fn call(stretch: &mut Stretch, at: Option<&str>, cwd: Option<&str>, part: &Part<
         keep(
             &mut facts.activity,
             Said {
+                id: place.take(),
                 at: at.map(str::to_owned),
                 text: clean(&what),
                 kind: Kind::Tool { name: shown },
@@ -1279,7 +1328,7 @@ mod tests {
     use std::path::PathBuf;
     use std::{env, process};
 
-    use super::{Facts, KEEP, Reading, read_forward, tasks};
+    use super::{EntryId, Facts, KEEP, Reading, read_forward, tasks};
 
     /// A transcript of `turns` turns: a prompt, then a reply that creates
     /// a task, edits a file and, every fifth turn, carries a long text, so
@@ -1357,6 +1406,45 @@ mod tests {
             .filter(|said| said.result.is_some())
             .count();
         assert_eq!(results, KEEP - 1);
+        let _ = fs::remove_file(path);
+    }
+
+    /// Every entry of the log and the activity, by id.
+    fn ids(facts: &Facts) -> Vec<EntryId> {
+        facts
+            .log
+            .iter()
+            .chain(&facts.activity)
+            .map(|said| said.id)
+            .collect()
+    }
+
+    #[test]
+    fn a_line_read_twice_gives_the_same_ids() {
+        let path = file("ids", &transcript(40));
+        let first = forward(&path);
+        // Read again, from the newest line back in parts, and once more
+        // from the first line.
+        let mut reading = Reading::default();
+        reading.catch_up(&path).expect("catch up");
+        while !reading.whole() {
+            reading.step_back(&path).expect("step back");
+        }
+        let again = reading.facts();
+        assert_eq!(ids(&first), ids(&again));
+        assert_eq!(ids(&first), ids(&forward(&path)));
+        let all = ids(&first);
+        assert!(all.len() > 1);
+        // No two entries share an id, and an assistant line that gives several
+        // entries numbers them in order.
+        let mut sorted = all.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), all.len());
+        assert!(
+            sorted.iter().any(|id| id.index > 0),
+            "a line gave more than one entry"
+        );
         let _ = fs::remove_file(path);
     }
 

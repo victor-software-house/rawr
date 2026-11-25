@@ -1400,7 +1400,7 @@ fn said(lines: &mut Vec<Line<'static>>, rows: &mut Rows, app: &App, items: &[Sai
         .rev()
         .filter(|item| state::passes(filter, &item.searched()))
     {
-        let key = entry_key(item);
+        let key = item.id;
         let open = app.open.contains(&key);
         let age = item.at.as_deref().map_or_default(when);
         let age = format!("{:>7} ", age.trim_end_matches(" ago"));
@@ -1574,15 +1574,6 @@ type Rows = Vec<(usize, Option<(usize, usize)>, Target)>;
 
 /// A file list's rows, each with its place in the full list.
 type Listed<'files> = Vec<(usize, &'files (String, usize))>;
-
-/// The key an entry is opened by: the same entry gives the same key on
-/// every frame.
-fn entry_key(item: &Said) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    item.at.hash(&mut hasher);
-    item.text.hash(&mut hasher);
-    hasher.finish()
-}
 
 /// An entry's text as Claude Code draws it, wrapped to `room` columns:
 /// shell commands in its code colours, prompts and messages as markdown.
