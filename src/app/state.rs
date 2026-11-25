@@ -1580,6 +1580,12 @@ impl App {
     pub(crate) fn on_blur(&mut self) {
         self.hover = None;
         self.draw_out(None);
+        // The release of a thumb held when focus went may never come: let go
+        // of it as a release does, so a place waiting for its entries is asked.
+        if let Some(Drag::Thumb(held)) = self.dragging {
+            self.fades[slot(held.list)].touch(self.now);
+            self.dragging = None;
+        }
     }
 
     pub(crate) fn set_results(&mut self, results: Vec<Hit>) {
@@ -2518,5 +2524,41 @@ mod tests {
         assert_eq!(app.bars_wake(), Some(t0 + ms(850)));
         app.now = t0 + ms(1000);
         assert_eq!(app.bars_wake(), None);
+    }
+
+    #[test]
+    fn losing_focus_lets_go_of_a_held_thumb_and_a_waiting_jump_is_asked() {
+        let t0 = Instant::now();
+        let ms = Duration::from_millis;
+        let mut app = App::new(None);
+        app.settle(
+            &[(Focus::Session, 0)],
+            None,
+            &[track(Focus::Session, 20, (0, 100))],
+        );
+        app.now = t0;
+        app.on_mouse(
+            pointer(MouseEventKind::Down(LEFT), 4),
+            on_bar(Focus::Session),
+        );
+        app.found_seek(Some(Seek::Past(List::Activity, 0)));
+        // Held and just arrived: nothing is asked yet.
+        assert_eq!(app.take_jump(|_| 0), None);
+        app.on_blur();
+        assert_eq!(app.dragging, None);
+        assert_eq!(app.held_thumb(Focus::Session), None);
+        assert_eq!(
+            app.bar_shade(Focus::Session, t0 + ms(799)),
+            Shade::Rest,
+            "the bar fades from the moment it was let go of"
+        );
+        assert_eq!(
+            app.take_jump(|_| 7),
+            Some(Jump {
+                list: List::Activity,
+                share: 0,
+                ask: 1,
+            })
+        );
     }
 }
