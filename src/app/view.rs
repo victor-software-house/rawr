@@ -1552,11 +1552,15 @@ fn said(
     let wanted = scroll
         .anchor
         .and_then(|anchor| {
-            let at = placed.iter().find(|entry| entry.id == anchor.id)?.start;
+            // The entry itself, else the nearest newer one still listed.
+            let (entry, line) = match placed.iter().find(|entry| entry.id == anchor.id) {
+                Some(entry) => (entry, anchor.line),
+                None => (placed.iter().rfind(|entry| entry.id > anchor.id)?, 0),
+            };
             Some(
-                i64::try_from(at)
+                i64::try_from(entry.start)
                     .unwrap_or(i64::MAX)
-                    .saturating_add(i64::from(anchor.line)),
+                    .saturating_add(i64::from(line)),
             )
         })
         .unwrap_or_else(|| i64::from(scroll.top));
@@ -1604,8 +1608,8 @@ fn said(
 
 /// Row `row` of an entry laid out as `laid`, with what a frame draws over it:
 /// the age and the fold marker before the first row, and before the rest a bar
-/// when the pointer is on the entry, as a-tui draws a fold: `▸` before a folded
-/// entry, `▾` before an open one under the pointer.
+/// when the pointer is on the entry. The marker is `▸` before a folded entry
+/// that has more to show, and `▾` before an open one under the pointer.
 fn entry_row(item: &Said, laid: &Laid, row: usize, open: bool, hovered: bool) -> Line<'static> {
     let mut spans = if row == 0 {
         let age = item.at.as_deref().map_or_default(when);
@@ -3129,6 +3133,19 @@ mod tests {
         let shown = still.entries();
         assert!(shown[0].contains("file-257.rs"), "{shown:?}");
         assert_eq!(busy.entries(), shown);
+    }
+
+    #[test]
+    fn a_view_whose_entry_is_gone_stays_at_the_nearest_newer_one() {
+        let mut rig = Rig::new(300);
+        rig.scroll(42);
+        let shown = rig.entries();
+        assert!(shown[0].contains("file-257.rs"), "{shown:?}");
+        // The entry the view is anchored in goes, as when the daemon's facts
+        // keep fewer of the older entries, or a filter hides it.
+        rig.facts.activity.remove(257);
+        let shown = rig.entries();
+        assert!(shown[0].contains("file-258.rs"), "{shown:?}");
     }
 
     #[test]
