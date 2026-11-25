@@ -29,18 +29,23 @@
      It lost: the maintainer asked for it out of sight (operator, 2026-11-25).
 4. **A drag past the held entries jumps.**
    - In the Conversation and Activity tabs, the thumb's position stands for a place in the whole session, by the counts the tabs already show.
-   - When a drag ends, or rests for 100 ms, on a place no held entry covers, the window asks the daemon `around` with the list, the transcript the frame found the place in, and that place as a byte of the transcript.
+   - On each drag report whose place no held entry covers, the window asks the daemon `around` at once, with the list, the transcript the frame found the place in, and that place as a byte of the transcript.
+   - Only one `around` is out at a time.
+     The thumb going on meanwhile keeps its newest place, and when the answer lands, that place is found again where the thumb stands now, and asked for if no held entry covers it.
    - A place in a gap, or among the entries older than the held ones, is a byte inside that stretch.
      It lies between the byte offsets of the held entries on each side of the stretch, the first or last byte of the transcript when none is held there, by how far into the stretch's estimated entries the bar line is.
      The tabs list the newest entry first, so a drag just past the held entries asks for a byte just before the oldest held one, and a drag to the bottom asks for the first calls.
    - The daemon reads the 100 entries of that list nearest that byte, as it reads any page, and answers `around`, a message of its own that names the request it answers.
-     Each request carries a number, and only the answer to the newest one lands, so a thumb that moved on drops the older answer.
-   - The window keeps its view until the answer lands, then shows the entry at that place at the top.
+     Each request carries a number, and only the answer to the request out lands.
+   - The window keeps its view until each answer lands, then shows the entry at that place at the top in one frame.
+     A place that held entries cover shows at once.
      An answer that adds no entry the window did not hold leaves the view where it is.
      The answer joins the held entries with gaps on both sides, which pages fill as for any gap.
    - The place belongs to its transcript: an answer for another transcript never lands, and showing another transcript gives the place up.
    - The daemon cannot count the entries it skips, so the window shares the entries not held there between the two new gaps by the bytes each side spans.
      The counts of the whole session stay as they were.
-   - While the thumb is held, or a place is waiting for its entries, the window asks for no older or newer page, so a drag through the held entries loads nothing on its way.
+   - While the thumb is held, or a place is waiting for its entries, the window asks for no older or newer page, so a drag loads nothing on its way but the `around` answers.
+   - A thumb that moves with no input, as when an answer changes the counts, glides to its new row over 100 ms on the frame clock.
+     A held thumb stays under the pointer, and one that input moves follows at once.
    - Alternative: load every page between the view and the place.
      It lost: the 3,000-entry bound would drop each page soon after it lands, and a long session would take seconds.

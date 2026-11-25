@@ -38,7 +38,8 @@ A list that fits SHALL draw no bar.
 
 ### Requirement: A drag past the held entries jumps
 
-In the Conversation and Activity tabs, a drag that ends or rests for 100 ms on a place no held entry covers SHALL load the entries at that place directly, and show them once they land.
+In the Conversation and Activity tabs, a drag that reaches a place no held entry covers SHALL load the entries at that place directly, and show them once they land.
+A thumb that moves with no input SHALL glide to its new row over 100 ms.
 
 #### Scenario: Dragging to the start of a long session
 
