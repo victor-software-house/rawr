@@ -19,10 +19,10 @@ rawr works with Claude Code for now; support for other coding agents is planned.
 
 ## Get started
 
-1. Install rawr from the [releases], for macOS on Apple silicon or Linux on x64:
+1. Install rawr with Homebrew, for macOS on Apple silicon or Linux on x64:
 
    ```sh
-   mise use -g github:victor-software-house/rawr
+   brew install victor-software-house/tap/rawr
    ```
 
    <details>
@@ -322,6 +322,7 @@ To open another type of file in its default app, add its extension to `open`.
 
 rawr identifies each pane by its Rex block ID, which survives a server restart.
 Each `rawr` window talks to one `rawr daemon`, which the first window starts.
+`brew services start rawr` starts it at login instead.
 The daemon reads transcripts from the newest line back, so long sessions show their latest entries at once.
 
 ## License
