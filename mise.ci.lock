@@ -71,21 +71,21 @@ url = "https://github.com/victor-software-house/qctl/releases/download/v0.7.0/qc
 url_api = "https://api.github.com/repos/victor-software-house/qctl/releases/assets/733207589"
 
 [[tools."github:victor-software-house/verctl"]]
-version = "0.8.6-rc.5"
+version = "0.8.6-rc.8"
 backend = "github:victor-software-house/verctl"
-specifiers = ["0.8.6-rc.5"]
+specifiers = ["0.8.6-rc.8"]
 
 [tools."github:victor-software-house/verctl"."platforms.linux-x64"]
-checksum = "sha256:cbd073f2c9b732a688a7f140937c6197f18957e8788ccde2f82c54050023aab0"
+checksum = "sha256:b384a3deab12ae79914e1e575f943e3b7e777fccf3503ab83c30df925cdce231"
 checksum_source = "mise-versions"
-url = "https://github.com/victor-software-house/verctl/releases/download/v0.8.6-rc.5/verctl_0.8.6-rc.5_linux_x64.tar.gz"
-url_api = "https://api.github.com/repos/victor-software-house/verctl/releases/assets/747578092"
+url = "https://github.com/victor-software-house/verctl/releases/download/v0.8.6-rc.8/verctl_0.8.6-rc.8_linux_x64.tar.gz"
+url_api = "https://api.github.com/repos/victor-software-house/verctl/releases/assets/780377349"
 
 [tools."github:victor-software-house/verctl"."platforms.macos-arm64"]
-checksum = "sha256:5057093615fda4ce54f481f8d44bd43a25aad1c08b696d1b8901abb2603ed48b"
+checksum = "sha256:768e563d6cb926272c07a52f476a644a6a7331b449ab7fd8b4b1e98c7cb3a248"
 checksum_source = "mise-versions"
-url = "https://github.com/victor-software-house/verctl/releases/download/v0.8.6-rc.5/verctl_0.8.6-rc.5_macos_arm64.tar.gz"
-url_api = "https://api.github.com/repos/victor-software-house/verctl/releases/assets/747577955"
+url = "https://github.com/victor-software-house/verctl/releases/download/v0.8.6-rc.8/verctl_0.8.6-rc.8_macos_arm64.tar.gz"
+url_api = "https://api.github.com/repos/victor-software-house/verctl/releases/assets/780377274"
 
 [[tools.jactionlint]]
 version = "2.6.0"

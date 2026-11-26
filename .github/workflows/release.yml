@@ -21,12 +21,14 @@ jobs:
       contents: write # tags, Releases, assets, and verctl/release/main without the App
       pull-requests: write # the Version PR without the App
       id-token: write # the called workflow's publish job requests it
-    uses: victor-software-house/verctl/.github/workflows/release.yml@e06503d01ceb0b04ba50e2d234583f002db22951 # v0.8.6-rc.5
+    uses: victor-software-house/verctl/.github/workflows/release.yml@7db72ad530b35bda6d7217606b1308f54168b710 # v0.8.6-rc.8
     with:
-      mise-version: 2026.11.6
+      mise-version: 2026.11.12
       mise-env: ci,release
     # The App token opens the Version PR so that its CI starts; a PR opened
     # with GITHUB_TOKEN starts no workflow.
     secrets:
       app-client-id: ${{ secrets.CHANGESET_VERSION_APP_CLIENT_ID }}
       app-private-key: ${{ secrets.CHANGESET_VERSION_APP_PRIVATE_KEY }}
+      release-mirror-url: ${{ secrets.RELEASE_MIRROR_URL }}
+      release-mirror-ci-key: ${{ secrets.RELEASE_MIRROR_CI_KEY }}
