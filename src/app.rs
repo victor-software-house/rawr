@@ -529,20 +529,55 @@ fn spin_at(started: Instant, now: Instant) -> usize {
         .unwrap_or(0)
 }
 
-/// How a click opens `path`, a canonical path, under the `files` config.
-/// A file that cannot be read, or whose extension is not valid UTF-8, opens
-/// in its folder.
-fn opening(path: &Path, files: &Files) -> Opening {
+/// Which setting decided how a file opens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Rule {
+    /// rawr could not read the file's metadata, or its extension is not
+    /// valid UTF-8.
+    Unreadable,
+    /// The file is a folder or has an execute bit, under
+    /// `files.reveal_runnable`.
+    Runnable,
+    /// The file has no extension, under `files.no_extension`.
+    NoExtension,
+    /// The file's extension, under `files.open`, `files.text` or
+    /// `files.other`.
+    Extension,
+}
+
+/// How a click opens `path`, a canonical path, under the `files` config,
+/// and the setting that decided it. A file that rawr cannot read, or whose
+/// extension is not valid UTF-8, opens in its folder.
+fn opening(path: &Path, files: &Files) -> (Opening, Rule) {
     let Ok(meta) = fs::metadata(path) else {
-        return Opening::Reveal;
+        return (Opening::Reveal, Rule::Unreadable);
     };
     if files.reveal_runnable && (meta.is_dir() || meta.permissions().mode() & 0o111 != 0) {
-        return Opening::Reveal;
+        return (Opening::Reveal, Rule::Runnable);
     }
     match path.extension().map(OsStr::to_str) {
-        None => files.opening_for(None),
-        Some(Some(extension)) => files.opening_for(Some(extension)),
-        Some(None) => Opening::Reveal,
+        None => (files.opening_for(None), Rule::NoExtension),
+        Some(Some(extension)) => (files.opening_for(Some(extension)), Rule::Extension),
+        Some(None) => (Opening::Reveal, Rule::Unreadable),
+    }
+}
+
+/// Why a file opened in its folder, and the setting that changes it.
+fn reveal_reason(rule: Rule, configured: Opening) -> &'static str {
+    if configured == Opening::Text {
+        return "this system cannot open a file as text";
+    }
+    match rule {
+        Rule::Unreadable => "rawr could not read its metadata or extension",
+        Rule::Runnable => {
+            "it is a folder or has an execute bit; set files.reveal_runnable to false in config.yaml to open it"
+        }
+        Rule::NoExtension => {
+            "set files.no_extension in config.yaml to open files with no extension"
+        }
+        Rule::Extension => {
+            "add its extension to files.open or files.text in config.yaml to open it"
+        }
     }
 }
 
@@ -591,7 +626,7 @@ fn open_file(file: &Path, files: &Files, app: &mut App) {
         app.notice = Some(format!("{} is gone", file.display()));
         return;
     };
-    let configured = opening(&path, files);
+    let (configured, rule) = opening(&path, files);
     let how = match configured {
         // Only macOS can open a file of any type as text.
         Opening::Text if !cfg!(target_os = "macos") => Opening::Reveal,
@@ -602,17 +637,11 @@ fn open_file(file: &Path, files: &Files, app: &mut App) {
             // The opener ends at once; its exit is collected off the loop.
             thread::spawn(move || child.wait());
             if how == Opening::Reveal {
-                app.notice = Some(if configured == Opening::Text {
-                    format!(
-                        "Opened the folder of {}: this system cannot open a file as text",
-                        file.display()
-                    )
-                } else {
-                    format!(
-                        "Opened the folder of {}: add its extension to files.open in config.yaml to open the file",
-                        file.display()
-                    )
-                });
+                app.notice = Some(format!(
+                    "Opened the folder of {}: {}",
+                    file.display(),
+                    reveal_reason(rule, configured)
+                ));
             }
         }
         Err(error) => app.notice = Some(format!("could not open {}: {error}", file.display())),
@@ -669,19 +698,25 @@ mod tests {
     fn a_folder_is_revealed() {
         let dir = env::temp_dir().join(format!("rawr-app-bundle-{}", process::id()));
         fs::create_dir_all(&dir).expect("make the folder");
-        assert_eq!(opening(&dir, &Files::default()), Opening::Reveal);
+        assert_eq!(
+            opening(&dir, &Files::default()),
+            (Opening::Reveal, Rule::Runnable)
+        );
         let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
     fn a_file_with_an_execute_bit_is_revealed_whatever_its_kind() {
         let path = file_with("exec", "notes.md", 0o755);
-        assert_eq!(opening(&path, &Files::default()), Opening::Reveal);
+        assert_eq!(
+            opening(&path, &Files::default()),
+            (Opening::Reveal, Rule::Runnable)
+        );
         let files = Files {
             reveal_runnable: false,
             ..Files::default()
         };
-        assert_eq!(opening(&path, &files), Opening::Text);
+        assert_eq!(opening(&path, &files), (Opening::Text, Rule::Extension));
         let _ = fs::remove_file(path);
     }
 
@@ -701,9 +736,17 @@ mod tests {
             ("paper.pdf", Opening::Open),
         ] {
             let path = file_with("types", name, 0o644);
-            assert_eq!(opening(&path, &Files::default()), how, "{name}");
+            assert_eq!(opening(&path, &Files::default()).0, how, "{name}");
             let _ = fs::remove_file(path);
         }
+    }
+
+    #[test]
+    fn a_revealed_file_names_the_setting_that_revealed_it() {
+        assert!(reveal_reason(Rule::Runnable, Opening::Reveal).contains("files.reveal_runnable"));
+        assert!(reveal_reason(Rule::NoExtension, Opening::Reveal).contains("files.no_extension"));
+        assert!(reveal_reason(Rule::Extension, Opening::Reveal).contains("files.open"));
+        assert!(reveal_reason(Rule::Extension, Opening::Text).contains("as text"));
     }
 
     /// A report, then a key that switches the tab, then a report, in one batch:
