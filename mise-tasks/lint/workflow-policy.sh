@@ -6,9 +6,9 @@
 # absolute git directory whole.
 #
 # git exports GIT_DIR, GIT_WORK_TREE and GIT_INDEX_FILE to pre-push in a linked
-# worktree. The task unsets them before its first git call: with them set, a
-# render below the root would take its own folder as the top, and the pull's
-# clone would read the pusher's repository.
+# worktree. The task unsets them before its first git call.
+# With them set, a render below the root would take its own folder as the top.
+# The pull's clone would then read the pusher's repository.
 #
 # Each pinned commit gets a folder of its own, filled once and never
 # rewritten. verify then runs offline after the first run, and no file of an
@@ -18,9 +18,10 @@
 # once. A mkdir lock lets one of them pull, into a .part folder it renames
 # when the pull is whole.
 #
-# An exit, or HUP, INT, QUIT or TERM, while it holds the lock removes both. A
-# run killed outright leaves the lock, and the next run fails after 600 s
-# with a message that names it.
+# An exit, or one of the hangup (HUP), interrupt (INT), quit (QUIT) and
+# terminate (TERM) signals, removes both while the run has the lock.
+# A run killed outright leaves the lock, and the next run fails after 600 s
+# with a message that shows the path of the lock.
 #
 # Each run writes the workflows' text to a file of its own. An exit, or one
 # of those signals, removes it on every path.
@@ -30,8 +31,8 @@
 #
 # conftest reads the policy's defaults.yaml, the repository's parameters and
 # exceptions (.github/workflow-policy/config.yaml), and
-# .github/actionlint.yaml's runner labels. Each --namespace is a rule the
-# workflow_policy answer chose, or one of the repository's own packages in
+# .github/actionlint.yaml's runner labels. Each --namespace is a rule from the
+# workflow_policy answer, or one of the repository's own packages in
 # .github/workflow-policy/ that workflow_policy_namespaces lists.
 #
 # GitHub runs only the repository root's workflows. Like lint:workflows, the
@@ -42,13 +43,13 @@
 # Each file is passed only where it exists, and a listed package that no file
 # defines fails the task. conftest fails on a missing folder, so the task
 # checks the tracked workflows only. With none, nothing runs and the check
-# passes. -z hands xargs each path unquoted, whatever it holds.
+# passes. -z hands xargs each path unquoted, whatever it contains.
 render=$(pwd)
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
 cd "$(git rev-parse --show-toplevel)" || exit 1
 files=$(git ls-files ':(glob).github/workflows/*.yml' ':(glob).github/workflows/*.yaml') || exit 1
 [ -n "$files" ] || exit 0
-commit=e044bc0a41a1544d2c6a0b368c086392d6d184c9
+commit=e9cf7ef0da4f4a9a7a6f978f5dd54be0d0d539bc
 policy=$(git rev-parse --git-path "workflow-policy/$commit") || exit 1
 texts=$(git rev-parse --git-path "workflow-texts.$$.yaml") || exit 1
 trap 'rm -f "$texts"' EXIT
@@ -70,7 +71,7 @@ if [ ! -d "$policy" ]; then
   trap 'rm -rf "${policy:?}.part"; rmdir "$policy.lock" 2>/dev/null; rm -f "$texts"' EXIT
   if [ ! -d "$policy" ]; then
     rm -rf "${policy:?}.part"
-    url='git::https://github.com/victor-software-house/actions.git//policy?ref=e044bc0a41a1544d2c6a0b368c086392d6d184c9'
+    url='git::https://github.com/victor-software-house/actions.git//policy?ref=e9cf7ef0da4f4a9a7a6f978f5dd54be0d0d539bc'
     if conftest pull --absolute-paths -p "$policy.part" "$url"; then
       mv "$policy.part" "$policy"
     fi

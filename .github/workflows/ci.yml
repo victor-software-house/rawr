@@ -16,12 +16,15 @@ permissions:
   pull-requests: read
 
 concurrency:
-  # Every merge queue entry shares one group, so a newer entry's run cancels the
-  # runs of the entries ahead of it: the queue merges on the newest entry's
-  # result, whose merge-group commit holds every entry ahead of it. That holds
-  # only while the queue groups HEADGREEN; under ALLGREEN a cancelled entry
-  # fails. Outside the queue, a draft run gets a group of its own, so it never
-  # cancels the ready run.
+  # Every merge queue entry shares one group.
+  # A newer entry's run therefore cancels the runs of the entries ahead of it.
+  # The queue merges on the result of the newest entry, whose merge-group
+  # commit contains every entry ahead of it.
+  #
+  # That works only while the queue groups HEADGREEN. Under ALLGREEN, a
+  # cancelled entry fails.
+  # Outside the queue, a draft run gets a group of its own, so it never cancels
+  # the ready run.
   group: >-
     ci-${{ github.workflow }}-${{ github.event_name == 'merge_group' && format('queue-{0}',
     github.event.merge_group.base_ref) || format('{0}-{1}{2}', github.event_name,
@@ -49,17 +52,17 @@ jobs:
 
   verify:
     if: ${{ !github.event.pull_request.draft && github.event_name != 'schedule' }}
-    # The shared jobs that install tools download through the release mirror:
-    # they exchange the job's OIDC token for a session token, with the
-    # organization's mirror key, so the caller grants id-token: write.
+    # The shared jobs that install tools download through the release mirror.
+    # They exchange the job's OIDC token for a session token, with the
+    # organization's mirror key. The caller therefore grants id-token: write.
     permissions:
       actions: read
       contents: read
       id-token: write
       pull-requests: read
-    uses: victor-software-house/actions/.github/workflows/rust-ci.yml@e044bc0a41a1544d2c6a0b368c086392d6d184c9 # main, 2026-11-17
+    uses: victor-software-house/actions/.github/workflows/rust-ci.yml@e9cf7ef0da4f4a9a7a6f978f5dd54be0d0d539bc # main, 2026-11-26
     with:
-      mise-version: 2026.11.6
+      mise-version: 2026.11.12
       advisories: true
       semver: false
       timeout-minutes: 8

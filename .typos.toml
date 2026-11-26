@@ -1,4 +1,9 @@
 # Spelling, checked by `mise run lint:typos`.
+[default]
+# A changelog links each entry to its commit as [`abc1234`](…).
+# A hash is not a word, yet a short one can spell a typo, such as 71c9abd.
+extend-ignore-re = ["\\[`[0-9a-f]{7,40}`\\]"]
+
 [files]
 # The demo recording stores each frame's text, cut at arbitrary points.
 extend-exclude = ["*.lock"]

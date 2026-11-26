@@ -28,8 +28,8 @@ confidence-threshold = 0.93
 [bans]
 # Two versions of one crate fail. A repository whose dependencies still need
 # two versions, after updating each to its latest release, adds a skip below
-# deny = [...], one entry per crate with the reason, and removes it when the
-# graph converges:
+# deny = [...]. It adds one entry per crate with the reason, and removes the
+# entry when the graph converges. An entry looks like this:
 # skip = [{ crate = "syn@2", reason = "<crate> <version>, the latest, requires syn 2" }]
 multiple-versions = "deny"
 wildcards = "deny"
