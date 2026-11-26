@@ -17,12 +17,15 @@ permissions:
   contents: read
 
 concurrency:
-  # Every merge queue entry shares one group, so a newer entry's run cancels the
-  # runs of the entries ahead of it: the queue merges on the newest entry's
-  # result, whose merge-group commit holds every entry ahead of it. That holds
-  # only while the queue groups HEADGREEN; under ALLGREEN a cancelled entry
-  # fails. Outside the queue, a draft run gets a group of its own, so it never
-  # cancels the ready run.
+  # Every merge queue entry shares one group.
+  # A newer entry's run therefore cancels the runs of the entries ahead of it.
+  # The queue merges on the result of the newest entry, whose merge-group
+  # commit contains every entry ahead of it.
+  #
+  # That works only while the queue groups HEADGREEN. Under ALLGREEN, a
+  # cancelled entry fails.
+  # Outside the queue, a draft run gets a group of its own, so it never cancels
+  # the ready run.
   group: >-
     template-${{ github.event_name == 'merge_group' && format('queue-{0}',
     github.event.merge_group.base_ref) || format('{0}-{1}{2}', github.event_name,
@@ -33,27 +36,29 @@ concurrency:
 jobs:
   # Fails an update pull request that does not reach the newest template tag.
   # Any other pull request gets a notice; the daily run keeps an issue
-  # open while the newest tag would change this repository. The shared
-  # workflow reads the template with the organization's reader App's key, and
-  # installs its tools through the release mirror with a session token.
+  # open while the newest tag would change this repository.
+  #
+  # The shared workflow reads the template with the key of the organization's reader App.
+  # It installs its tools through the release mirror with a session token.
   template:
     if: ${{ !github.event.pull_request.draft }}
-    uses: victor-software-house/actions/.github/workflows/template-check.yml@e044bc0a41a1544d2c6a0b368c086392d6d184c9 # main, 2026-11-17
+    uses: victor-software-house/actions/.github/workflows/template-check.yml@e9cf7ef0da4f4a9a7a6f978f5dd54be0d0d539bc # main, 2026-11-26
     permissions:
       contents: read
       # The mise action exchanges it for the mirror's session token.
       id-token: write
       issues: write
     with:
-      mise-version: 2026.11.6
+      mise-version: 2026.11.12
       runner: ubuntu-26.04
       # A pull request that changes none of these files skips the check, which
-      # still reports. The list holds every file the template renders, whole
+      # still reports. The list has every file the template renders, whole
       # or in part. check:template-paths keeps it covering every file a render
       # keeps in step, the starters left out.
       paths: |
         .copier-answers.yml
         .changeset/config.json
+        .editorconfig
         .github/actionlint.yaml
         .github/workflows/ci.yml
         .github/workflows/secrets.yml

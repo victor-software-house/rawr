@@ -1,0 +1,38 @@
+# EditorConfig: the editor settings of every file, and the options shfmt reads
+# for `mise run format:shell`.
+# Each section matches the formatter that owns its files.
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+# shfmt
+[*.{sh,bash}]
+indent_style = space
+indent_size = 2
+switch_case_indent = true
+
+# rustfmt, from rustfmt.toml
+[*.rs]
+indent_style = space
+indent_size = 4
+max_line_length = 100
+
+# taplo, which defaults to two spaces and 80 columns
+[*.toml]
+indent_style = space
+indent_size = 2
+max_line_length = 80
+
+# rumdl, which does not lint line length
+[*.{md,markdown,mdx}]
+indent_style = space
+indent_size = 2
+max_line_length = off
+
+[*.{yml,yaml}]
+indent_style = space
+indent_size = 2
