@@ -87,22 +87,23 @@ pub(crate) struct Drain {
     pub(crate) grace: Duration,
 }
 
-/// How a click in the Files tab opens a file a session touched. A kind is
-/// matched by its extension, in any case and with or without its dot.
+/// How a click in the Files tab opens a file a session touched. Each list
+/// contains file extensions, matched without regard to case, with or
+/// without a leading dot.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub(crate) struct Files {
-    /// The kinds that open in their default app.
+    /// The extensions of files that open in their default app.
     pub(crate) open: Vec<String>,
-    /// The kinds that open in a text editor, so that no handler can run
-    /// them, as a `.py` file's would.
+    /// The extensions of files that open in a text editor, so that no handler
+    /// can run them, as a `.py` file's would.
     pub(crate) text: Vec<String>,
     /// How a file with no extension opens.
     pub(crate) no_extension: Opening,
-    /// How a kind in neither list opens.
+    /// How a file whose extension is in neither list opens.
     pub(crate) other: Opening,
     /// Whether a folder, which may be a bundle, or a file with an execute
-    /// bit is shown in its folder whatever its kind.
+    /// bit opens in its folder whatever its extension.
     pub(crate) reveal_runnable: bool,
 }
 
@@ -118,12 +119,12 @@ pub(crate) enum Opening {
     Reveal,
 }
 
-/// The kinds the system only shows: images and PDF.
+/// The extensions of files the system only shows: images and PDF.
 const OPEN: [&str; 11] = [
     "png", "jpg", "jpeg", "gif", "webp", "heic", "tif", "tiff", "bmp", "ico", "pdf",
 ];
 
-/// Text and source kinds.
+/// The extensions of text and source files.
 const TEXT: [&str; 62] = [
     "txt", "md", "markdown", "mdx", "rst", "adoc", "log", "csv", "tsv", "json", "jsonl", "yaml",
     "yml", "toml", "xml", "ini", "cfg", "conf", "lock", "diff", "patch", "rs", "go", "py", "rb",
@@ -145,16 +146,18 @@ impl Default for Files {
 }
 
 impl Files {
-    /// How a file of `extension` opens, `None` for a file with none. A kind
-    /// in both lists opens in its default app.
-    pub(crate) fn kind(&self, extension: Option<&str>) -> Opening {
+    /// How a file with `extension` opens, or a file with no extension when
+    /// it is `None`. An extension in both lists opens in its default app.
+    pub(crate) fn opening_for(&self, extension: Option<&str>) -> Opening {
         let Some(extension) = extension else {
             return self.no_extension;
         };
-        let listed = |kinds: &[String]| {
-            kinds
-                .iter()
-                .any(|kind| kind.trim_start_matches('.').eq_ignore_ascii_case(extension))
+        let listed = |extensions: &[String]| {
+            extensions.iter().any(|listed| {
+                listed
+                    .trim_start_matches('.')
+                    .eq_ignore_ascii_case(extension)
+            })
         };
         if listed(&self.open) {
             Opening::Open
@@ -294,10 +297,10 @@ mod tests {
         assert_eq!(config.restart.wait, seconds(300));
         assert_eq!(config.drain.interrupt, seconds(120));
         assert_eq!(config.drain.grace, seconds(60));
-        assert_eq!(config.files.kind(Some("PDF")), Opening::Open);
-        assert_eq!(config.files.kind(Some("py")), Opening::Text);
-        assert_eq!(config.files.kind(Some("command")), Opening::Reveal);
-        assert_eq!(config.files.kind(None), Opening::Text);
+        assert_eq!(config.files.opening_for(Some("PDF")), Opening::Open);
+        assert_eq!(config.files.opening_for(Some("py")), Opening::Text);
+        assert_eq!(config.files.opening_for(Some("command")), Opening::Reveal);
+        assert_eq!(config.files.opening_for(None), Opening::Text);
         assert!(config.files.reveal_runnable);
     }
 
@@ -316,9 +319,9 @@ mod tests {
         )
         .unwrap();
         let files = &config.files;
-        assert_eq!(files.kind(Some("command")), Opening::Open);
-        assert_eq!(files.kind(Some("rs")), Opening::Open);
-        assert_eq!(files.kind(None), Opening::Reveal);
+        assert_eq!(files.opening_for(Some("command")), Opening::Open);
+        assert_eq!(files.opening_for(Some("rs")), Opening::Open);
+        assert_eq!(files.opening_for(None), Opening::Reveal);
         assert!(!files.reveal_runnable);
     }
 

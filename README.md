@@ -166,7 +166,7 @@ Entries show a few lines and a `+N` count of the rest; click one to expand it, w
 | Overview | Model, branch, prompts and replies, tokens out, sub-agents, times, tasks |
 | Conversation | What you typed and what Claude answered, newest first |
 | Activity | Every entry, tool calls and results included |
-| Files | Files the session changed and read. Click a file to open it as [Config](#config) sets, or a folder to filter the list |
+| Files | Files the session changed and read. Click a file to open it, as set in [Config](#config), or a folder to filter the list |
 
 Enter, or a click, on a search result closes the search and selects the result's session, without resuming it or switching Rex.
 A session no pane lists opens as an Opened pane at the top of the list, with Resume and no Go to pane, until a pane lists it or you close it.
@@ -281,26 +281,30 @@ rawr completion fish | source    # ~/.config/fish/config.fish
 
 ## Config
 
-rawr reads `$XDG_CONFIG_HOME/rawr/config.yaml`, or `~/.config/rawr/config.yaml`.
-Every key is optional, and a key you leave out keeps its default.
+rawr reads `$XDG_CONFIG_HOME/rawr/config.yaml`, or `~/.config/rawr/config.yaml` when that variable is unset.
+Every key is optional, and each key you leave out keeps its default.
 
-The `files` part sets how a click in the Files tab opens a file.
-A kind is a file extension, in any case.
+The `files` key sets how a click in the Files tab opens a file.
+The lists contain file extensions, matched without regard to case.
 
 ```yaml
 files:
   open: [png, jpg, pdf]   # open in their default app
   text: [md, rs, py, sh]  # open in a text editor, so no handler runs them
-  no_extension: text      # a file with no extension: open, text or reveal
-  other: reveal           # any other kind: open, text or reveal
-  reveal_runnable: true   # show folders and files with an execute bit in their folder
+  no_extension: text      # files with no extension: open, text or reveal
+  other: reveal           # extensions in neither list: open, text or reveal
+  reveal_runnable: true   # show folders and executable files in their folder
 ```
 
-By default, images and PDF open in their default app, and text and source files open in a text editor.
-Any other kind, a folder, or a file with an execute bit opens in its folder, so a click never runs a file a session wrote.
-Off macOS, which has no way to open any file as text, text kinds open in their folder too.
-A list you set replaces its default list.
-To let a kind open in its default app, add it to `open`.
+By default:
+
+- images and PDF files open in their default app;
+- text and source files open in a text editor;
+- every other file opens in its folder, so a click never runs a file a session wrote.
+
+On Linux, text files also open in their folder, because `xdg-open` cannot open a file as text.
+A list you set replaces the default list.
+To open another type of file in its default app, add its extension to `open`.
 
 ## Commands
 

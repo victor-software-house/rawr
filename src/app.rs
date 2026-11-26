@@ -529,9 +529,9 @@ fn spin_at(started: Instant, now: Instant) -> usize {
         .unwrap_or(0)
 }
 
-/// How `path`, a canonical path, opens under `files`, the `files` part of
-/// the config. A file that cannot be read, or whose extension is not valid
-/// UTF-8, is revealed.
+/// How a click opens `path`, a canonical path, under the `files` config.
+/// A file that cannot be read, or whose extension is not valid UTF-8, opens
+/// in its folder.
 fn opening(path: &Path, files: &Files) -> Opening {
     let Ok(meta) = fs::metadata(path) else {
         return Opening::Reveal;
@@ -540,15 +540,15 @@ fn opening(path: &Path, files: &Files) -> Opening {
         return Opening::Reveal;
     }
     match path.extension().map(OsStr::to_str) {
-        None => files.kind(None),
-        Some(Some(extension)) => files.kind(Some(extension)),
+        None => files.opening_for(None),
+        Some(Some(extension)) => files.opening_for(Some(extension)),
         Some(None) => Opening::Reveal,
     }
 }
 
-/// The command that opens `path`, a canonical path, the way `how` says:
-/// `open` on macOS, with `-t` for text and `-R` to reveal, and `xdg-open`
-/// elsewhere, which reveals by opening the folder. Its output goes nowhere,
+/// The command that opens `path`, a canonical path, with `how`: `open` on
+/// macOS, with `-t` for text and `-R` to reveal, and `xdg-open` elsewhere,
+/// which reveals a file by opening its folder. Its output goes nowhere,
 /// so it never lands on the drawn screen. A session could still swap the
 /// file between the check and the open; the canonical path narrows that to
 /// the moment between the two.
@@ -570,7 +570,8 @@ fn opener(path: &Path, how: Opening) -> Command {
         let mut command = Command::new("xdg-open");
         command.arg(match how {
             Opening::Open => path,
-            // xdg-open has no text mode: it would start the kind's own handler.
+            // xdg-open has no text mode: it would start the handler for the
+            // file type.
             Opening::Text | Opening::Reveal => path.parent().unwrap_or(path),
         });
         command
@@ -582,9 +583,9 @@ fn opener(path: &Path, how: Opening) -> Command {
     command
 }
 
-/// Opens `file` the way [`opening`] says, so by default a click never runs
-/// a file a session wrote; a file gone since the session touched it says so
-/// in the search box.
+/// Opens `file` with the opening [`opening`] returns, so by default a click
+/// never runs a file a session wrote. When the file is gone, the search box
+/// shows a notice.
 fn open_file(file: &Path, files: &Files, app: &mut App) {
     let Ok(path) = fs::canonicalize(file) else {
         app.notice = Some(format!("{} is gone", file.display()));
@@ -592,7 +593,7 @@ fn open_file(file: &Path, files: &Files, app: &mut App) {
     };
     let configured = opening(&path, files);
     let how = match configured {
-        // Only macOS can open a file as text whatever its kind.
+        // Only macOS can open a file of any type as text.
         Opening::Text if !cfg!(target_os = "macos") => Opening::Reveal,
         how @ (Opening::Open | Opening::Text | Opening::Reveal) => how,
     };
@@ -601,12 +602,17 @@ fn open_file(file: &Path, files: &Files, app: &mut App) {
             // The opener ends at once; its exit is collected off the loop.
             thread::spawn(move || child.wait());
             if how == Opening::Reveal {
-                let why = if configured == Opening::Text {
-                    "only macOS can open any file as text"
+                app.notice = Some(if configured == Opening::Text {
+                    format!(
+                        "Opened the folder of {}: this system cannot open a file as text",
+                        file.display()
+                    )
                 } else {
-                    "as the files part of the config says"
-                };
-                app.notice = Some(format!("{} opens in its folder: {why}", file.display()));
+                    format!(
+                        "Opened the folder of {}: add its extension to files.open in config.yaml to open the file",
+                        file.display()
+                    )
+                });
             }
         }
         Err(error) => app.notice = Some(format!("could not open {}: {error}", file.display())),
@@ -694,7 +700,7 @@ mod tests {
             ("shot.PNG", Opening::Open),
             ("paper.pdf", Opening::Open),
         ] {
-            let path = file_with("kinds", name, 0o644);
+            let path = file_with("types", name, 0o644);
             assert_eq!(opening(&path, &Files::default()), how, "{name}");
             let _ = fs::remove_file(path);
         }

@@ -78,10 +78,10 @@ struct Client {
 
 impl State {
     /// A daemon that has seen no feed and no client yet. IDs start at the
-    /// wall clock in microseconds, so they differ across daemon runs: a
-    /// window that reconnects after a restart keeps its old view ID, which
-    /// no new window may take, unless the clock went back further than the
-    /// last run counted.
+    /// wall clock in microseconds, so each daemon run uses its own range.
+    /// A window that reconnects after a restart keeps its old view ID, and no
+    /// new window takes it. The one exception is a clock that went back
+    /// further than the last run counted.
     fn new() -> Self {
         Self {
             panes: Vec::new(),
@@ -99,8 +99,8 @@ impl State {
         }
     }
 
-    /// Takes the client ID of a window that said hello, and returns it with
-    /// the window's view: the one it asked to keep, or its own ID. A kept
+    /// Takes the client ID of a window that sent its hello, and returns it
+    /// with the window's view: the view the hello kept, or the new ID. A kept
     /// view leaves `next` alone, so a hello cannot push the counter to its
     /// end and give every later window one ID.
     fn admit(&mut self, kept: Option<u64>) -> (u64, u64) {
@@ -274,9 +274,9 @@ fn set_link(hub: &Hub, reach: Reach, why: String) {
 ///
 /// The queue itself never closes while the client's workers and pager hold
 /// its sender, so a full queue also shuts the client's socket. That ends the
-/// window's reader, and its link reconnects with the same view. On connecting
-/// the app asks for its facts again and runs its search again, so nothing is
-/// lost.
+/// window's reader, and its link reconnects with the same view. On
+/// reconnecting, the app requests its facts and runs its search again, so
+/// nothing is lost.
 fn broadcast(state: &mut State, message: &FromDaemon) {
     state
         .clients

@@ -115,9 +115,9 @@ pub(crate) fn live_sessions() -> Result<HashSet<String>> {
     Ok(live)
 }
 
-/// What a title was read at: its transcript's modified time and length, and
-/// the modified time of the session's `custom-title.json`, which
-/// [`transcript_title`] also reads.
+/// The file state a title was read from. It contains the transcript's
+/// modified time and length, and the modified time of the session's
+/// `custom-title.json`. [`transcript_title`] reads both files.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Seen {
     modified: SystemTime,
@@ -125,11 +125,13 @@ struct Seen {
     side: Option<SystemTime>,
 }
 
-/// The titles read from transcripts, each kept with what it was read at, so
-/// a title is read again only when its transcript or its title file changed.
+/// The titles read from transcripts, each stored with the file state it was
+/// read from. A title is read again only when its transcript or its title
+/// file changed.
 ///
-/// Two generations let a transcript that is no longer asked for drop out:
-/// [`Titles::sweep`] keeps what the last round asked for and forgets the rest.
+/// Two generations let a transcript that is not looked up drop out:
+/// [`Titles::sweep`] keeps the titles looked up in the last round and drops
+/// the rest.
 #[derive(Debug, Default)]
 pub(crate) struct Titles {
     last: HashMap<PathBuf, (Seen, Option<String>)>,
@@ -137,9 +139,9 @@ pub(crate) struct Titles {
 }
 
 impl Titles {
-    /// The title of the transcript at `path`, read from the files only when
-    /// `modified`, `len` or the title file's modified time differ from the
-    /// ones its last title was read at.
+    /// The title of the transcript at `path`. It is read from the files only
+    /// when `modified`, `len` or the title file's modified time differs from
+    /// the stored file state.
     pub(crate) fn title(&mut self, path: &Path, modified: SystemTime, len: u64) -> Option<String> {
         let seen = Seen {
             modified,
@@ -162,8 +164,8 @@ impl Titles {
         title
     }
 
-    /// Ends a round: the titles asked for since the last sweep are the ones
-    /// kept, and the others are forgotten.
+    /// Ends a round: it keeps the titles looked up since the last sweep and
+    /// drops the others.
     pub(crate) fn sweep(&mut self) {
         self.last = mem::take(&mut self.next);
     }
