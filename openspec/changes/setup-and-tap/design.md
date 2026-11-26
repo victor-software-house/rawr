@@ -19,6 +19,7 @@ Prior art for the shell line: `direnv hook`, `zoxide init` and `starship init` t
    Alternative: the install script or `mise use -g` as the main path.
    They lost: neither registers a service.
    They stay for Linux machines without Homebrew.
+
 2. **The shell offers a restored pane its sessions.**
    - A line in the shell's startup file runs `rawr --startup` once, before the first prompt, so each restored pane with sessions opens the app on them when Rex starts.
    - `rawr setup` prints that line for the user's shell; `rawr init <shell>` prints the hook it loads, from ctl-core's shared shell integration.
@@ -28,12 +29,14 @@ Prior art for the shell line: `direnv hook`, `zoxide init` and `starship init` t
    - bash, zsh and fish come first, the shells ctl-core's `Shell` holds; nushell and PowerShell, which mise and direnv also cover, follow when ctl-core adds them.
    - Alternative: the daemon types `rawr --startup` into each restored shell, as the "Resume Claude here" Rex action does.
      It lost: typed input can collide with what the user types first, and nothing else in rawr types text into a terminal.
+
 3. **`rawr setup` installs everything after the binary, and only what it names.**
    - `rawr setup` adds this repository's marketplace and installs the plugin through Claude Code's plugin commands.
    - It stores the binary's stable path in the plugin's data folder and starts the service when Homebrew installed rawr.
    - It removes an old `SessionStart` hook that runs `rawr record`, when it finds one.
    - `rawr setup status` reports each piece as current, outdated, missing or foreign, as `rex skill status` does.
    - `rawr setup remove` removes only what `rawr setup` installed.
+
 4. **`AGENTS.md` rule 4 changes.**
    The binary also talks to Claude Code's plugin commands during `rawr setup`.
    Nothing resumes without a choice, as before.
