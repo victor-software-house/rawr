@@ -34,11 +34,13 @@ jobs:
       release-mirror-ci-key: ${{ secrets.RELEASE_MIRROR_CI_KEY }}
 
   # Points the rawr formula in victor-software-house/homebrew-tap at the
-  # release this run made. It runs only on the version commit, the push that
-  # changed Cargo.toml's version, and only once the Release is published with
-  # both tarballs. The workflow token cannot reach another repository, so the
-  # dispatch goes as the Version Packages App, and the tap's bump workflow
-  # checks each tarball's digest before it moves the formula.
+  # version Cargo.toml holds, whenever the tap's formula names another one and
+  # that version's Release is published with both tarballs. A run that finds
+  # the Release still a draft waits for a later run, which verctl's release
+  # job starts on the next push or dispatch. The workflow token cannot reach
+  # another repository, so the dispatch goes as the Version Packages App, and
+  # the tap's bump workflow checks each tarball's digest before it moves the
+  # formula.
   tap:
     name: Homebrew tap
     needs: release
@@ -50,28 +52,30 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          fetch-depth: 2
-      - name: Read the released version
+      - name: Compare the version with the tap's formula
         id: version
         env:
           GH_TOKEN: ${{ github.token }}
+          FORMULA_URL: https://raw.githubusercontent.com/${{ github.repository_owner }}/homebrew-tap/main/Formula/rawr.rb
         run: |
           set -euo pipefail
-          read_version() { sed -n 's/^version = "\(.*\)"$/\1/p' | head -n1; }
-          version=$(read_version <Cargo.toml)
-          previous=$(git show HEAD^1:Cargo.toml | read_version)
-          if [[ $version == "$previous" ]]; then
-            echo "Cargo.toml keeps ${version}, so this push released nothing."
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n1)
+          tapped=$(curl -fsSL "$FORMULA_URL" | sed -n 's/^  version "\(.*\)"$/\1/p')
+          if [[ $version == "$tapped" ]]; then
+            echo "The tap's formula is at ${version} already."
             exit 0
           fi
-          release=$(gh release view "v${version}" --json isDraft,assets)
+          if ! release=$(gh release view "v${version}" --json isDraft,assets); then
+            echo "::notice::Release v${version} does not exist yet, so the formula stays at ${tapped}."
+            exit 0
+          fi
           if [[ $(jq -r .isDraft <<<"$release") != false ]]; then
-            echo "::error::Release v${version} is not published."
-            exit 1
+            echo "::notice::Release v${version} is a draft, so the formula stays at ${tapped}."
+            exit 0
           fi
           for asset in "rawr_${version}_macos_arm64.tar.gz" "rawr_${version}_linux_x64.tar.gz"; do
             if ! jq -e --arg asset "$asset" '.assets[] | select(.name == $asset)' <<<"$release" >/dev/null; then
-              echo "::error::Release v${version} has no ${asset}."
+              echo "::error::Release v${version} is published without ${asset}."
               exit 1
             fi
           done
