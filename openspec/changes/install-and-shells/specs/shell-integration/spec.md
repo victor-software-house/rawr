@@ -8,7 +8,7 @@ Give each supported shell and Claude Code the hooks rawr needs, printed or writt
 
 ### Requirement: Print the shell integration
 
-`rawr init <SHELL>` SHALL print, for `bash`, `zsh` or `fish`, a script that runs `rawr pick` once before the first prompt in a Rex pane.
+`rawr init <SHELL>` SHALL print, for `bash`, `zsh` or `fish`, a script that runs `rawr --startup` once before the first prompt in a Rex pane.
 
 #### Scenario: zsh
 
@@ -36,4 +36,4 @@ Give each supported shell and Claude Code the hooks rawr needs, printed or writt
 #### Scenario: bash
 
 - **WHEN** the user runs `rawr completion bash`
-- **THEN** stdout holds a bash completion script that offers `record`, `pick`, `find`, `init`, `setup` and `completion`
+- **THEN** stdout holds a bash completion script that offers `record`, `daemon`, `status`, `init`, `setup` and `completion`

@@ -1,0 +1,309 @@
+//! The calls that move the user around Rex: a session's windows and layers,
+//! focusing a block, asking the Rex app to show a session, and moving or
+//! floating a block.
+
+use anyhow::{Context, Result};
+use serde::Deserialize;
+use serde::de::IgnoredAny;
+use serde_json::json;
+
+use super::client::Client;
+
+/// A session's windows, from `session.view`.
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct View {
+    #[serde(default)]
+    pub(crate) active_window_id: Option<String>,
+    #[serde(default)]
+    pub(crate) windows: Vec<Window>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct Window {
+    #[serde(rename = "window_id")]
+    pub(crate) id: String,
+    #[serde(default)]
+    pub(crate) label: Option<String>,
+    #[serde(default)]
+    pub(crate) layers: Vec<Layer>,
+    /// The block drawn over the whole window, when one is zoomed.
+    #[serde(default)]
+    pub(crate) zoomed_block_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct Layer {
+    /// `tiled` for the layer that fills the window; anything else floats.
+    pub(crate) kind: String,
+    /// `[x, y, w, h]`, fractions of the window.
+    pub(crate) bounds: [f64; 4],
+    /// `minimized` for a floating layer that is not drawn.
+    #[serde(default)]
+    pub(crate) state: Option<String>,
+    #[serde(rename = "layer_id")]
+    pub(crate) id: String,
+    #[serde(default)]
+    pub(crate) blocks: Vec<LayerBlock>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct LayerBlock {
+    pub(crate) block_id: String,
+}
+
+impl Layer {
+    pub(crate) fn floats(&self) -> bool {
+        self.kind != "tiled"
+    }
+
+    pub(crate) fn minimized(&self) -> bool {
+        self.state.as_deref() == Some("minimized")
+    }
+
+    fn holds(&self, block_id: &str) -> bool {
+        self.blocks.iter().any(|block| block.block_id == block_id)
+    }
+}
+
+impl View {
+    /// The window and layer that hold `block_id`, and the window's place in
+    /// the tab order, from 1.
+    pub(crate) fn find(&self, block_id: &str) -> Option<(usize, &Window, &Layer)> {
+        self.windows.iter().enumerate().find_map(|(index, window)| {
+            window
+                .layers
+                .iter()
+                .find(|layer| layer.holds(block_id))
+                .map(|layer| (index + 1, window, layer))
+        })
+    }
+}
+
+/// A client connected to the server, from `client.list`.
+#[derive(Debug, Deserialize)]
+struct Connected {
+    client_id: String,
+    #[serde(default)]
+    info: Option<ClientInfo>,
+    #[serde(default)]
+    session_ids: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ClientInfo {
+    kind: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ClientList {
+    #[serde(default)]
+    clients: Vec<Connected>,
+}
+
+impl Client {
+    /// # Errors
+    ///
+    /// Fails when the server refuses the call.
+    pub(crate) fn view(&mut self, session_id: &str) -> Result<View> {
+        self.call("session.view", &json!({ "session_id": session_id }))
+    }
+
+    /// Focuses `block_id` and makes its window the session's active window.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the server refuses the call.
+    pub(crate) fn focus_block(&mut self, session_id: &str, block_id: &str) -> Result<()> {
+        self.call::<_, IgnoredAny>(
+            "session.focus_block",
+            &json!({ "session_id": session_id, "block_id": block_id }),
+        )?;
+        Ok(())
+    }
+
+    /// Asks the Rex app attached to `near` (or the first app connected) to
+    /// show `session_id`'s `window_id`, as its Go to Session action does.
+    /// The app performs it only while its Remote Control setting is on.
+    ///
+    /// # Errors
+    ///
+    /// Fails when no app is connected or the app refuses.
+    pub(crate) fn show(&mut self, near: &str, session_id: &str, window_id: &str) -> Result<()> {
+        let list: ClientList = self.call("client.list", &json!({}))?;
+        let apps: Vec<&Connected> = list
+            .clients
+            .iter()
+            .filter(|client| client.info.as_ref().is_some_and(|info| info.kind == "app"))
+            .collect();
+        let app = apps
+            .iter()
+            .find(|client| client.session_ids.iter().any(|id| id == near))
+            .or_else(|| apps.first())
+            .context("no Rex app is connected to show the pane")?;
+        self.call::<_, IgnoredAny>(
+            "client.perform",
+            &json!({
+                "client_id": app.client_id,
+                "action": "session.select",
+                "args": { "session_id": session_id, "window_id": window_id },
+                "origin": "api",
+            }),
+        )?;
+        Ok(())
+    }
+
+    /// Opens a floating layer at `bounds` in `window_id` that runs `command`,
+    /// without focusing it, so the window and the app's view stay as they
+    /// are. Returns the new block's ID.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the server refuses the call or creates no block.
+    pub(crate) fn float_command(
+        &mut self,
+        session_id: &str,
+        window_id: &str,
+        bounds: [f64; 4],
+        command: &[String],
+        size: &Size,
+    ) -> Result<String> {
+        let created: Created = self.call(
+            "session.new_layer",
+            &json!({
+                "session_id": session_id,
+                "window_id": window_id,
+                "bounds": bounds,
+                "focus": false,
+                "layout": { "block": {
+                    "flavor": "com.superlogical.terminal.shell",
+                    "label": "rawr",
+                    "options": { "command": command, "size": size },
+                } },
+            }),
+        )?;
+        created
+            .block_ids
+            .into_iter()
+            .next()
+            .context("Rex opened the layer with no block")
+    }
+
+    /// The size of the terminal in `block_id`: its columns and rows, and
+    /// the pixel size of one cell.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the server refuses the call.
+    pub(crate) fn terminal_size(&mut self, session_id: &str, block_id: &str) -> Result<Size> {
+        self.call(
+            "com.superlogical.terminal.size",
+            &json!({ "session_id": session_id, "block_id": block_id, "args": {} }),
+        )
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct Created {
+    #[serde(default)]
+    block_ids: Vec<String>,
+}
+
+/// A terminal's size, from `com.superlogical.terminal.size`.
+#[derive(Debug, Clone, Copy, Deserialize, serde::Serialize)]
+pub(crate) struct Size {
+    pub(crate) columns: u32,
+    pub(crate) rows: u32,
+    pub(crate) cell_width_px: u32,
+    pub(crate) cell_height_px: u32,
+}
+
+impl Client {
+    /// Closes the one block `block_id`, by its ID, and nothing else: other
+    /// blocks in its layer stay, and a label, which any program may set,
+    /// never picks the block.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the server refuses the call.
+    /// It never closes the last block of a window, which would close the
+    /// window too.
+    pub(crate) fn close_block(&mut self, session_id: &str, block_id: &str) -> Result<()> {
+        self.call::<_, IgnoredAny>(
+            "block.close",
+            &json!({ "session_id": session_id, "block_id": block_id, "keep_last": true }),
+        )?;
+        Ok(())
+    }
+}
+
+impl Client {
+    /// Undoes the zoom in the window that holds `block_id`, so every block
+    /// in it shows.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the server refuses the call.
+    pub(crate) fn unzoom(&mut self, session_id: &str, block_id: &str) -> Result<()> {
+        self.call::<_, IgnoredAny>(
+            "session.zoom_block",
+            &json!({ "session_id": session_id, "block_id": block_id, "zoom": false }),
+        )?;
+        Ok(())
+    }
+
+    /// Draws a minimized floating layer again, raised and focused.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the server refuses the call.
+    pub(crate) fn restore_layer(&mut self, session_id: &str, layer_id: &str) -> Result<()> {
+        self.call::<_, IgnoredAny>(
+            "session.set_layer_state",
+            &json!({
+                "session_id": session_id,
+                "layer_id": layer_id,
+                "state": "normal",
+                "focus": true,
+            }),
+        )?;
+        Ok(())
+    }
+}
+
+impl Client {
+    /// Opens a tab in `session_id`, labelled `label`, that runs `command` in
+    /// `cwd` through the user's login shell, so it finds what their own
+    /// terminals find. The tab becomes the session's active one. Returns
+    /// its window.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the server refuses the call.
+    pub(crate) fn open_tab(
+        &mut self,
+        session_id: &str,
+        label: &str,
+        cwd: &str,
+        command: &[String],
+    ) -> Result<String> {
+        let created: NewWindow = self.call(
+            "session.new_window",
+            &json!({
+                "session_id": session_id,
+                "window_label": label,
+                "focus": true,
+                "layout": { "block": {
+                    "flavor": "com.superlogical.terminal.shell",
+                    "label": "claude",
+                    "options": { "command": command, "cwd": cwd },
+                } },
+            }),
+        )?;
+        Ok(created.window_id)
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct NewWindow {
+    window_id: String,
+}

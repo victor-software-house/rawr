@@ -1,0 +1,51 @@
+# Design
+
+## Context
+
+1. `view::scrollbar` draws ratatui's `Scrollbar` in four lists: panes, sessions, search results and the session's tabs.
+   It draws a `┃` thumb in the list's last column, with a blank track, whenever the list does not fit.
+2. No hit is recorded for it, so a press there does nothing.
+3. The app already drags a column's edge (`Target::Edge`, `App::dragging`), and redraws on the frame clock while something moves.
+4. The Conversation and Activity tabs hold at most 3,000 entries of a session, and load older and newer ones in pages of 100 relative to an entry they hold.
+
+## Decisions
+
+1. **The geometry follows Claude Code's list scroll bar.**
+   - The thumb's size is the share of the list in view, at least one row.
+   - The thumb touches an end of the track only when the view is at that end, so a thumb at the top always means the start.
+   - Alternative: ratatui's `Scrollbar`, as now.
+     It lost: it has no inverse from a thumb row to a list position, which a drag needs.
+2. **The thumb can be held.**
+   - A press on the thumb grabs it at the row pressed, and a drag keeps that row under the pointer, so the list follows the pointer at once.
+   - The thumb is drawn `█`, the whole cell, while the pointer is on the bar or the thumb is held, and `┃` otherwise, so what can be grabbed shows how wide it is.
+   - A press on the track pages the list by a view's height toward the press.
+   - The pointer shows a hand over the bar, as over other targets.
+3. **A scrollbar shows only while it is in use.**
+   - It shows while its list scrolls by the wheel, a key or a drag, while the pointer is on its column, and while its thumb is held.
+   - 800 ms after the last of these, it fades out over 200 ms in four steps of dimmer colour on the frame clock, and then its column is blank.
+   - Its column stays reserved while it is hidden, so text never moves when it shows.
+   - A list that fits draws no bar.
+   - Alternative: always show it, as now.
+     It lost: the maintainer asked for it out of sight (operator, 2026-11-25).
+4. **A drag past the held entries jumps.**
+   - In the Conversation and Activity tabs, the thumb's position stands for a place in the whole session, by the counts the tabs already show.
+   - On each drag report whose place no held entry covers, the window asks the daemon `around` at once, with the list, the transcript the frame found the place in, and that place as a byte of the transcript.
+   - Only one `around` is out at a time.
+     The thumb going on meanwhile keeps its newest place, and when the answer lands, that place is found again where the thumb stands now, and asked for if no held entry covers it.
+   - A place in a gap, or among the entries older than the held ones, is a byte inside that stretch.
+     It lies between the byte offsets of the held entries on each side of the stretch, the first or last byte of the transcript when none is held there, by how far into the stretch's estimated entries the bar line is.
+     The tabs list the newest entry first, so a drag just past the held entries asks for a byte just before the oldest held one, and a drag to the bottom asks for the first calls.
+   - The daemon reads the 100 entries of that list nearest that byte, as it reads any page, and answers `around`, a message of its own that names the request it answers.
+     Each request carries a number, and only the answer to the request out lands.
+   - The window keeps its view until each answer lands, then shows the entry at that place at the top in one frame.
+     A place that held entries cover shows at once.
+     An answer that adds no entry the window did not hold leaves the view where it is.
+     The answer joins the held entries with gaps on both sides, which pages fill as for any gap.
+   - The place belongs to its transcript: an answer for another transcript never lands, and showing another transcript gives the place up.
+   - The daemon cannot count the entries it skips, so the window shares the entries not held there between the two new gaps by the bytes each side spans.
+     The counts of the whole session stay as they were.
+   - While the thumb is held, or a place is waiting for its entries, the window asks for no older or newer page, so a drag loads nothing on its way but the `around` answers.
+   - A thumb that moves with no input, as when an answer changes the counts, glides to its new row over 100 ms on the frame clock.
+     A held thumb stays under the pointer, and one that input moves follows at once.
+   - Alternative: load every page between the view and the place.
+     It lost: the 3,000-entry bound would drop each page soon after it lands, and a long session would take seconds.

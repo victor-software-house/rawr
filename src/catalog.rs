@@ -10,11 +10,12 @@ use std::borrow::Cow;
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
-use std::io::{BufRead, BufReader, ErrorKind};
+use std::io::{BufRead, BufReader, ErrorKind, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use anyhow::{Context, Result};
+use memchr::memmem;
 use serde::Deserialize;
 
 use crate::session::{Agent, sanitize, transcript_title};
@@ -32,14 +33,18 @@ pub(crate) struct Found {
     latest: u64,
     /// Whether the title came from a typed prompt rather than a slash command.
     titled: bool,
+    /// Its prompts as typed, oldest first, for the line a search shows.
+    prompts: Vec<String>,
+    /// Its transcript, which a deep search reads.
+    pub(crate) transcript: PathBuf,
 }
 
 /// A session's transcript, as one listing of `projects/*/` finds it.
 #[derive(Debug)]
-struct Transcript {
-    path: PathBuf,
+pub(crate) struct Transcript {
+    pub(crate) path: PathBuf,
     /// When it was last written.
-    modified: Option<SystemTime>,
+    pub(crate) modified: Option<SystemTime>,
 }
 
 /// One line of `history.jsonl`.
@@ -102,15 +107,19 @@ pub(crate) fn load(claude: &Path, live: &HashSet<String>) -> Result<Vec<Found>> 
                 idle: transcript
                     .modified
                     .and_then(|at| now.duration_since(at).ok()),
+                transcript: transcript.path.clone(),
             },
             text: format!("{}\n{}\n", prompt.project.to_lowercase(), id.to_lowercase()),
             latest: 0,
             titled: false,
+            prompts: Vec::new(),
+            transcript: transcript.path.clone(),
         });
         if !found.titled && !is_command(&prompt.display) {
             found.agent.title = title(&prompt.display);
             found.titled = true;
         }
+        found.prompts.push(prompt.display.as_ref().to_owned());
         found.text.push_str(&prompt.display.to_lowercase());
         found.text.push('\n');
         found.latest = found.latest.max(prompt.timestamp);
@@ -131,7 +140,7 @@ pub(crate) fn load(claude: &Path, live: &HashSet<String>) -> Result<Vec<Found>> 
 }
 
 /// Every `projects/*/<session id>.jsonl`, by session ID.
-fn transcripts(projects: &Path) -> Result<HashMap<String, Transcript>> {
+pub(crate) fn transcripts(projects: &Path) -> Result<HashMap<String, Transcript>> {
     let mut found = HashMap::new();
     let folders = match fs::read_dir(projects) {
         Ok(folders) => folders,
@@ -211,6 +220,200 @@ pub(crate) fn search(pane: &[Agent], catalog: &[Found], terms: &[String]) -> Vec
         }
     }
     results
+}
+
+/// A session a search found, with the line that matched.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) struct Hit {
+    pub(crate) agent: Agent,
+    /// The typed prompt, or the stretch of transcript, that holds the first
+    /// search word, cut around it.
+    pub(crate) snippet: Option<String>,
+    /// How many prompts the user typed in the session.
+    pub(crate) prompts: usize,
+}
+
+/// The longest snippet, in characters.
+const SNIPPET_CHARS: usize = 160;
+
+/// `text` cut to about [`SNIPPET_CHARS`] around the first place `term`
+/// occurs, on one line and safe to draw. `term` is lowercased with
+/// [`str::to_lowercase`], as [`terms`] does, since the text is lowercased the
+/// same way to find it.
+pub(crate) fn around(text: &str, term: &str) -> String {
+    let flat = sanitize(&text.split_whitespace().collect::<Vec<_>>().join(" "));
+    // Lowercasing can lengthen a character, so `starts` maps each byte of
+    // `lower` back to the character of `flat` it came from.
+    let mut lower = String::new();
+    let mut starts = Vec::new();
+    for c in flat.chars() {
+        starts.push(lower.len());
+        lower.extend(c.to_lowercase());
+    }
+    let chars: Vec<char> = flat.chars().collect();
+    let at = lower.find(term).map_or(0, |byte| {
+        starts
+            .partition_point(|&start| start <= byte)
+            .saturating_sub(1)
+    });
+    let start = at.saturating_sub(SNIPPET_CHARS / 3);
+    let end = (start + SNIPPET_CHARS).min(chars.len());
+    let mut cut: String = chars[start..end].iter().collect();
+    if start > 0 {
+        cut.insert(0, '…');
+    }
+    if end < chars.len() {
+        cut.push('…');
+    }
+    cut
+}
+
+/// Like [`search`], with the line that matched and the session's prompt
+/// count.
+pub(crate) fn hits(pane: &[Agent], catalog: &[Found], terms: &[String]) -> Vec<Hit> {
+    let by_id: HashMap<&str, &Found> = catalog
+        .iter()
+        .map(|found| (found.agent.session_id.as_str(), found))
+        .collect();
+    let first = terms.first().map_or_default(String::as_str);
+    search(pane, catalog, terms)
+        .into_iter()
+        .map(|agent| {
+            let found = by_id.get(agent.session_id.as_str());
+            let snippet = found.and_then(|found| {
+                found
+                    .prompts
+                    .iter()
+                    .rev()
+                    .find(|prompt| prompt.to_lowercase().contains(first))
+                    .map(|prompt| around(prompt, first))
+            });
+            Hit {
+                prompts: found.map_or(0, |found| found.prompts.len()),
+                agent,
+                snippet,
+            }
+        })
+        .collect()
+}
+
+/// The sessions in `catalog` whose transcript holds every term, though no
+/// prompt or title does: what Claude wrote, tool output, file names. Each
+/// transcript is read line by line through one buffer, and only until every
+/// term has turned up; `skip` holds the sessions already found.
+pub(crate) fn deep(
+    catalog: &[Found],
+    terms: &[String],
+    skip: &HashSet<String>,
+    stale: impl Fn() -> bool,
+) -> Vec<Hit> {
+    let Some(first) = terms.first() else {
+        return Vec::new();
+    };
+    catalog
+        .iter()
+        .filter(|found| !skip.contains(&found.agent.session_id))
+        .take_while(|_| !stale())
+        .filter_map(|found| {
+            let raw = scan(&found.transcript, terms, &stale)?;
+            Some(Hit {
+                agent: found.agent.clone(),
+                snippet: Some(around(&raw, first)),
+                prompts: found.prompts.len(),
+            })
+        })
+        .collect()
+}
+
+/// How much of a transcript one step of a search reads.
+const PART: u64 = 1 << 18;
+
+/// Reads the transcript at `path` from its newest line back, a part at a
+/// time, and returns the stretch around the first term's newest spoken
+/// occurrence, once every term has occurred in a spoken line; `None` when
+/// one never does, or when `stale` says a newer search has begun, which
+/// it asks between parts. Memory stays at a part, or the longest line.
+fn scan(path: &Path, terms: &[String], stale: &impl Fn() -> bool) -> Option<String> {
+    let first = terms.first()?;
+    let mut file = File::open(path).ok()?;
+    let mut back = file.metadata().ok()?.len();
+    let mut size = PART;
+    let mut lower = Vec::new();
+    let mut seen = vec![false; terms.len()];
+    let mut snippet = None;
+    while back > 0 {
+        if stale() {
+            return None;
+        }
+        let from = back.saturating_sub(size);
+        file.seek(SeekFrom::Start(from)).ok()?;
+        let mut bytes = vec![0; usize::try_from(back - from).ok()?];
+        file.read_exact(&mut bytes).ok()?;
+        // The part's first bytes end a line that starts before it; a line
+        // longer than the part takes a larger one.
+        let start = if from == 0 {
+            0
+        } else {
+            match memchr::memchr(b'\n', &bytes) {
+                Some(at) if at + 1 < bytes.len() => at + 1,
+                _ => {
+                    size = size.saturating_mul(2);
+                    continue;
+                }
+            }
+        };
+        for line in bytes
+            .get(start..)
+            .unwrap_or_default()
+            .rsplit(|byte| *byte == b'\n')
+        {
+            // Only what the user and Claude wrote counts: the instructions,
+            // reminders and attachments Claude Code adds to every session
+            // would match everything.
+            if !spoken(line) {
+                continue;
+            }
+            lower.clear();
+            lower.extend(line.iter().map(u8::to_ascii_lowercase));
+            for (term, seen) in terms.iter().zip(seen.iter_mut()) {
+                if *seen {
+                    continue;
+                }
+                let Some(at) = memmem::find(&lower, term.as_bytes()) else {
+                    continue;
+                };
+                *seen = true;
+                if term == first && snippet.is_none() {
+                    let start = at.saturating_sub(SNIPPET_CHARS);
+                    let end = (at + SNIPPET_CHARS * 2).min(line.len());
+                    snippet = Some(
+                        String::from_utf8_lossy(&line[start..end])
+                            .replace("\\n", " ")
+                            .replace("\\\"", "\"")
+                            .replace("\\t", " "),
+                    );
+                }
+            }
+            if seen.iter().all(|seen| *seen) {
+                return snippet;
+            }
+        }
+        back = from + u64::try_from(start).ok()?;
+        size = PART;
+    }
+    None
+}
+
+/// Whether a transcript line holds words the user or Claude wrote: a user
+/// or assistant message, and not one Claude Code marks as its own, such as
+/// the loaded instructions or a reminder. Claude Code writes these keys in
+/// this case, so the raw line is checked.
+fn spoken(line: &[u8]) -> bool {
+    let has = |needle: &[u8]| memmem::find(line, needle).is_some();
+    (has(b"\"type\":\"user\"") || has(b"\"type\":\"assistant\""))
+        && !has(b"\"isMeta\":true")
+        && !has(b"<system-reminder>")
+        && !has(b"\"tool_use_id\"")
 }
 
 #[cfg(test)]
@@ -323,5 +526,20 @@ mod tests {
         assert!(cut.chars().count() <= TITLE_CHARS + 1);
         assert_eq!(title("  \n\n"), "Untitled session");
         assert_eq!(title("\u{1b}[2Jhi"), "[2Jhi");
+    }
+
+    #[test]
+    fn a_snippet_stays_around_the_match_after_lowercasing_lengthens_the_text() {
+        let before = "İ".repeat(300);
+        let text = format!("{before} needle {}", "x".repeat(300));
+        assert!(around(&text, "needle").contains("needle"));
+        let text = format!("{before} needle");
+        assert!(around(&text, "needle").contains("needle"));
+    }
+
+    #[test]
+    fn a_snippet_of_plain_text_is_cut_around_the_match() {
+        let text = format!("{} needle {}", "a".repeat(100), "b".repeat(200));
+        assert_eq!(around(&text, "needle"), format!("…{}…", &text[48..208]));
     }
 }

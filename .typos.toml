@@ -1,5 +1,6 @@
 # Spelling, checked by `mise run lint:typos`.
 [files]
+# The demo recording stores each frame's text, cut at arbitrary points.
 extend-exclude = ["*.lock"]
 
 [default.extend-words]

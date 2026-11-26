@@ -3,12 +3,13 @@
 //!
 //! Rex keeps a pane's block ID across a server restart, so the block ID is the
 //! pane's identity. `record` remembers which Claude sessions ran in a pane, and
-//! `pick` offers them again in that pane after a restart.
+//! `rawr --startup` offers them again in that pane after a restart.
 
+mod app;
 mod catalog;
 mod config;
+mod daemon;
 mod index;
-mod picker;
 mod rex;
 mod session;
 mod setup;
@@ -17,17 +18,16 @@ mod status;
 use std::collections::HashSet;
 use std::env;
 use std::io::{self, IsTerminal};
+use std::path::Path;
 
 use anyhow::{Context, Result};
 use ctl_core::completion::CompletionCommand;
 use ctl_core::prelude::*;
 use ctl_core::shell::{self, Script};
-use ctl_core::view;
 use serde::Serialize;
 
 use crate::config::Config;
 use crate::index::{BlockId, HookInput, PaneIndex};
-use crate::picker::Start;
 use crate::rex::{Client, Endpoint};
 use crate::session::Agent;
 use crate::setup::{Change, Mode};
@@ -36,9 +36,17 @@ use crate::setup::{Change, Mode};
 #[derive(Debug, Parser)]
 #[command(name = "rawr", version)]
 #[command(about = "Bring Claude Code agents back into their Rex panes after a restart")]
+#[command(args_conflicts_with_subcommands = true)]
 struct Cli {
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
+    /// The view a hand-off started this window for, by the daemon's ID.
+    #[arg(long, hide = true, value_name = "ID")]
+    view: Option<u64>,
+    /// Open the app on this pane's sessions only when one can be resumed;
+    /// otherwise print nothing and exit 0. A new shell runs it.
+    #[arg(long, conflicts_with = "view")]
+    startup: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -48,21 +56,11 @@ enum Command {
     /// A Claude Code `SessionStart` hook runs it. Outside a Rex pane it does
     /// nothing.
     Record,
-    /// Choose one of this pane's sessions and resume it.
+    /// Hold the Rex feed, transcript facts and search for every rawr window.
     ///
-    /// The picker draws on stderr. On a choice, rawr becomes `claude --resume`
-    /// in the session's folder. The exit status is non-zero with nothing
-    /// printed when there is nothing to offer or the picker is dismissed.
-    Pick,
-    /// Search every resumable local session and resume the chosen one.
-    ///
-    /// Works in or out of a Rex pane; in one, the pane's own sessions come
-    /// first. Resumes and exits as `pick` does.
-    Find {
-        /// Words to search for; each must occur in a session's prompts,
-        /// folder or ID.
-        words: Vec<String>,
-    },
+    /// A rawr window starts it when none runs; `brew services` keeps one from
+    /// login.
+    Daemon,
     /// List each Rex pane that has a Claude session, and what its Claude is
     /// doing.
     ///
@@ -93,19 +91,16 @@ enum Target {
     },
 }
 
-/// What `pick` and `find` print on stderr after a dismissal.
-const DISMISSED_HINT: &str = "rawr pick reopens this pane's sessions · rawr find searches all";
-
 /// What a command reports.
 #[derive(Debug, Serialize)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
 enum Outcome {
     /// `record` stored the session, or had no pane to store it for.
     Recorded,
-    /// There was nothing to offer.
+    /// The app needs a terminal and has none.
     Nothing,
-    /// The user dismissed the picker; the hint says how to reopen it.
-    Dismissed,
+    /// The app closed, or `--startup` had nothing to offer.
+    Closed,
     /// `status` listed the panes that have a session.
     Status { panes: Vec<status::Row> },
     /// `setup` checked or changed a settings file.
@@ -117,8 +112,7 @@ enum Outcome {
 impl Present for Outcome {
     fn present(&self) -> Document {
         match self {
-            Self::Recorded | Self::Nothing => Document::new(),
-            Self::Dismissed => Document::new().paragraph(Text::new().muted(DISMISSED_HINT)),
+            Self::Recorded | Self::Nothing | Self::Closed => Document::new(),
             Self::Status { panes } if panes.is_empty() => Document::new(),
             Self::Status { panes } => Document::new().table(status::table(panes)),
             Self::Setup { change, path } => Document::new().verbatim(match change {
@@ -130,23 +124,14 @@ impl Present for Outcome {
         }
     }
 
-    /// A dismissal is an error outcome, so its hint goes to stderr and
-    /// `pick` and `find` write nothing to stdout.
-    fn outcome(&self) -> view::Outcome {
-        match self {
-            Self::Dismissed => view::Outcome::Error,
-            Self::Recorded
-            | Self::Nothing
-            | Self::Status { .. }
-            | Self::Setup { .. }
-            | Self::Completion(_) => view::Outcome::Success,
-        }
-    }
-
     fn exit_code(&self) -> u8 {
         match self {
-            Self::Recorded | Self::Status { .. } | Self::Setup { .. } | Self::Completion(_) => 0,
-            Self::Nothing | Self::Dismissed => 1,
+            Self::Recorded
+            | Self::Closed
+            | Self::Status { .. }
+            | Self::Setup { .. }
+            | Self::Completion(_) => 0,
+            Self::Nothing => 1,
         }
     }
 }
@@ -157,21 +142,22 @@ fn main() -> ExitCode {
         // The script is the whole result, so it prints plain whatever the
         // terminal, as `source <(rawr completion zsh)` needs.
         .view(|cli| match cli.command {
-            Command::Completion(_) => shell::view(OutputFormat::Pretty),
-            Command::Status(ref output) => output.view(ColorMode::Auto),
-            Command::Record | Command::Pick | Command::Find { .. } | Command::Setup { .. } => {
+            Some(Command::Completion(_)) => shell::view(OutputFormat::Pretty),
+            Some(Command::Status(ref output)) => output.view(ColorMode::Auto),
+            None | Some(Command::Record | Command::Daemon | Command::Setup { .. }) => {
                 View::new(OutputFormat::Pretty, ColorMode::Auto)
             }
         })
         .run(|cli| match cli.command {
-            Command::Record => record().map(|()| Outcome::Recorded),
-            Command::Pick => pick(),
-            Command::Find { words } => find(&words),
-            Command::Status(_) => list_panes(),
-            Command::Setup {
+            None if cli.startup => startup(),
+            None => open_app(cli.view, &app::Mode::Full),
+            Some(Command::Record) => record().map(|()| Outcome::Recorded),
+            Some(Command::Daemon) => daemon::serve().map(|()| Outcome::Recorded),
+            Some(Command::Status(_)) => list_panes(),
+            Some(Command::Setup {
                 target: Target::Claude { dry_run },
-            } => setup_claude(if dry_run { Mode::DryRun } else { Mode::Write }),
-            Command::Completion(command) => Ok(Outcome::Completion(command.script("rawr")?)),
+            }) => setup_claude(if dry_run { Mode::DryRun } else { Mode::Write }),
+            Some(Command::Completion(command)) => Ok(Outcome::Completion(command.script("rawr")?)),
         })
 }
 
@@ -209,49 +195,51 @@ fn pane_agents(live: &HashSet<String>) -> Result<Vec<Agent>> {
     };
     let mut pane = PaneIndex::load(&index::state_dir()?, &block)?;
     pane.prune_missing(index::unix_now());
-    Ok(session::resumable(pane.entries(), live))
-}
-
-/// Opens the picker over `pane`, showing `config.picker.rows` sessions at a
-/// time, and resumes the chosen session, or returns [`Outcome::Dismissed`]
-/// when the user dismisses the picker.
-fn choose(pane: &[Agent], start: Start, live: HashSet<String>, config: &Config) -> Result<Outcome> {
-    let load = move || catalog::load(&session::claude_dir()?, &live);
-    match picker::choose(pane, start, config.picker.rows, load)? {
-        Some(agent) => match agent.resume()? {},
-        None => Ok(Outcome::Dismissed),
-    }
-}
-
-/// Shows this pane's agents and resumes the chosen one, or returns
-/// [`Outcome::Nothing`] when there is nothing to offer, and
-/// [`Outcome::Dismissed`] when the user dismisses the picker.
-fn pick() -> Result<Outcome> {
-    if !io::stderr().is_terminal() {
-        return Ok(Outcome::Nothing);
-    }
-    let live = session::live_sessions()?;
-    let agents = pane_agents(&live)?;
-    if agents.is_empty() {
-        return Ok(Outcome::Nothing);
-    }
-    choose(&agents, Start::Pane, live, &Config::load()?)
-}
-
-/// Opens the picker over every local session, with `words` typed in the
-/// search box.
-fn find(words: &[String]) -> Result<Outcome> {
-    if !io::stderr().is_terminal() {
-        return Ok(Outcome::Nothing);
-    }
-    let live = session::live_sessions()?;
-    let agents = pane_agents(&live)?;
-    choose(
-        &agents,
-        Start::Search(words.join(" ")),
+    Ok(session::resumable(
+        pane.entries(),
         live,
-        &Config::load()?,
+        &mut session::Titles::default(),
+    ))
+}
+
+/// Opens a stand-in on this pane's sessions when one of them can be resumed;
+/// otherwise prints nothing and returns [`Outcome::Closed`], since a new
+/// shell runs it in every pane.
+fn startup() -> Result<Outcome> {
+    if !io::stderr().is_terminal() {
+        return Ok(Outcome::Closed);
+    }
+    let agents = pane_agents(&session::live_sessions()?)?;
+    // The pane, as Rex names its blocks, so the stand-in finds it in its list.
+    let (Some(newest), Ok(block)) = (agents.first(), env::var("REX_BLOCK")) else {
+        return Ok(Outcome::Closed);
+    };
+    let title = stand_in_title(newest);
+    open_app(None, &app::Mode::StandIn { block, title })
+}
+
+/// What a stand-in calls its pane: the title of the newest resumable
+/// session, or its folder's name when the session is untitled.
+fn stand_in_title(agent: &Agent) -> String {
+    if !agent.title.is_empty() && agent.title != "Untitled session" {
+        return agent.title.clone();
+    }
+    Path::new(&agent.cwd).file_name().map_or_else(
+        || agent.cwd.clone(),
+        |name| name.to_string_lossy().into_owned(),
     )
+}
+
+/// Opens the app in `mode`, and resumes the session the user chooses.
+fn open_app(view: Option<u64>, mode: &app::Mode) -> Result<Outcome> {
+    if !io::stderr().is_terminal() {
+        eprintln!("rawr needs a terminal; rawr status --format json lists the panes");
+        return Ok(Outcome::Nothing);
+    }
+    match app::run(view, mode)? {
+        Some(agent) => match agent.resume()? {},
+        None => Ok(Outcome::Closed),
+    }
 }
 
 /// Lists the Rex panes that have a session, each with what its Claude is
@@ -275,9 +263,11 @@ fn setup_claude(mode: Mode) -> Result<Outcome> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use ctl_core::prelude::*;
 
-    use super::{Cli, Outcome};
+    use super::{Agent, Cli, Outcome};
 
     fn shown(outcome: &Outcome) -> (String, Destination) {
         let captured = View::new(OutputFormat::Pretty, ColorMode::Never)
@@ -300,20 +290,44 @@ mod tests {
     }
 
     #[test]
-    fn a_dismissal_prints_the_hint_on_stderr_and_fails() {
-        let (text, stream) = shown(&Outcome::Dismissed);
-        assert_eq!(
-            text.trim_end(),
-            "rawr pick reopens this pane's sessions · rawr find searches all"
-        );
-        assert_eq!(stream, Destination::Stderr);
-        assert_eq!(Outcome::Dismissed.exit_code(), 1);
+    fn a_closed_app_prints_nothing_and_succeeds() {
+        assert_eq!(shown(&Outcome::Closed).0, "");
+        assert_eq!(Outcome::Closed.exit_code(), 0);
     }
 
     #[test]
-    fn nothing_to_offer_prints_no_hint() {
-        let (text, _) = shown(&Outcome::Nothing);
-        assert!(!text.contains("rawr pick reopens"), "{text}");
+    fn startup_parses_bare_and_not_beside_a_verb() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["rawr", "--startup"]).expect("--startup parses");
+        assert!(cli.startup && cli.command.is_none());
+        assert!(Cli::try_parse_from(["rawr", "--startup", "status"]).is_err());
+    }
+
+    #[test]
+    fn a_stand_in_is_named_after_its_session_or_its_folder() {
+        let mut agent = Agent {
+            session_id: "0190f3a2".to_owned(),
+            cwd: "/work/shop".to_owned(),
+            title: "Fix checkout".to_owned(),
+            idle: None,
+            transcript: PathBuf::from("/work/shop/session.jsonl"),
+        };
+        assert_eq!(super::stand_in_title(&agent), "Fix checkout");
+        agent.title.clear();
+        assert_eq!(super::stand_in_title(&agent), "shop");
+        agent.title = "Untitled session".to_owned();
+        assert_eq!(super::stand_in_title(&agent), "shop");
+    }
+
+    #[test]
+    fn pick_and_find_are_gone() {
+        use clap::Parser;
+        use clap::error::ErrorKind;
+        for verb in ["pick", "find"] {
+            let error = Cli::try_parse_from(["rawr", verb]).expect_err("the verb is gone");
+            assert_eq!(error.kind(), ErrorKind::InvalidSubcommand, "{verb}");
+            assert_eq!(error.exit_code(), 2, "{verb}");
+        }
     }
 
     #[test]
@@ -321,7 +335,7 @@ mod tests {
         use clap::Parser;
         let cli = Cli::try_parse_from(["rawr", "status", "--format", "json"])
             .expect("status --format json parses");
-        let super::Command::Status(format) = cli.command else {
+        let Some(super::Command::Status(format)) = cli.command else {
             panic!("status is the status verb");
         };
         assert_eq!(format.format, OutputFormat::Json);
@@ -359,7 +373,7 @@ mod tests {
         use clap::Parser;
         let cli =
             Cli::try_parse_from(["rawr", "completion", "zsh"]).expect("completion zsh parses");
-        let super::Command::Completion(command) = cli.command else {
+        let Some(super::Command::Completion(command)) = cli.command else {
             panic!("completion zsh is the completion verb");
         };
         let outcome = Outcome::Completion(command.script("rawr").expect("the script renders"));

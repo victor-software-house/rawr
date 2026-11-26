@@ -9,6 +9,7 @@
 //! Nothing outside this module sees JSON or websocket types.
 
 mod client;
+mod control;
 #[cfg(test)]
 pub(crate) mod fake;
 // Block and session events are read by the daemon, which a later slice adds;
@@ -26,4 +27,4 @@ mod protocol;
 mod tests;
 
 pub(crate) use client::{Client, Endpoint, session_is_gone};
-pub(crate) use protocol::{Block, Session, State, StatusRecord};
+pub(crate) use protocol::{Block, Kind, Session, State, StatusRecord};

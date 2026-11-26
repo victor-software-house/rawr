@@ -4,22 +4,26 @@
 //! ```yaml
 //! history:
 //!   per_pane: 5
-//! picker:
-//!   rows: 3
 //! restart:
 //!   wait: 5m
 //! drain:
 //!   interrupt: 2m
 //!   grace: 1m
+//! files:
+//!   open: [png, pdf]
+//!   text: [md, rs, py]
+//!   no_extension: text
+//!   other: reveal
+//!   reveal_runnable: true
 //! ```
 //!
 //! Every key is optional, and an absent file holds the defaults. ctl-core's
 //! `input` loader reads the file, so a bad value is reported with the file's
 //! name and the line it sits on.
 
-// The restart and drain keys, and the picker's rows, are read by later
-// slices of the supervisor change. Once every key is read, the compiler
-// reports this expectation as unfulfilled, which is the cue to remove it.
+// The restart and drain keys are read by later slices of the supervisor
+// change. Once every key is read, the compiler reports this expectation as
+// unfulfilled, which is the cue to remove it.
 #![cfg_attr(
     not(test),
     expect(dead_code, reason = "a later slice of the supervisor reads these keys")
@@ -44,12 +48,12 @@ const UNITS: [(char, u64); 3] = [('s', 1), ('m', 60), ('h', 3600)];
 pub(crate) struct Config {
     #[garde(dive)]
     pub(crate) history: History,
-    #[garde(dive)]
-    pub(crate) picker: Picker,
     #[garde(skip)]
     pub(crate) restart: Restart,
     #[garde(skip)]
     pub(crate) drain: Drain,
+    #[garde(skip)]
+    pub(crate) files: Files,
 }
 
 /// How many sessions each pane remembers.
@@ -59,15 +63,6 @@ pub(crate) struct History {
     /// The most sessions one pane's index holds.
     #[garde(custom(at_least_one))]
     pub(crate) per_pane: usize,
-}
-
-/// How the picker shows the sessions.
-#[derive(Debug, Clone, Deserialize, Validate)]
-#[serde(default, deny_unknown_fields)]
-pub(crate) struct Picker {
-    /// The most sessions the picker shows before `ctrl+o` expands the list.
-    #[garde(custom(at_least_one))]
-    pub(crate) rows: usize,
 }
 
 /// How long a restart waits.
@@ -92,15 +87,91 @@ pub(crate) struct Drain {
     pub(crate) grace: Duration,
 }
 
-impl Default for History {
+/// How a click in the Files tab opens a file a session touched. Each list
+/// contains file extensions, matched without regard to case, with or
+/// without a leading dot.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub(crate) struct Files {
+    /// The extensions of files that open in their default app.
+    pub(crate) open: Vec<String>,
+    /// The extensions of files that open in a text editor, so that no handler
+    /// can run them, as a `.py` file's would.
+    pub(crate) text: Vec<String>,
+    /// How a file with no extension opens.
+    pub(crate) no_extension: Opening,
+    /// How a file whose extension is in neither list opens.
+    pub(crate) other: Opening,
+    /// Whether a folder, which may be a bundle, or a file with an execute
+    /// bit opens in its folder whatever its extension.
+    pub(crate) reveal_runnable: bool,
+}
+
+/// How a file opens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum Opening {
+    /// In its default app.
+    Open,
+    /// In a text editor.
+    Text,
+    /// Shown in its folder.
+    Reveal,
+}
+
+/// The extensions of files the system only shows: images and PDF.
+const OPEN: [&str; 11] = [
+    "png", "jpg", "jpeg", "gif", "webp", "heic", "tif", "tiff", "bmp", "ico", "pdf",
+];
+
+/// The extensions of text and source files.
+const TEXT: [&str; 62] = [
+    "txt", "md", "markdown", "mdx", "rst", "adoc", "log", "csv", "tsv", "json", "jsonl", "yaml",
+    "yml", "toml", "xml", "ini", "cfg", "conf", "lock", "diff", "patch", "rs", "go", "py", "rb",
+    "js", "mjs", "cjs", "ts", "tsx", "jsx", "java", "kt", "swift", "c", "h", "cc", "cpp", "hpp",
+    "m", "mm", "cs", "php", "pl", "lua", "sh", "bash", "zsh", "fish", "sql", "css", "scss", "html",
+    "vue", "svelte", "nix", "tf", "proto", "graphql", "gradle", "dart", "zig",
+];
+
+impl Default for Files {
     fn default() -> Self {
-        Self { per_pane: 5 }
+        Self {
+            open: OPEN.map(str::to_owned).to_vec(),
+            text: TEXT.map(str::to_owned).to_vec(),
+            no_extension: Opening::Text,
+            other: Opening::Reveal,
+            reveal_runnable: true,
+        }
     }
 }
 
-impl Default for Picker {
+impl Files {
+    /// How a file with `extension` opens, or a file with no extension when
+    /// it is `None`. An extension in both lists opens in its default app.
+    pub(crate) fn opening_for(&self, extension: Option<&str>) -> Opening {
+        let Some(extension) = extension else {
+            return self.no_extension;
+        };
+        let listed = |extensions: &[String]| {
+            extensions.iter().any(|listed| {
+                listed
+                    .trim_start_matches('.')
+                    .eq_ignore_ascii_case(extension)
+            })
+        };
+        if listed(&self.open) {
+            Opening::Open
+        } else if listed(&self.text) {
+            Opening::Text
+        } else {
+            self.other
+        }
+    }
+}
+
+impl Default for History {
     fn default() -> Self {
-        Self { rows: 3 }
+        Self { per_pane: 5 }
     }
 }
 
@@ -223,10 +294,43 @@ mod tests {
         let dir = env::temp_dir().join(format!("rawr-config-absent-{}", process::id()));
         let config = Config::load_from(&dir.join("config.yaml")).unwrap();
         assert_eq!(config.history.per_pane, 5);
-        assert_eq!(config.picker.rows, 3);
         assert_eq!(config.restart.wait, seconds(300));
         assert_eq!(config.drain.interrupt, seconds(120));
         assert_eq!(config.drain.grace, seconds(60));
+        assert_eq!(config.files.opening_for(Some("PDF")), Opening::Open);
+        assert_eq!(config.files.opening_for(Some("py")), Opening::Text);
+        assert_eq!(config.files.opening_for(Some("command")), Opening::Reveal);
+        assert_eq!(config.files.opening_for(None), Opening::Text);
+        assert!(config.files.reveal_runnable);
+    }
+
+    #[test]
+    fn a_file_chooses_how_each_kind_opens() {
+        let config = load(
+            "files",
+            indoc! {"
+                files:
+                  open: [.command, png]
+                  text: []
+                  no_extension: reveal
+                  other: open
+                  reveal_runnable: false
+            "},
+        )
+        .unwrap();
+        let files = &config.files;
+        assert_eq!(files.opening_for(Some("command")), Opening::Open);
+        assert_eq!(files.opening_for(Some("rs")), Opening::Open);
+        assert_eq!(files.opening_for(None), Opening::Reveal);
+        assert!(!files.reveal_runnable);
+    }
+
+    #[test]
+    fn an_unknown_opening_names_the_file_and_line() {
+        let error = load("opening", "files:\n  other: run\n")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("config.yaml:2:"), "{error}");
     }
 
     #[test]
@@ -242,7 +346,6 @@ mod tests {
         )
         .unwrap();
         assert_eq!(config.history.per_pane, 8);
-        assert_eq!(config.picker.rows, 3);
         assert_eq!(config.restart.wait, seconds(300));
         assert_eq!(config.drain.interrupt, seconds(120));
         assert_eq!(config.drain.grace, seconds(90));
@@ -293,18 +396,6 @@ mod tests {
         .to_string();
         assert!(error.contains("config.yaml:2:"), "{error}");
         assert!(error.contains("history.per_pane"), "{error}");
-
-        let error = load(
-            "zero-rows",
-            indoc! {"
-                picker:
-                  rows: 0
-            "},
-        )
-        .unwrap_err()
-        .to_string();
-        assert!(error.contains("config.yaml:2:"), "{error}");
-        assert!(error.contains("picker.rows"), "{error}");
     }
 
     #[test]

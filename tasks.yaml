@@ -1,33 +1,21 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/victor-software-house/qctl/main/schema/tasks.schema.json
 schema_version: 6
 prefix: RAWR
-active: RAWR-001
+active: RAWR-013
 queue:
-  - id: RAWR-001
-    title: Offer a restored pane its sessions in a full-screen picker
-    scope: picker
+  - id: RAWR-013
+    title: Open every pane and its sessions in one rawr app
+    scope: app
     outcome: >-
-      A restored Rex pane offers its Claude Code sessions in a full-screen picker
-      that takes keys and the mouse.
+      Bare rawr opens one app that lists every pane, its sessions and a search, and
+      goes to or resumes any of them.
     blocked_by: []
     acceptance:
-      - Every task in the fullscreen-picker change is checked off with evidence.
-      - The maintainer's preview in a Rex pane resumes a session by key and by click.
-    plan: openspec/changes/fullscreen-picker/proposal.md
-
-  - id: RAWR-003
-    title: Find any local Claude Code session from the picker
-    scope: picker
-    outcome: >-
-      Typing in the picker searches every resumable local Claude Code session, not
-      only the pane's own.
-    blocked_by: []
-    acceptance:
-      - Typing filters the list on each key press, matching titles, folders, prompts and session IDs.
-      - Search reads one prompt-history file, one projects listing, and the first and last 64 KiB and the custom-title.json of each listed transcript, once per load.
+      - Every task in the rawr-app change is checked off with evidence.
+      - The maintainer approves the preview before the pull request opens.
+    plan: openspec/changes/rawr-app/proposal.md
     notes:
-      - Local sessions only; older sessions are a horizon row.
-    plan: openspec/changes/session-search/proposal.md
+      - '2026-11-13, before the pull request: the rawr-app change still describes three layouts and ctrl+l, while the app now has two columns and a drawer; AGENTS.md rules 3 and 4 still name pick and say the binary starts nothing else, but the app opens files with /usr/bin/open; clippy and the test suite are not yet clean on feat/tui; the branch is one commit behind main.'
 
   - id: RAWR-006
     title: Print shell integration and add the Claude hook on request
@@ -94,18 +82,6 @@ queue:
       - In zsh with the script loaded, rawr <Tab> offers every verb
     plan: openspec/changes/shell-completion/proposal.md
 
-  - id: RAWR-011
-    title: Mark a waiting picker's pane as needing attention in Rex
-    scope: src/picker/terminal.rs
-    outcome: >-
-      While the picker is open, its Rex tab shows a needs-attention dot, cleared when
-      the picker closes
-    blocked_by: []
-    acceptance:
-      - Both OSC 7501 sequences match the protocol, proved by the unit test in CI
-      - A background tab running rawr pick shows the dot, and the dot is gone after Esc
-    plan: openspec/changes/pane-status/proposal.md
-
   - id: RAWR-012
     title: "Supervise Claude Code agents in Rex: status, drain, restart and install"
     scope: supervisor
@@ -118,7 +94,309 @@ queue:
       - The maintainer approves the rex-supervisor design and its open points are answered in it
       - Each decision in the design maps to a row with its own OpenSpec change
     plan: openspec/changes/rex-supervisor/proposal.md
+
+  - id: RAWR-014
+    title: Serve every rawr window from one daemon
+    scope: app
+    outcome: >-
+      One daemon reads Rex, transcripts and the search catalog for every window, and
+      each window only draws.
+    blocked_by: []
+    acceptance:
+      - Every task in the app-daemon change is checked off with evidence.
+    plan: openspec/changes/app-daemon/proposal.md
+
+  - id: RAWR-022
+    title: Drain Rex before a restart without cutting agents
+    scope: supervisor
+    outcome: A Rex restart waits for every agent to reach a safe point.
+    blocked_by:
+      - RAWR-012
+    acceptance:
+      - Every task in the drain-and-restart change is checked off with evidence.
+    plan: openspec/changes/drain-and-restart/proposal.md
+
+  - id: RAWR-023
+    title: Set rawr up in one step and serve its daemon from the tap
+    scope: install
+    outcome: >-
+      One command wires rawr into the shell and Claude Code, and the tap installs it
+      with its daemon.
+    blocked_by:
+      - RAWR-012
+    acceptance:
+      - Every task in the setup-and-tap change is checked off with evidence.
+    plan: openspec/changes/setup-and-tap/proposal.md
+    notes:
+      - 2026-11-13, overlaps RAWR-006 and RAWR-008, whose install-and-shells change predates the daemon; one of the two changes should absorb the other.
+
+  - id: RAWR-027
+    title: Wrap rawr status cells instead of hiding a column
+    scope: cli
+    outcome: rawr status stays readable in a narrow terminal.
+    blocked_by: []
+    acceptance:
+      - In an 80-column terminal, rawr status shows every column, and long cells wrap inside them.
+    notes:
+      - 2026-11-23, rawr status at about 80 columns showed the Title column as a single ellipsis while Folder wrapped.
+      - Check first whether the ctl-core Table pinned in Cargo.toml (=0.7.4) can wrap cells; the local ctl-core checkout is at 0.6.13, so this is unverified.
+
+  - id: RAWR-028
+    title: Enter on a search hit opens the session instead of resuming it
+    scope: app
+    outcome: Choosing a search hit never starts Claude by surprise.
+    blocked_by: []
+    acceptance:
+      - Enter on a search hit closes the search and shows that session in the session detail, and r resumes it from there.
+      - A test covers Enter on a hit whose session has no pane.
+    notes:
+      - 2026-11-23, open_hit in src/app/state.rs resumes a hit with no running pane at once; the maintainer asked for no immediate resume.
+
+  - id: RAWR-029
+    title: Show readable text for search hits inside tool calls
+    scope: app
+    outcome: Every search snippet reads as text a person wrote or Claude printed.
+    blocked_by: []
+    acceptance:
+      - A hit inside a tool call input or result shows that text, never transcript JSON.
+    notes:
+      - 2026-11-23, searching rate showed a snippet with raw JSON keys such as usage and input_tokens for a hit in a Bash tool call.
+
+  - id: RAWR-030
+    title: Title the pane after its Claude session while rawr runs
+    scope: app
+    outcome: A Rex tab running rawr reads as the work in it, not as rawr.
+    blocked_by: []
+    acceptance:
+      - While a stand-in (rawr --startup) runs in a pane, the Rex tab title is the title of its newest resumable Claude session, or the folder name when it has none; the floating app leaves the title alone.
+      - When the stand-in gives the terminal back, the pane title is empty again, as a new shell leaves it.
+    notes:
+      - 2026-11-23, after rawr --startup, most tabs in the Rex sidebar read rawr plus a folder; the maintainer asked that only the source say rawr, as Claude Code panes say claude.
+    plan: openspec/changes/stand-in/proposal.md
+
+  - id: RAWR-031
+    title: Split the stand-in from the floating app, and report only own state
+    scope: app
+    outcome: >-
+      A killed pane offers only its own sessions, the full app opens floating on
+      cmd+alt+r, and no rawr window changes its Rex status because another pane changed.
+    blocked_by: []
+    acceptance:
+      - rawr --startup lists only the sessions recorded for its pane, newest first, with the selected one in detail; r resumes there.
+      - The README names cmd+alt+r as the way to open rawr and gives the init.lua action that provides it.
+      - A status change in one pane sends no OSC 7501 report from a stand-in in another pane, and the floating app reports only when it flips between idle and blocked; tests prove both.
+      - A stand-in reports idle once, with app rawr and its session title as the title, never rawr; the floating app reports idle with a constant line and the title rawr, and blocked with a constant line while any agent needs the user.
+    notes:
+      - 2026-11-23, the maintainer saw every rawr stand-in jump to the top of Rex Activity at once, because each one reported counts over all panes.
+      - '2026-11-23, the maintainer chose: stand-in shows this pane sessions only; full app is the floating window; each reports its own state only.'
+      - 2026-11-23, the maintainer restated that only the origin says rawr, as Claude sessions come from claude; RAWR-030 covers the tab title, this row the status record.
+    plan: openspec/changes/stand-in/proposal.md
+
+  - id: RAWR-032
+    title: Scroll lists smoothly with the wheel and a trackpad
+    scope: app
+    outcome: >-
+      The Conversation and Activity tabs scroll with the hand on a trackpad, and a new entry never moves the text being read.
+    blocked_by: []
+    acceptance:
+      - A trackpad gesture moves the list on evenly spaced frames, never a whole batch in one frame and none in the next.
+      - A new tool call while the reader is scrolled leaves the entries on screen on the same rows.
+      - A frame with 3,000 entries held takes less than 2 ms at p99 while the view scrolls.
+    plan: openspec/changes/smooth-scroll/proposal.md
+    notes:
+      - 2026-11-25, the maintainer asked for scrolling as smooth as a native list, paced as another of their clients paces the wheel.
+
+  - id: RAWR-033
+    title: Load older history on demand
+    scope: app
+    outcome: >-
+      The Conversation and Activity tabs reach back to the start of a session, with
+      no stop at 300 and no visible loading.
+    blocked_by:
+      - RAWR-032
+    acceptance:
+      - Scrolling down a session with 2,400 tool calls reaches its first call, and the view never waits at the end of what is held at the speed the maintainer scrolls.
+      - A window holds at most 3,000 entries of each list, and the daemon keeps no page.
+      - The Activity tab reads the whole session total once the daemon has read the transcript.
+    plan: openspec/changes/history-pages/proposal.md
+    notes:
+      - 2026-11-25, the maintainer chose load on demand for the history past 300 entries, and asked that the loading go unnoticed.
+
+  - id: RAWR-034
+    title: Drag the scrollbar, and show it only while in use
+    scope: app
+    outcome: >-
+      Every list in rawr scrolls by dragging its scrollbar, and the bar stays out of
+      sight until the list scrolls or the pointer reaches it.
+    blocked_by: []
+    acceptance:
+      - Dragging the Activity thumb moves the list with the pointer, and dragging it to the bottom of a long session shows its first calls without loading every page between.
+      - A press on the track pages the list by one view toward the press.
+      - A bar shows while its list scrolls, under the pointer and while held, and is gone 1 s after.
+    plan: openspec/changes/scrollbar/proposal.md
+    notes:
+      - 2026-11-25, the maintainer asked for a draggable scrollbar that is not always visible.
+
+  - id: RAWR-035
+    title: Fold the session header while the list is scrolled
+    scope: app
+    outcome: >-
+      A scrolled Conversation or Activity list gets most of the session column, and
+      the header comes back under the pointer.
+    blocked_by:
+      - RAWR-034
+    acceptance:
+      - Scrolling a tab off its top folds the header into one row, and the list gains about eight rows.
+      - Moving the pointer onto the folded row slides the full header out over the list without moving it.
+      - Back at the top of the list, the full header returns.
+    plan: openspec/changes/compact-header/proposal.md
+    notes:
+      - 2026-11-25, the maintainer asked for the header to fold while scrolled and come back on hover, as the pane rail does.
+
+  - id: RAWR-036
+    title: Open a search result in rawr instead of resuming it
+    scope: app
+    outcome: >-
+      Choosing a search result shows its session in rawr, and only its buttons resume
+      it or go to its pane.
+    blocked_by:
+      - RAWR-035
+    acceptance:
+      - Enter or a click on a result never sends a resume or a pane switch.
+      - A result no pane lists opens as a closable pane under Opened.
+    plan: openspec/changes/search-opens/proposal.md
 archive:
+  - id: RAWR-021
+    title: Draw the picker search box at the bottom
+    scope: picker
+    outcome: The picker keeps its search box at the bottom with a hint of how to come back.
+    plan: openspec/changes/archive/2026-11-18-picker-and-index/proposal.md
+    notes:
+      - '2026-11-13, shipped in #32; only the preview go-ahead, task 2.4, is open, and RAWR-013 removes pick.'
+    completed: 2026-11-19T01:25:58
+    evidence:
+      - openspec/changes/archive/2026-11-18-picker-and-index/
+      - Shipped in v0.0.1 to v0.0.3 and replaced by the rawr app (RAWR-013); archived as shipped with the preview tasks open (operator, 2026-11-18).
+    disposition: completed
+
+  - id: RAWR-011
+    title: Mark a waiting picker's pane as needing attention in Rex
+    scope: src/picker/terminal.rs
+    outcome: >-
+      While the picker is open, its Rex tab shows a needs-attention dot, cleared when
+      the picker closes
+    plan: openspec/changes/archive/2026-11-18-pane-status/proposal.md
+    completed: 2026-11-19T01:25:58
+    evidence:
+      - openspec/changes/archive/2026-11-18-pane-status/
+      - Shipped in v0.0.1 to v0.0.3 and replaced by the rawr app (RAWR-013); archived as shipped with the preview tasks open (operator, 2026-11-18).
+    disposition: completed
+
+  - id: RAWR-003
+    title: Find any local Claude Code session from the picker
+    scope: picker
+    outcome: >-
+      Typing in the picker searches every resumable local Claude Code session, not
+      only the pane's own.
+    notes:
+      - Local sessions only; older sessions are a horizon row.
+    plan: openspec/changes/archive/2026-11-18-session-search/proposal.md
+    completed: 2026-11-19T01:25:58
+    evidence:
+      - openspec/changes/archive/2026-11-18-session-search/
+      - Shipped in v0.0.1 to v0.0.3 and replaced by the rawr app (RAWR-013); archived as shipped with the preview tasks open (operator, 2026-11-18).
+    disposition: completed
+
+  - id: RAWR-001
+    title: Offer a restored pane its sessions in a full-screen picker
+    scope: picker
+    outcome: >-
+      A restored Rex pane offers its Claude Code sessions in a full-screen picker
+      that takes keys and the mouse.
+    plan: openspec/changes/archive/2026-11-18-fullscreen-picker/proposal.md
+    completed: 2026-11-19T01:25:58
+    evidence:
+      - openspec/changes/archive/2026-11-18-fullscreen-picker/
+      - Shipped in v0.0.1 to v0.0.3 and replaced by the rawr app (RAWR-013); archived as shipped with the preview tasks open (operator, 2026-11-18).
+    disposition: completed
+
+  - id: RAWR-017
+    title: List sessions whose pane was closed
+    scope: app
+    outcome: >-
+      A session whose Rex pane was closed stays in the list, under Closed, and
+      resumes from it.
+    notes:
+      - 2026-11-13, implemented on feat/tui (f8b33a1); not yet in the rawr-app change.
+    completed: 2026-11-19T01:00:45
+    evidence:
+      - 'f8b33a1 and c0df12b: the last day of sessions no open pane holds show under Closed, read on their own thread, and going to one resumes it.'
+    disposition: completed
+
+  - id: RAWR-016
+    title: Stream a session's facts from its newest line backwards
+    scope: app
+    outcome: >-
+      A selected session shows its newest prompts, tool calls and tasks at once and
+      fills in older ones as they are read.
+    notes:
+      - 2026-11-13, facts stream from the newest line back in 256 KiB parts; search and the closed list still read forward.
+    completed: 2026-11-19T01:00:25
+    evidence:
+      - Facts stream from the newest line back (3bfe631), search scans each transcript backwards in parts and yields between them, and the closed list reads on its own thread; all 112 tests pass.
+    disposition: completed
+
+  - id: RAWR-015
+    title: Draw each transcript entry as Claude Code draws it
+    scope: app
+    outcome: >-
+      A session's prompts and tool calls read as Claude Code's own transcript rows,
+      not raw tags and JSON.
+    notes:
+      - 'Source of truth: the recovered Claude Code source, product/src/tui/repl/messages/user-text-message.tsx and the views it calls.'
+      - '2026-11-13, prompts and tool rows follow Claude Code: names, brackets, marks and the user-line kinds; assistant replies and tool results are not shown yet.'
+    completed: 2026-11-19T00:57:13
+    evidence:
+      - 'User lines, tool rows, replies and results follow Claude Code: 4b6af16, de88e00, 61f8f93 and the replies-and-results commit; the facts test proves results attach across parts.'
+    disposition: completed
+
+  - id: RAWR-018
+    title: Read a session's task list as Claude Code keeps it
+    scope: app
+    outcome: >-
+      The session view's task list matches the task list Claude Code shows for that
+      session.
+    notes:
+      - 2026-11-13, a session showed 5 of 33 tasks done with many finished ones marked open; task ids are assumed sequential.
+    completed: 2026-11-13T22:16:05
+    evidence:
+      - The daemon reads ~/.claude/tasks/session-<id8>, <id> or the .session-list target; a large session shows 44 tasks with 30 done, as its store holds.
+    disposition: completed
+
+  - id: RAWR-020
+    title: Filter the files tab
+    scope: app
+    outcome: The files tab narrows to the files a reader wants.
+    notes:
+      - '2026-11-13, step 1 done: files in temporary folders hide behind a "+ N files in temporary folders" line, as scratch sessions do.'
+    completed: 2026-11-13T22:14:00
+    evidence:
+      - '70483e3 and the chip row: temporary folders hidden until asked for, All, Changed and Read chips, file type chips, and a click on a folder narrows the tab to it.'
+    disposition: completed
+
+  - id: RAWR-019
+    title: List every file a session read or changed
+    scope: app
+    outcome: The files tab shows every file the session touched, not only its edit calls.
+    notes:
+      - 2026-11-13, the tab listed 3 files for a session that wrote dozens through Bash (operator, 2026-11-13).
+      - '2026-11-13, step 1 done: NotebookEdit counts by notebook_path, and files only read list under Read; Bash-written files are next.'
+      - '2026-11-13, step 2 done: redirects, tee, sed -i, perl -i and sd count as changes; a large session went from 142 to more than 300 changed files.'
+    completed: 2026-11-13T21:25:58
+    evidence:
+      - 'f7c63d6 and bd71603: edit tools with NotebookEdit by notebook_path, reads under Read, and files Bash plainly writes; a large session went from 142 to the 300 that fit before the 1000 cap.'
+    disposition: completed
+
   - id: RAWR-002
     title: Parse and report through ctl-core
     scope: cli
@@ -149,3 +427,24 @@ horizon:
       session-lake.
     reason: deferred
     open: session-lake has no public interface rawr can depend on.
+
+  - id: RAWR-024
+    title: Mirror the pane order between rawr and the Rex sidebar
+    scope: app
+    outcome: Reordering panes in rawr reorders them in Rex, and the reverse.
+    reason: deferred
+    open: The app ships first.
+
+  - id: RAWR-025
+    title: Group the panes list by Rex session
+    scope: app
+    outcome: The panes list can show each Rex session as a group.
+    reason: deferred
+    open: The app ships first.
+
+  - id: RAWR-026
+    title: Switch the app between view modes
+    scope: app
+    outcome: The app offers more than one view of its panes and sessions.
+    reason: deferred
+    open: The app ships first.

@@ -3,74 +3,257 @@
 ![rawr: Rex Agents, wake and resume](assets/rawr-banner-light.svg#gh-light-mode-only)
 ![rawr: Rex Agents, wake and resume](assets/rawr-banner-dark.svg#gh-dark-mode-only)
 
-Rex Agents: Wake and Resume.
+[![Release][release-badge]][releases] [![CI][ci-badge]][ci] [![License: MIT][license-badge]](LICENSE)
+
 Bring Claude Code agents back into their panes after a [Rex] server restart.
 
-Rex restores sessions, tabs and panes after a restart, but each pane comes back as a fresh shell.
-`rawr` remembers which Claude Code sessions ran in each pane, and in a restored pane offers them again in a full-screen picker.
-Choosing one resumes it in that pane; dismissing the picker leaves a plain shell.
+[Get started](#get-started) · [The app](#the-app) · [Setup](#setup) · [Commands](#commands)
 
-![The rawr picker: the selected session in blue above a second session, with the key line below](docs/picker.svg)
+Rex restores your panes after a restart, but each one comes back as a fresh shell.
+`rawr` remembers which Claude Code sessions ran in each pane.
+Pick one to resume it, or quit for a plain shell.
 
-The picker opens on the alternate screen, so the pane's restored output is back unchanged when it closes.
+rawr works with Claude Code for now; support for other coding agents is planned.
+
+![rawr lists Claude sessions by status, opens a session's conversation and activity, scrolls back through its history, then searches every session](assets/rawr-demo.gif)
+
+## Get started
+
+1. Install rawr from the [releases], for macOS on Apple silicon or Linux on x64:
+
+   ```sh
+   mise use -g github:victor-software-house/rawr
+   ```
+
+   <details>
+   <summary>Build with Cargo instead</summary>
+
+   ```sh
+   cargo install --git https://github.com/victor-software-house/rawr --locked
+   ```
+
+   </details>
+
+2. Let rawr record which pane each Claude Code session runs in, as [Claude Code hook](#claude-code-hook) explains:
+
+   ```sh
+   rawr setup claude
+   ```
+
+3. Add the lines from [Shell startup](#shell-startup) to your shell's startup file.
+   After a Rex restart, rawr opens in each pane that had a Claude session.
+
+Then type `rawr` in any pane.
+
+## Open rawr
+
+Press `⌥⌘R` (`cmd+alt+r`) to open rawr.
+It shows the full app floating over the window in view, and hides it on the next press.
+Only one copy runs at a time: opening it in another window closes the copy in the first.
+
+<details>
+<summary>The action to add to Rex's <code>init.lua</code></summary>
+
+```lua
+local terminal = "com.superlogical.terminal"
+local rawr_bin = "rawr"
+
+-- Every floating pane that runs rawr, in every session, by its IDs.
+local function rawr_windows()
+  local found = {}
+  -- A view of another session needs the connection attached to it.
+  rex.call("session.attach_all", { event_scope = "session" })
+  local list = rex.call("session.list", {})
+  for _, s in ipairs(list.sessions or {}) do
+    -- A session whose view does not come back, such as one going away,
+    -- holds nothing to show.
+    local view = rex.call("session.view", { session_id = s.session_id }) or {}
+    for _, w in ipairs(view.windows or {}) do
+      for _, l in ipairs(w.layers or {}) do
+        if l.kind == "floating" then
+          for _, b in ipairs(l.blocks or {}) do
+            local p = rex.block.call(terminal, "process", { session_id = s.session_id, block_id = b.block_id })
+            if p ~= nil and p.foreground ~= nil and p.foreground.name == "rawr" then
+              table.insert(found, {
+                session_id = s.session_id,
+                window_id = w.window_id,
+                layer_id = l.layer_id,
+                block_id = b.block_id,
+                minimized = l.state == "minimized",
+              })
+            end
+          end
+        end
+      end
+    end
+  end
+  return found
+end
+
+rex.action{
+  name = "rawr_open",
+  title = "Show or Hide rawr",
+  description = "Show the rawr app over this window, or hide it: every pane, its sessions, and a search over every session.",
+  category = "rawr",
+  keywords = "rawr panes sessions resume search toggle",
+  run = function(ctx)
+    if ctx.session_id == nil then error("no session is in view", 0) end
+    local here = rex.call("session.view", { session_id = ctx.session_id }).active_window_id
+    local mine = nil
+    for _, w in ipairs(rawr_windows()) do
+      if mine == nil and w.session_id == ctx.session_id and w.window_id == here then
+        mine = w
+      else
+        rex.call("block.close", { session_id = w.session_id, block_id = w.block_id, keep_last = true })
+      end
+    end
+    if mine ~= nil then
+      rex.call("session.set_layer_state", {
+        session_id = mine.session_id,
+        layer_id = mine.layer_id,
+        state = mine.minimized and "normal" or "minimized",
+        focus = mine.minimized,
+      })
+      return
+    end
+    rex.call("session.new_layer", {
+      session_id = ctx.session_id,
+      window_id = here,
+      bounds = { 0.1, 0.06, 0.8, 0.88 },
+      focus = true,
+      layout = { block = {
+        flavor = "com.superlogical.terminal.shell",
+        label = "rawr",
+        options = { command = { rawr_bin } },
+      } },
+    })
+  end,
+}
+
+rex.bind("cmd+alt+r", "rawr_open")
+```
+
+</details>
+
+After a Rex restart, each pane where Claude ran shows only its own sessions, in a stand-in you can resume from or quit.
+
+## The app
+
+Like `less` or `vim`, rawr takes over the terminal and puts back what was on screen when you quit.
+
+### Panes
+
+rawr lists every pane with a Claude session, grouped by what Claude is doing there.
+The list updates live.
+
+| Mark | Status | Meaning |
+| :-: | --- | --- |
+| `?` `!` | **Needs you** | Claude waits for a permission, an answer, input or a login |
+| `✘` | **Failed** | Claude stopped on an error |
+| `✔` | **Done** | Claude finished its turn |
+| `⠋` | **Working** | Claude, or one of its background tasks, is running |
+| `○` | **Idle** | Claude is open and waiting for a prompt |
+| `·` | **Stopped** | No Claude runs in the pane; its sessions can be resumed |
+| `·` | **Closed** | The pane is gone; its sessions from the past day can still be resumed |
+
+### Sessions
+
+Select a pane to see the sessions that ran there.
+Entries show a few lines and a `+N` count of the rest; click one to expand it, with Markdown rendered and code highlighted.
+
+| Tab | Shows |
+| --- | --- |
+| Overview | Model, branch, prompts and replies, tokens out, sub-agents, times, tasks |
+| Conversation | What you typed and what Claude answered, newest first |
+| Activity | Every entry, tool calls and results included |
+| Files | Files the session changed and read. Click a file to open it, as set in [Config](#config), or a folder to filter the list |
+
+Enter, or a click, on a search result closes the search and selects the result's session, without resuming it or switching Rex.
+A session no pane lists opens as an Opened pane at the top of the list, with Resume and no Go to pane, until a pane lists it or you close it.
+
+### Resume and go to a pane
+
+Resuming a session restores the terminal and runs `claude --resume` in the session's folder.
+When Claude exits, you are back at the shell prompt.
+From a floating rawr window, the session resumes in a new tab instead.
+
+Going to a pane switches the Rex app to it, which needs Remote Control turned on in the app.
+
+### Keys
 
 | Action | Keys | Mouse |
 | --- | --- | --- |
-| Search every local session | Type; `Backspace`, `Ctrl+U` or `Esc` to clear | |
-| Select | `↑` `↓`, `Home` `End`, `PgUp` `PgDn` | Click another session, or scroll the wheel |
-| Resume | `Enter` | Click the selected session |
-| Show all the pane's sessions, or fewer | `Ctrl+O` | |
-| Leave a plain shell | `Esc` with nothing typed, `Ctrl+C` | |
+| Switch columns | `1` `2`, `Tab` | Click a column |
+| Switch tabs | `←` `→`, `h` `l`, `[` `]` | Click a tab |
+| Move the selection or scroll | `↑` `↓`, `j` `k` | Click a row, scroll the wheel, or drag the scrollbar |
+| Go to the pane in the Rex app | `Enter` on a pane, `g` | Click the selected pane |
+| Resume the session | `Enter` on a session, `r` | Click the selected session |
+| Close an opened pane | `x` | Click its `×` |
+| Filter the focused column | `/`; `Esc` clears the filter | |
+| Search all sessions by prompt, title, folder or ID | `Ctrl+F`; `Esc` closes the search | |
+| One column or two | `Ctrl+L` | |
+| Show the keys | `?` | |
+| Back, or quit from the pane list | `Esc`, `q`, `Ctrl+C` | |
 
-The search box sits at the bottom, under the list, and takes every printable key, so there is no key to open it.
-The list shows the newest `picker.rows` sessions (3 by default), then a dim `+N earlier · ctrl+o` row when more exist.
-While you type, the list shows every match.
+In the stand-in, `1`, `g` and `Ctrl+F` do nothing, and `Esc` quits.
 
-After you dismiss the picker, one dim line on stderr names the way back: `rawr pick` reopens this pane's sessions, and `rawr find` searches all.
-`rawr pick` and `rawr find` read `picker.rows` from the config file `$XDG_CONFIG_HOME/rawr/config.yaml`, or `~/.config/rawr/config.yaml`.
+## Setup
 
-Search matches every word typed, ignoring case, against the prompts typed in a session, its title, its folder and its ID.
-It reads Claude Code's prompt history, `~/.claude/history.jsonl`, and lists `~/.claude/projects/` once to keep only sessions whose transcript is still there.
-Each row's title is the one Claude Code shows, read from the end of the session's transcript; a session with none takes its first prompt that is not a slash command such as `/config`.
+### Shell startup
 
-Hovering a session brightens it and shows the hand pointer in terminals that support OSC 22.
-Each session shows its title, then its folder and how long ago it was active; long ones wrap, and nothing is cut.
+After a Rex restart, these lines open rawr in every pane where Claude was running.
 
-## How it works
-
-Rex keeps a pane's block ID across a server restart, so the block ID is the pane's identity.
-
-| Command | Run by | Does |
-| --- | --- | --- |
-| `rawr record` | A Claude Code `SessionStart` hook | Adds the session to the pane's index, then deletes the indexes of panes the Rex server no longer lists |
-| `rawr pick` | The shell, when it starts in a Rex pane | Offers the pane's sessions that no running Claude Code holds, and resumes the chosen one in its folder |
-| `rawr find [WORDS…]` | You, from any shell | Opens the picker over every local session with the words typed, and resumes the chosen session as `pick` does |
-| `rawr status [--format json]` | You, from any shell | Lists each Rex pane that has a session with its newest session's title and folder, and what its Claude is doing: Working, Needs input, Idle, Failed, or Stopped when no Claude runs there |
-| `rawr setup claude [--dry-run]` | You, once | Adds the `SessionStart` hook that runs `rawr record` to Claude Code's user settings |
-| `rawr completion bash\|zsh\|fish` | Your shell, at start | Prints the shell's completion script; Tab then completes from the installed binary |
-
-## Shell integration
-
-On a choice, `pick` and `find` restore the terminal and become `claude --resume` in the session's folder; when Claude Code exits, the pane's shell prompt is back.
-They need no wrapper, so `rawr find` works as typed in any shell.
-In zsh, offer a restored pane its sessions once, before the first prompt:
+For zsh, in `~/.zshrc`:
 
 ```zsh
 if [[ -n $REX_BLOCK ]] && (( $+commands[rawr] )); then
   autoload -Uz add-zsh-hook
   _rawr_once() {
     add-zsh-hook -d precmd _rawr_once
-    rawr pick
+    rawr --startup
   }
   add-zsh-hook precmd _rawr_once
 fi
 ```
 
-`record` runs from a Claude Code `SessionStart` hook.
-`rawr setup claude` adds it to `~/.claude/settings.json`, or to `$CLAUDE_CONFIG_DIR/settings.json`, and keeps every other setting in its order; `--dry-run` reports what it would do and changes nothing.
-A second run reports the hook is there and changes nothing.
-It edits the file only when you run it.
-The hook it adds:
+<details>
+<summary>bash, in ~/.bashrc</summary>
+
+```bash
+if [[ -n $REX_BLOCK ]] && command -v rawr >/dev/null; then
+  _rawr_once() {
+    PROMPT_COMMAND=${PROMPT_COMMAND#_rawr_once;}
+    unset -f _rawr_once
+    rawr --startup
+  }
+  PROMPT_COMMAND="_rawr_once;${PROMPT_COMMAND}"
+fi
+```
+
+</details>
+
+<details>
+<summary>fish, in ~/.config/fish/config.fish</summary>
+
+```fish
+if set -q REX_BLOCK; and type -q rawr
+    function _rawr_once --on-event fish_prompt
+        functions -e _rawr_once
+        rawr --startup
+    end
+end
+```
+
+</details>
+
+### Claude Code hook
+
+`rawr setup claude` adds a `SessionStart` hook to `~/.claude/settings.json`, or to `$CLAUDE_CONFIG_DIR/settings.json`.
+The hook runs `rawr record`, which notes the pane each session starts in.
+Your other settings stay as they are, and `--dry-run` previews the change.
+
+<details>
+<summary>The hook added by <code>rawr setup claude</code></summary>
 
 ```json
 {
@@ -86,10 +269,66 @@ The hook it adds:
 }
 ```
 
-Load completion at shell start: `source <(rawr completion zsh)` in `~/.zshrc` after `compinit`, `source <(rawr completion bash)` in `~/.bashrc`, or `rawr completion fish | source` in `~/.config/fish/config.fish`.
+</details>
+
+### Completion
+
+```sh
+source <(rawr completion zsh)    # ~/.zshrc, after compinit
+source <(rawr completion bash)   # ~/.bashrc
+rawr completion fish | source    # ~/.config/fish/config.fish
+```
+
+## Config
+
+rawr reads `$XDG_CONFIG_HOME/rawr/config.yaml`, or `~/.config/rawr/config.yaml` when that variable is unset.
+Every key is optional, and each key you leave out keeps its default.
+
+The `files` key sets how a click in the Files tab opens a file.
+The lists contain file extensions, matched without regard to case.
+
+```yaml
+files:
+  open: [png, jpg, pdf]   # open in their default app
+  text: [md, rs, py, sh]  # open in a text editor, so no handler runs them
+  no_extension: text      # files with no extension: open, text or reveal
+  other: reveal           # extensions in neither list: open, text or reveal
+  reveal_runnable: true   # show folders and executable files in their folder
+```
+
+By default:
+
+- images and PDF files open in their default app;
+- text and source files open in a text editor;
+- every other file opens in its folder, so a click never runs a file a session wrote.
+
+On Linux, text files also open in their folder, because `xdg-open` cannot open a file as text.
+A list you set replaces the default list.
+To open another type of file in its default app, add its extension to `open`.
+
+## Commands
+
+| Command | Run by | Does |
+| --- | :-: | --- |
+| `rawr` | You | Opens the app |
+| `rawr --startup` | Your shell, at start | Opens a stand-in with the pane's own sessions if one can be resumed; otherwise exits quietly |
+| `rawr record` | A Claude Code `SessionStart` hook | Adds the session to the pane's index and removes the indexes of closed panes |
+| `rawr daemon` | The first `rawr` window | Watches Rex and reads transcripts and search data for every window |
+| `rawr status` | You | Lists the panes with sessions: newest title, folder, and what Claude is doing. `--format json` prints JSON |
+| `rawr setup claude` | You, once | Adds the hook that runs `rawr record` to Claude Code's settings |
+| `rawr completion <shell>` | Your shell, at start | Prints the completion script for bash, zsh or fish |
+
+rawr identifies each pane by its Rex block ID, which survives a server restart.
+Each `rawr` window talks to one `rawr daemon`, which the first window starts.
+The daemon reads transcripts from the newest line back, so long sessions show their latest entries at once.
 
 ## License
 
 MIT
 
+[releases]: https://github.com/victor-software-house/rawr/releases
 [Rex]: https://www.superlogical.com/rex
+[release-badge]: https://img.shields.io/github/v/release/victor-software-house/rawr
+[ci-badge]: https://github.com/victor-software-house/rawr/actions/workflows/ci.yml/badge.svg?branch=main
+[ci]: https://github.com/victor-software-house/rawr/actions/workflows/ci.yml
+[license-badge]: https://img.shields.io/github/license/victor-software-house/rawr

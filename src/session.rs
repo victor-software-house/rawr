@@ -1,15 +1,15 @@
 //! What the picker knows about a Claude session: whether a live process holds
 //! it, its title, and how long ago it was active.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::convert::Infallible;
-use std::env;
 use std::fs::{self, File};
-use std::io::{ErrorKind, Read, Seek, SeekFrom};
+use std::io::{BufRead, BufReader, ErrorKind, Read, Seek, SeekFrom};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, SystemTime};
+use std::{env, mem};
 
 use anyhow::{Context, Result, bail};
 use memchr::memmem;
@@ -20,13 +20,15 @@ use serde::Deserialize;
 use crate::index::Entry;
 
 /// A session the picker can offer.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, Deserialize)]
 pub(crate) struct Agent {
     pub(crate) session_id: String,
     pub(crate) cwd: String,
     pub(crate) title: String,
     /// Time since the transcript was last written.
     pub(crate) idle: Option<Duration>,
+    /// The transcript, which the app reads for the session's facts.
+    pub(crate) transcript: PathBuf,
 }
 
 impl Agent {
@@ -113,24 +115,86 @@ pub(crate) fn live_sessions() -> Result<HashSet<String>> {
     Ok(live)
 }
 
+/// The file state a title was read from. It contains the transcript's
+/// modified time and length, and the modified time of the session's
+/// `custom-title.json`. [`transcript_title`] reads both files.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Seen {
+    modified: SystemTime,
+    len: u64,
+    side: Option<SystemTime>,
+}
+
+/// The titles read from transcripts, each stored with the file state it was
+/// read from. A title is read again only when its transcript or its title
+/// file changed.
+///
+/// Two generations let a transcript that is not looked up drop out:
+/// [`Titles::sweep`] keeps the titles looked up in the last round and drops
+/// the rest.
+#[derive(Debug, Default)]
+pub(crate) struct Titles {
+    last: HashMap<PathBuf, (Seen, Option<String>)>,
+    next: HashMap<PathBuf, (Seen, Option<String>)>,
+}
+
+impl Titles {
+    /// The title of the transcript at `path`. It is read from the files only
+    /// when `modified`, `len` or the title file's modified time differs from
+    /// the stored file state.
+    pub(crate) fn title(&mut self, path: &Path, modified: SystemTime, len: u64) -> Option<String> {
+        let seen = Seen {
+            modified,
+            len,
+            side: fs::metadata(title_file_path(path))
+                .and_then(|meta| meta.modified())
+                .ok(),
+        };
+        let current = |(was, _): &(Seen, Option<String>)| *was == seen;
+        let title = match self
+            .next
+            .remove(path)
+            .filter(current)
+            .or_else(|| self.last.remove(path).filter(current))
+        {
+            Some((_, title)) => title,
+            None => transcript_title(path),
+        };
+        self.next.insert(path.to_path_buf(), (seen, title.clone()));
+        title
+    }
+
+    /// Ends a round: it keeps the titles looked up since the last sweep and
+    /// drops the others.
+    pub(crate) fn sweep(&mut self) {
+        self.last = mem::take(&mut self.next);
+    }
+}
+
 /// The pane's sessions that still have a transcript and no live process,
-/// newest first.
-pub(crate) fn resumable(entries: &[Entry], live: &HashSet<String>) -> Vec<Agent> {
+/// newest first. `titles` spares the read of a title whose transcript is
+/// unchanged.
+pub(crate) fn resumable(
+    entries: &[Entry],
+    live: &HashSet<String>,
+    titles: &mut Titles,
+) -> Vec<Agent> {
     let now = SystemTime::now();
     entries
         .iter()
         .filter(|entry| !live.contains(&entry.session_id))
         .filter_map(|entry| {
-            let modified = fs::metadata(&entry.transcript)
-                .and_then(|meta| meta.modified())
-                .ok()?;
+            let meta = fs::metadata(&entry.transcript).ok()?;
+            let modified = meta.modified().ok()?;
             let cwd = entry.cwd.to_str()?.to_owned();
             Some(Agent {
                 session_id: entry.session_id.clone(),
                 cwd,
-                title: transcript_title(&entry.transcript)
+                title: titles
+                    .title(&entry.transcript, modified, meta.len())
                     .map_or_else(|| "Untitled session".to_owned(), |title| sanitize(&title)),
                 idle: now.duration_since(modified).ok(),
+                transcript: entry.transcript.clone(),
             })
         })
         .collect()
@@ -183,6 +247,20 @@ struct TitleFile {
 /// `custom-title.json` file, else from the first 64 KiB. Failing that, the
 /// generated title comes from the last 64 KiB, else the first. Each window
 /// skips the partial line at its cut.
+/// The folder a transcript's session ran in, from the first of its first
+/// lines that names one.
+pub(crate) fn transcript_cwd(path: &Path) -> Option<String> {
+    #[derive(serde::Deserialize)]
+    struct Row {
+        cwd: Option<String>,
+    }
+    let file = File::open(path).ok()?;
+    BufRead::lines(BufReader::new(file))
+        .take(50)
+        .map_while(Result::ok)
+        .find_map(|line| serde_json::from_str::<Row>(&line).ok()?.cwd)
+}
+
 pub(crate) fn transcript_title(path: &Path) -> Option<String> {
     let mut file = File::open(path).ok()?;
     let len = file.metadata().ok()?.len();
@@ -243,8 +321,13 @@ fn last_row(lines: &[u8], kind: Title) -> Option<String> {
 }
 
 /// The title in the session's `custom-title.json`, unless missing or blank.
+/// The session's own title file, beside its transcript.
+fn title_file_path(transcript: &Path) -> PathBuf {
+    transcript.with_extension("").join("custom-title.json")
+}
+
 fn title_file(transcript: &Path) -> Option<String> {
-    let bytes = fs::read(transcript.with_extension("").join("custom-title.json")).ok()?;
+    let bytes = fs::read(title_file_path(transcript)).ok()?;
     let file = serde_json::from_slice::<TitleFile>(&bytes).ok()?;
     Some(file.custom).filter(|title| !title.trim().is_empty())
 }
@@ -262,23 +345,6 @@ pub(crate) fn sanitize(text: &str) -> String {
         .collect()
 }
 
-/// How long ago, in the largest whole unit.
-pub(crate) fn ago(idle: Option<Duration>) -> String {
-    let Some(idle) = idle else {
-        return "time unknown".to_owned();
-    };
-    let minutes = idle.as_secs() / 60;
-    match minutes {
-        0 => "just now".to_owned(),
-        1..60 => format!("{minutes} min ago"),
-        60..1440 => format!("{} h ago", minutes / 60),
-        _ => match minutes / 1440 {
-            1 => "1 day ago".to_owned(),
-            days => format!("{days} days ago"),
-        },
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::process;
@@ -291,6 +357,7 @@ mod tests {
             cwd: cwd.to_owned(),
             title: "t".to_owned(),
             idle: None,
+            transcript: PathBuf::new(),
         }
     }
 
@@ -412,19 +479,124 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// Writes a transcript that names its session `title`, and returns what
+    /// `resumable` stats it as.
+    fn named(path: &Path, title: &str) -> (SystemTime, u64) {
+        fs::write(
+            path,
+            format!("{{\"type\":\"custom-title\",\"customTitle\":\"{title}\"}}\n"),
+        )
+        .unwrap();
+        let meta = fs::metadata(path).unwrap();
+        (meta.modified().unwrap(), meta.len())
+    }
+
+    fn set_modified(path: &Path, modified: SystemTime) {
+        File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(modified)
+            .unwrap();
+    }
+
+    #[test]
+    fn a_title_is_read_again_only_when_its_transcript_changed() {
+        let dir = env::temp_dir().join(format!("rawr-cache-{}", process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("t.jsonl");
+        let (modified, len) = named(&path, "Alpha one");
+        let mut titles = Titles::default();
+        assert_eq!(
+            titles.title(&path, modified, len).as_deref(),
+            Some("Alpha one")
+        );
+
+        // Same length, same modified time: the cached title stands, whether it
+        // sits in this round or the last one.
+        assert_eq!(named(&path, "Bravo two").1, len);
+        set_modified(&path, modified);
+        assert_eq!(
+            titles.title(&path, modified, len).as_deref(),
+            Some("Alpha one")
+        );
+        titles.sweep();
+        assert_eq!(
+            titles.title(&path, modified, len).as_deref(),
+            Some("Alpha one")
+        );
+
+        // A new modified time reads the file again.
+        let later = modified + Duration::from_secs(5);
+        assert_eq!(
+            titles.title(&path, later, len).as_deref(),
+            Some("Bravo two")
+        );
+
+        // So does a new length.
+        let (_, longer) = named(&path, "Charlie three");
+        assert_eq!(
+            titles.title(&path, later, longer).as_deref(),
+            Some("Charlie three")
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_title_is_read_again_when_its_title_file_changes() {
+        let dir = env::temp_dir().join(format!("rawr-side-{}", process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("s.jsonl");
+        fs::write(&path, "{\"type\":\"user\"}\n").unwrap();
+        let meta = fs::metadata(&path).unwrap();
+        let (modified, len) = (meta.modified().unwrap(), meta.len());
+        let mut titles = Titles::default();
+        assert_eq!(titles.title(&path, modified, len), None);
+        let side = title_file_path(&path);
+        fs::create_dir_all(side.parent().unwrap()).unwrap();
+        fs::write(&side, "{\"customTitle\":\"Saved apart\"}").unwrap();
+        assert_eq!(
+            titles.title(&path, modified, len).as_deref(),
+            Some("Saved apart")
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_title_not_asked_for_between_two_sweeps_is_forgotten() {
+        let dir = env::temp_dir().join(format!("rawr-sweep-{}", process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let kept = dir.join("kept.jsonl");
+        let dropped = dir.join("dropped.jsonl");
+        let (kept_modified, kept_len) = named(&kept, "Kept one");
+        let (dropped_modified, dropped_len) = named(&dropped, "Gone one");
+        let mut titles = Titles::default();
+        titles.title(&kept, kept_modified, kept_len);
+        titles.title(&dropped, dropped_modified, dropped_len);
+        titles.sweep();
+        titles.title(&kept, kept_modified, kept_len);
+        titles.sweep();
+
+        assert_eq!(named(&dropped, "Gone two").1, dropped_len);
+        set_modified(&dropped, dropped_modified);
+        assert_eq!(
+            titles
+                .title(&dropped, dropped_modified, dropped_len)
+                .as_deref(),
+            Some("Gone two")
+        );
+        assert_eq!(named(&kept, "Kept two").1, kept_len);
+        set_modified(&kept, kept_modified);
+        assert_eq!(
+            titles.title(&kept, kept_modified, kept_len).as_deref(),
+            Some("Kept one")
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn sanitize_drops_escape_sequences() {
         assert_eq!(sanitize("fix\u{1b}[2Jbuild"), "fix[2Jbuild");
         assert_eq!(sanitize("two\nlines\tand a tab"), "two lines and a tab");
-    }
-
-    #[test]
-    fn ago_uses_the_largest_unit() {
-        assert_eq!(ago(Some(Duration::from_secs(30))), "just now");
-        assert_eq!(ago(Some(Duration::from_mins(5))), "5 min ago");
-        assert_eq!(ago(Some(Duration::from_hours(3))), "3 h ago");
-        assert_eq!(ago(Some(Duration::from_hours(24))), "1 day ago");
-        assert_eq!(ago(Some(Duration::from_hours(72))), "3 days ago");
-        assert_eq!(ago(None), "time unknown");
     }
 }
