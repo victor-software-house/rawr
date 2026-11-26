@@ -44,6 +44,7 @@ The closest first-party models are Claude Code's own supervisor, which defers it
    Delivery does not depend on `crossSessionInbound` or on the inbox socket.
    Alternative: Claude Code's per-session inbox socket.
    It lost: delivery depends on each session's inbound policy, the message arrives framed as another session's, and the message format is not documented ([cross-session messaging][cc-messaging]).
+
 2. **A restart waits for idle, within a bound.**
    - `rawr restart` opens a drain.
    - The daemon then holds the restart until every live Claude block has settled, re-checking on each status event.
