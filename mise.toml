@@ -1,9 +1,9 @@
 # The latest stable mise is the floor; CI pins the same version.
-min_version = "2026.11.6"
+min_version = "2026.11.12"
 
 [settings]
-# Every tool, whether a config file, a task or the command line asks for it,
-# comes from the locks; one with no entry fails instead of being looked up.
+# Every tool comes from the locks, whether a config file, a task or the command
+# line needs it. A tool with no entry fails instead of being looked up.
 locked = true
 # mise loads git:: task includes, and runs [deps] providers, only in
 # experimental mode.
@@ -28,8 +28,8 @@ rust = [
   { version = "nightly-2026-11-01", profile = "minimal", components = "rustfmt" },
 ]
 mr-boxington = "1.30.0"
-"github:EmbarkStudios/cargo-deny" = "0.20.2"
-"github:bnjbvr/cargo-machete" = "0.9.2"
+"github:EmbarkStudios/cargo-deny" = "0.21.0"
+"github:bnjbvr/cargo-machete" = "0.10.1"
 jq = "1.8.2"
 
 # The shared Rust tasks read their toolchains from here and name none.
@@ -38,10 +38,12 @@ jq = "1.8.2"
 RUSTFMT_TOOLCHAIN = "+nightly-2026-11-01"
 # doc builds on the nightly, as docs.rs does.
 RUST_NIGHTLY = "nightly-2026-11-01"
-# cargo skips a crates.io release younger than this, unless Cargo.lock holds it.
+# cargo skips a crates.io release younger than this, unless Cargo.lock contains it.
 CARGO_REGISTRY_GLOBAL_MIN_PUBLISH_AGE = "3 days"
 # The crates.io logins whose crates `mise run update:own` takes past the cooldown.
 CARGO_TRUSTED_OWNERS = "any-victor"
+# specs:budget reads the word budget of each file kind from here.
+OPENSPEC_BUDGETS = "proposal=600 design=2500 tasks=1500 note=60 spec=1200 research=2500"
 
 # The one gate, composed from the pieces this repository keeps. deny:advisories
 # and semver need the network, so they run as their own CI steps.
@@ -59,9 +61,9 @@ depends = [
   "check:repo",
 ]
 
-# mise-tasks/ holds this repository's task fragments and file tasks. An
-# includes list replaces the default task dirs, so mise-tasks comes first; add
-# pinned git:: catalogs after it.
+# mise-tasks/ contains this repository's task fragments and file tasks.
+# An includes list replaces the default task dirs, so mise-tasks comes first.
+# Add pinned git:: catalogs after it.
 [task_config]
 includes = [
   # Pinned git:: catalogs follow mise-tasks.
@@ -72,8 +74,11 @@ includes = [
   "git::https://github.com/victor-software-house/verctl.git//tasks/ver?ref=v0.8.6-rc.5",
   # `mise run q`, the work queue in tasks.yaml.
   "git::https://github.com/victor-software-house/qctl.git//tasks/q?ref=v0.7.0",
-  # The shared Rust tasks, at actions main, 2026-11-17.
-  "git::https://github.com/victor-software-house/actions.git//tasks/rust.toml?ref=e044bc0a41a1544d2c6a0b368c086392d6d184c9",
-  # template:check, template:off, and template:on, at actions main, 2026-11-17.
-  "git::https://github.com/victor-software-house/actions.git//tasks/template.toml?ref=e044bc0a41a1544d2c6a0b368c086392d6d184c9",
+  # specs:budget, from the tasks-specs package at its digest.
+  """oci::ghcr.io/victor-software-house/tasks-specs@sha256:\
+    9dbe200899e239236d98a88416e1c78fe60e7d06343bc40fa52665e8f7102f0e""",
+  # The shared Rust tasks, at actions main, 2026-11-26.
+  "git::https://github.com/victor-software-house/actions.git//tasks/rust.toml?ref=e9cf7ef0da4f4a9a7a6f978f5dd54be0d0d539bc",
+  # template:check, template:off, and template:on, at actions main, 2026-11-26.
+  "git::https://github.com/victor-software-house/actions.git//tasks/template.toml?ref=e9cf7ef0da4f4a9a7a6f978f5dd54be0d0d539bc",
 ]

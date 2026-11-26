@@ -4,7 +4,7 @@
 
 [tools]
 lefthook = "2.2.2"
-"github:crate-ci/committed" = "1.1.11"
+"github:crate-ci/committed" = "1.1.12"
 gitleaks = "8.30.1"
 
 # Installs the git hooks after every `mise install`, even when every tool is

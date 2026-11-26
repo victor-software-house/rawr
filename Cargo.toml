@@ -80,16 +80,16 @@ broken_intra_doc_links = "deny"
 private_intra_doc_links = "deny"
 invalid_html_tags = "deny"
 invalid_codeblock_attributes = "deny"
-# Allow-by-default, so a -D warnings rustdoc build never fires it: an unbalanced
-# backtick renders the rest of the paragraph as code.
+# Allowed by default, so a -D warnings rustdoc build never fires it.
+# An unbalanced backtick renders the rest of the paragraph as code.
 unescaped_backticks = "deny"
 # New in Rust 1.100 and warn by default: an unescaped `|` in a table row drops
 # cells.
 invalid_markdown_table = "deny"
 
 [lints.cargo]
-# Cargo's own lints, new in Rust 1.100. Clippy's -D warnings does not reach
-# them, so each group is denied here; correctness is deny already.
+# Cargo's own lints are new in Rust 1.100, and Clippy's -D warnings does not
+# reach them. Each group is denied here. Correctness is deny already.
 # unused_dependencies (style) checks [dependencies] and [build-dependencies]
 # from what the compiler used. cargo-machete in `deps` still covers
 # [dev-dependencies].
@@ -114,18 +114,18 @@ allow_attributes_without_reason = "deny"
 # A function that returns Result reports failure through it instead of a panic.
 panic_in_result_fn = "deny"
 # map_err(|_| ...) drops the cause; wrap it as a source instead. A site whose
-# error carries nothing carries #[expect(clippy::map_err_ignore, reason = "...")].
+# error has no cause to keep adds #[expect(clippy::map_err_ignore, reason = "...")].
 map_err_ignore = "deny"
 # `format!` or `push_str` instead of `+` on a String.
 string_add = "deny"
-# From and TryFrom instead of as, which can silently truncate or wrap. A site
-# that truly needs as carries #[expect(clippy::as_conversions, reason = "...")].
+# From and TryFrom instead of as, which can truncate or wrap without a warning.
+# A site that truly needs as adds #[expect(clippy::as_conversions, reason = "...")].
 as_conversions = "deny"
 # Rc<str> and Rc<[T]> instead of Rc<String> or Rc<Vec<T>>.
 rc_buffer = "deny"
 # Rc::clone(&x), so a cheap pointer clone reads apart from a deep copy.
 clone_on_ref_ptr = "deny"
-# Every unsafe block carries a // SAFETY: comment and holds one unsafe
+# Every unsafe block has a `// SAFETY:` comment and contains one unsafe
 # operation, so each comment justifies exactly one call.
 undocumented_unsafe_blocks = "deny"
 multiple_unsafe_ops_per_block = "deny"
@@ -141,8 +141,8 @@ absolute_paths = "deny"
 # control; cargo-deny fails on them (`bans.multiple-versions`).
 multiple_crate_versions = "allow"
 
-# The smallest binary that keeps its speed. Against opt-level 3 with thin LTO,
-# a ctl CLI came out 35% smaller and 4% slower.
+# The smallest binary that keeps its speed. Against opt-level 3 with thin
+# link-time optimization (LTO), a ctl CLI came out 35% smaller and 4% slower.
 #
 # opt-level "z" takes another 25% off but runs a ledger parse 51% slower. A
 # repository whose run time does not matter sets it here. Cargo ignores the

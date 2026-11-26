@@ -41,6 +41,7 @@ rawr keeps a short history per pane, and that history is the reason it exists.
    Alternative: `rawr restart` starts a detached helper on demand.
    It lost: a helper does nothing between restarts.
    The daemon also prunes the index as panes close and answers `rawr status` at once.
+
 2. **The Claude Code side is one mod, in a plugin this repository serves.**
    - `.claude-plugin/marketplace.json` lists one plugin, `rawr`, whose `hooks/hooks.json` holds only `{ "modules": ["./register.ts"] }`.
    - On `session.start`, the mod records the session under `REX_BLOCK` through the rawr binary.
@@ -51,6 +52,7 @@ rawr keeps a short history per pane, and that history is the reason it exists.
    Alternative: plain command hooks in `hooks.json` calling `rawr record`.
    It lost: a command hook finds `rawr` through the `PATH` of whatever started Claude Code.
    The drain also needs logic a command line cannot hold, so the Claude side would be split across two mechanisms.
+
 3. **Status comes from Rex only.**
    `rawr status` joins Rex's per-block program status with the index's newest session for each block.
    A block whose root record has `app=claude-code` runs a live Claude.
@@ -71,6 +73,7 @@ rawr keeps a short history per pane, and that history is the reason it exists.
    Its format is not documented ([.claude directory][cc-dir]), and Rex already marks which blocks run a live Claude.
    Alternative: `claude agents --json`, the documented outside view.
    It lost: it needs Claude Code's agent view on, and adds nothing for sessions that run in Rex.
+
 4. **The daemon prunes pane files only against a confirmed listing.**
    - A block event never deletes a file by itself.
      It marks the pane, and the file goes only when a later full listing from a running Rex server confirms the block is gone.
@@ -80,8 +83,10 @@ rawr keeps a short history per pane, and that history is the reason it exists.
    - A failed or empty listing deletes nothing.
      When every pane really is closed, the old files stay until a later non-empty listing, which costs a few small files and never a pane's history.
    - Entries inside a pane file are cleaned on read, by [picker-and-index][picker-and-index].
+
 5. **`AGENTS.md` rule 1 changes.**
    The daemon becomes a second writer of the index, for pruning only; `record` stays the only writer of new entries.
+
 6. **rawr speaks Rex's documented control protocol, behind one client interface.**
    - The Rex server documents its own API and serves the documentation from the same socket: `GET /llms.txt` describes the protocol, and `GET /api/help` lists every method with the JSON Schema of its arguments and result.
    - The control connection is a WebSocket at `GET /api/control` with the subprotocol `rex.control.v1`.
@@ -94,6 +99,7 @@ rawr keeps a short history per pane, and that history is the reason it exists.
      It lost: it runs inside the server, stops with it, and can hand rawr its findings only through a file or a process.
    - Alternative: running `rex api call` per request.
      It lost: one process per call, and no event stream.
+
 7. **The mods API comes from Claude Code's own types.**
    Claude Code writes the mods API's TypeScript declarations into each mod's `.claude-plugin/types/claude-code/index.d.ts` when it loads the mod.
    The calls this design uses, `$.turn.abort`, `$.prompt.submit`, `$.session.append`, `$.fs.read`, `$.clock.every` and the `turn.complete` reasons, are checked there for Claude Code 2.1.322, and the mod's type check runs against that file.

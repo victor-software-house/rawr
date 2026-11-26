@@ -1,5 +1,5 @@
 # Loaded when MISE_ENV contains `ci` (GitHub Actions). The toolchain comes from
-# mise.toml; this file holds only the CI environment.
+# mise.toml; this file contains only the CI environment.
 
 [env]
 # Explicit homes make mise provision rustup instead of using the runner's
