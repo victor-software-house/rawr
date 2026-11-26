@@ -265,6 +265,22 @@ queue:
       - Enter or a click on a result never sends a resume or a pane switch.
       - A result no pane lists opens as a closable pane under Opened.
     plan: openspec/changes/search-opens/proposal.md
+
+  - id: RAWR-037
+    title: Review the whole codebase and split it into modules of 500 to 800 lines
+    scope: code
+    outcome: >-
+      Every source file has one responsibility and fits on a few screens, so a reader
+      finds code by module and not by search.
+    blocked_by: []
+    acceptance:
+      - No source file in the repository runs over 1,000 lines, and most run 500 to 800.
+      - Modules are grouped by responsibility in folders, with no flat list of source files at any level.
+      - A written review records where each piece went and why, including whether parts become separate crates in a workspace.
+      - CI passes, with the same tests, before and after each move.
+    notes:
+      - 2026-11-25, the maintainer asked for a whole-codebase review like the one ctl-core had when it was refactored, with files kept between 500 and 800 lines and under 1,000.
+      - '2026-11-25, largest files on main: src/app/view.rs 4,967 lines, src/app/state.rs 3,686, src/app/facts.rs 2,586, src/app/history.rs 1,378, src/daemon/server.rs 938, src/app.rs 849.'
 archive:
   - id: RAWR-021
     title: Draw the picker search box at the bottom
