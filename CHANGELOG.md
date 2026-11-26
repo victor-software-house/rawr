@@ -1,5 +1,22 @@
 # Changelog
 
+## rawr 0.0.4
+
+### Breaking
+
+- `rawr` with no arguments opens one full-screen app, which replaces `rawr pick` and `rawr find`.
+  The app lists every Rex pane that has a Claude session, grouped by what Claude is doing there, and updates the list live.
+  For the selected pane it shows each session's overview, conversation, activity and the files it changed and read.
+  `Ctrl+F` searches every session by prompt, title, folder or ID.
+  `Enter` resumes a session in its folder, or switches the Rex app to the session's pane.
+  The shell startup line runs `rawr --startup`, which opens a stand-in with the pane's own sessions, and the `picker.rows` setting is gone ([`8f6142b`](https://github.com/victor-software-house/rawr/commit/8f6142b41336d331e828dcd9bc89dbbf72002b3f)).
+
+### Added
+
+- `rawr daemon` reads the Rex server, the transcripts and the search data once for every rawr window, and the first window starts it.
+  The `files` key in `config.yaml` sets how a click in the Files tab opens a file: in its default app, in a text editor, or in its folder.
+  By default a folder or a file with an execute bit opens in its folder, so a click never runs a file a session wrote ([`8f6142b`](https://github.com/victor-software-house/rawr/commit/8f6142b41336d331e828dcd9bc89dbbf72002b3f)).
+
 ## rawr 0.0.3
 
 - `~/.config/rawr/config.yaml` sets how many sessions each pane remembers, `history.per_pane`, 5 by default, and a bad value names the file and line.

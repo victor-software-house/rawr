@@ -1,6 +1,6 @@
 [package]
 name = "rawr"
-version = "0.0.3"
+version = "0.0.4"
 edition = "2024"
 rust-version = "1.100.0"
 description = "Bring Claude Code agents back into their Rex panes after a Rex server restart"
