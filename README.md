@@ -302,6 +302,8 @@ By default:
 - text and source files open in a text editor;
 - every other file opens in its folder, so a click never runs a file a session wrote.
 
+With `reveal_runnable: false`, a folder or an executable file opens by its extension like any other file, so a click on it can run a file a session wrote.
+
 On Linux, text files also open in their folder, because `xdg-open` cannot open a file as text.
 A list you set replaces the default list.
 To open another type of file in its default app, add its extension to `open`.
