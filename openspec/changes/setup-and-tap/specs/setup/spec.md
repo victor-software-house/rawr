@@ -41,3 +41,12 @@ When no setup state exists, the daemon SHALL give the checklist to the first raw
 
 - **WHEN** rawr was installed with mise and three rawr windows open at once
 - **THEN** one window shows the checklist, and after the answer all three draw their panes
+
+### Requirement: Setup status reports agents that bypass the launcher
+
+`rawr setup status` SHALL report each supported agent whose name, in the user's shell, is a function other than rawr's, or an alias that does not reach rawr's function.
+
+#### Scenario: An alias that names a path
+
+- **WHEN** the user's zsh has `alias claude=~/.claude/local/claude`
+- **THEN** `rawr setup status` reports that `claude` bypasses the launcher

@@ -74,8 +74,10 @@ An agent without a session hook resumes with its own "continue the last session 
 Inside a Rex pane, the shell line defines one function per supported agent, `function claude { command rawr claude "$@"; }` in zsh, and the bash and fish forms.
 The shell line does all of this only when `rawr` is on `PATH`, so a block left after rawr is removed does nothing.
 Outside Rex it defines nothing, and it defines nothing for a name that already names a function, so a user's own wrapper stays in charge.
-An alias of the same name stays: bash and zsh expand it once and do not expand its own name again, so `alias claude='claude --dangerously-skip-permissions'` reaches the function and runs `rawr claude --dangerously-skip-permissions`, keeping the alias's flags and the launcher (checked in zsh and bash).
-An alias whose body names a path, such as `~/.claude/local/claude`, runs that path and bypasses the launcher; `rawr setup status` reports it.
+In bash and zsh, an alias of the same name stays: they expand it once and do not expand its own name again, so `alias claude='claude --dangerously-skip-permissions'` reaches the function and runs `rawr claude --dangerously-skip-permissions`, keeping the alias's flags and the launcher (checked in zsh and bash).
+An alias whose body names a path, such as `~/.claude/local/claude`, or starts with `command` or `builtin`, skips the function and bypasses the launcher; `rawr setup status` reports any alias of an agent's name that does not reach the function.
+A backslash-escaped name such as `\claude` only stops alias expansion, so it still reaches the function.
+In fish, `alias` defines a function that calls `command <name>` ([fish alias][fish-alias]), so a fish alias counts as the user's own function: it bypasses the launcher, and `rawr setup status` reports it.
 Alternative: remove the alias.
 It lost: it drops the flags the alias adds.
 Alternative: define nothing when an alias exists.
@@ -109,3 +111,4 @@ Without the Rex module, Rex 0.1.0-preview.25 or later resumes every Claude Code 
 [protocol]: https://www.superlogical.com/rex/docs/build/program-resume
 [rules]: https://www.superlogical.com/rex/docs/customize/resume-rules
 [app-daemon]: ../app-daemon/proposal.md
+[fish-alias]: https://fishshell.com/docs/current/cmds/alias.html
