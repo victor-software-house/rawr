@@ -71,10 +71,11 @@ An agent without a session hook resumes with its own "continue the last session 
 
 ### 6. The agent's name reaches rawr through the shell line
 
-Inside a Rex pane, the shell line removes an alias of the same name, since bash and zsh expand an alias before they look up a function, then defines one function per supported agent, `function claude { command rawr claude "$@"; }` in zsh, and the bash and fish forms.
+Inside a Rex pane, the shell line defines one function per supported agent, `function claude { command rawr claude "$@"; }` in zsh, and the bash and fish forms.
 The shell line does all of this only when `rawr` is on `PATH`, so a block left after rawr is removed does nothing.
-In fish, `alias` defines a function and there is no alias to remove, so a fish user's `claude` function stays in charge on purpose.
-Outside Rex it defines nothing, and it defines no function whose name already names a function, so a user's own wrapper stays in charge.
+Outside Rex it defines nothing, and it defines nothing for a name that already names an alias or a function, so a user's own alias or wrapper stays in charge with its flags; that agent then runs without the launcher, and `rawr setup status` reports it.
+Alternative: remove the alias, as bash and zsh expand an alias before they look up a function.
+It lost: it drops the flags the alias adds, such as `--dangerously-skip-permissions`.
 This needs ctl-core's `shell_init` to render functions, a ctl-core change with its own ledger row; until it ships, `rawr init` prints only the hook.
 
 Alternative: a folder of agent links put first on `PATH` by a Rex mechanism.
@@ -84,8 +85,8 @@ It lost on probe point 5.
 
 `rawr setup` writes `rawr.lua` into each user's Rex configuration folder; no package installs it system-wide and adds `require("rawr")` to `init.lua`; `require` finds a module beside `init.lua` (probe point 6).
 When the daemon starts, the setup state records the Rex module as installed and the file exists, it compares the file with the copy its binary carries, rewrites it when they differ, and calls `server.config_reload`, so an upgrade needs no step and a removed module stays removed.
-`rawr.lua` names the binary's path, which the daemon writes into it; when that file is gone, the module turns no Rex rule off and its palette actions report that rawr is missing, so a module left after rawr is removed leaves Rex's own resume in place.
-`rawr.lua` turns off Rex's rule for every agent that has an adapter, so Rex starts none of them at a restart.
+`rawr.lua` names the binary's path, which the daemon writes into it; when that file is gone, the module turns no Rex rule off and adds no palette action, so a module left after rawr is removed leaves Rex's own resume in place.
+While the rawr binary exists, `rawr.lua` turns off Rex's rule for every agent that has an adapter, so Rex starts none of them at a restart.
 It calls `rex.set` only when `rex.set` exists: Rex 0.1.0-preview.21 and older have no `rex.set`, and an unguarded call makes `rex config check` fail with "attempt to call a non-function object" (checked on preview.20 and preview.21).
 Without the Rex module, Rex 0.1.0-preview.25 or later resumes every Claude Code session at a restart again.
 

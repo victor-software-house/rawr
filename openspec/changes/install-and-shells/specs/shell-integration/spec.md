@@ -8,7 +8,7 @@ Give each supported shell and Claude Code the hooks rawr needs, printed or writt
 
 ### Requirement: Print the shell integration
 
-`rawr init <SHELL>` SHALL print, for `bash`, `zsh` or `fish`, a script that runs `rawr resume` once before the first prompt in a Rex pane and, in a Rex pane, defines one function per supported agent that runs `rawr <agent>` with its arguments, unless a function of that name exists; it SHALL remove an alias of that name first, and SHALL do nothing when `rawr` is not on `PATH`.
+`rawr init <SHELL>` SHALL print, for `bash`, `zsh` or `fish`, a script that runs `rawr resume` once before the first prompt in a Rex pane and, in a Rex pane, defines one function per supported agent that runs `rawr <agent>` with its arguments, unless an alias or a function of that name exists, and SHALL do nothing when `rawr` is not on `PATH`.
 
 #### Scenario: zsh
 
@@ -17,8 +17,13 @@ Give each supported shell and Claude Code the hooks rawr needs, printed or writt
 
 #### Scenario: Agent functions inside Rex
 
-- **WHEN** a zsh with `REX_BLOCK` set and an alias `claude` evaluates `rawr init zsh`
+- **WHEN** a zsh with `REX_BLOCK` set evaluates `rawr init zsh`
 - **THEN** `claude --model opus` runs `rawr claude --model opus`
+
+#### Scenario: An alias of that name exists
+
+- **WHEN** a zsh in a Rex pane has `alias claude='claude --dangerously-skip-permissions'`, then evaluates `rawr init zsh`
+- **THEN** `claude` still expands to the user's alias
 
 #### Scenario: A function of that name exists
 

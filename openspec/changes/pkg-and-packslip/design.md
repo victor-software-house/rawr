@@ -37,7 +37,7 @@ A user who wants neither runs `rawr setup remove`.
 
 The pkg installs `/usr/local/bin/rawr`, the updater's launch daemon `/Library/LaunchDaemons/com.victor-software-house.rawr.updater.plist`, and the marker files.
 `brew uninstall --cask rawr` runs `rawr setup remove` for the user who runs it, unloads the updater and deletes the package's files.
-Another user's shell block and Rex module check for the `rawr` binary first, so they do nothing once it is gone ([agent-launcher][agent-launcher] decisions 6 and 7).
+Another user's shell block and Rex module check for the `rawr` binary first, so they do nothing once it is gone: the shell line defines no function, and `rawr.lua` sets no `resume.trust.<agent>` rule and adds no palette action, so Rex resumes agents itself again ([agent-launcher][agent-launcher] decisions 6 and 7).
 
 ### 5. `AGENTS.md` rule 4 changes
 

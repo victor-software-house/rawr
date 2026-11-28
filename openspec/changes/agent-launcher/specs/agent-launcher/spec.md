@@ -49,12 +49,17 @@ A resume from the stand-in or the app SHALL run `rawr <agent>` with the adapter'
 
 ### Requirement: Rex resumes no supported agent itself
 
-`rawr.lua` SHALL set `resume.trust.<agent>` to `false` for each agent with an adapter when `rex.set` exists, and SHALL load without error when it does not.
+`rawr.lua` SHALL set `resume.trust.<agent>` to `false` for each agent with an adapter when `rex.set` exists and the rawr binary it names exists, and SHALL load without error otherwise.
 
 #### Scenario: A current Rex
 
 - **WHEN** `init.lua` holds `require("rawr")` on Rex 0.1.0-preview.25 and the user runs `rex config check`
 - **THEN** the resume rules list `claude` under "not in force"
+
+#### Scenario: rawr was uninstalled
+
+- **WHEN** another user uninstalled rawr, and this user's `init.lua` still holds `require("rawr")`
+- **THEN** `rex config check` lists `claude` in force, and the module adds no palette action
 
 #### Scenario: An older Rex
 
