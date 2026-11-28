@@ -67,5 +67,10 @@ When the daemon starts, the setup state records the Rex module as installed, and
 
 #### Scenario: The module was removed
 
-- **WHEN** the user ran `rawr setup remove` and the daemon starts
+- **WHEN** the user ran `rawr setup remove`, or cleared "Rex module" in the checklist, and the daemon starts
 - **THEN** Rex's configuration folder holds no `rawr.lua`
+
+#### Scenario: The user deleted the file
+
+- **WHEN** the setup state records the Rex module and the user deleted `rawr.lua` by hand
+- **THEN** the daemon does not write it again

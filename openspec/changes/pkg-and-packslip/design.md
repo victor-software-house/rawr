@@ -13,7 +13,7 @@ rawr ships today as two tarballs, a Homebrew formula that a release dispatch mov
 |:--|:--|:--|
 | mise, `packslip:` | binary, completions | mise's `tool_update.global_auto` setting, which installs a newer `latest` tool on the next mise run |
 | Homebrew formula | binary, completions, `brew services` unit | `brew upgrade` |
-| pkg and cask | `/usr/local/bin/rawr`, `rawr.lua`, the updater | the updater; the cask sets `auto_updates true` |
+| pkg and cask | `/usr/local/bin/rawr`, the updater | the updater; the cask sets `auto_updates true` |
 
 Alternative: one channel.
 It lost: mise and Linux users need the packslip, and the Mac install that sets everything up needs the pkg (operator, 2026-11-27).

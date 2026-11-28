@@ -17,7 +17,7 @@ Each release SHALL attach `darwin-arm64`, `linux-x64` and `linux-arm64` tarballs
 
 ### Requirement: Install script
 
-`install.sh` SHALL install the binary matching the machine into `$RAWR_INSTALL_DIR`, else `~/.local/bin`, after verifying its digest, SHALL write nothing else, and SHALL end by printing the `rawr init` line for the user's shell.
+`install.sh` SHALL install the binary matching the machine into `$RAWR_INSTALL_DIR`, else `~/.local/bin`, after verifying its digest, SHALL write nothing else, and SHALL end by printing `rawr setup`, which writes the shell line when the user runs it.
 
 #### Scenario: A digest mismatch
 
@@ -27,7 +27,7 @@ Each release SHALL attach `darwin-arm64`, `linux-x64` and `linux-arm64` tarballs
 #### Scenario: Shell files are untouched
 
 - **WHEN** the script finishes on a machine whose shell is zsh
-- **THEN** `~/.zshrc` is unchanged and the last lines printed include `eval "$(rawr init zsh)"`
+- **THEN** `~/.zshrc` is unchanged and the last line printed is `rawr setup`
 
 #### Scenario: An unsupported machine
 
@@ -36,7 +36,7 @@ Each release SHALL attach `darwin-arm64`, `linux-x64` and `linux-arm64` tarballs
 
 ### Requirement: Homebrew
 
-`brew install victor-software-house/tap/rawr` SHALL install the binary and its bash, zsh and fish completions, and SHALL print the `rawr init` line as a caveat.
+`brew install victor-software-house/tap/rawr` SHALL install the binary and its bash, zsh and fish completions, and SHALL print `rawr setup` as a caveat.
 
 #### Scenario: Install with Homebrew
 
