@@ -10,7 +10,7 @@
 
 ## 2. Launcher
 
-- [ ] 2.1 `rawr <agent>`: launch record, `RAWR_LAUNCH`, `exec`, and `rawr record` joining the launch.
+- [ ] 2.1 `rawr <agent>`: launch record with the process ID, `exec`, and `rawr record` joining the launch only from that process's hook.
   Done when the launcher tests pass in CI.
 - [ ] 2.2 The Claude Code adapter.
   Done when the adapter tests pass in CI.

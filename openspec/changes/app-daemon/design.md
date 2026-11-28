@@ -20,7 +20,7 @@ rawr is smaller: one binary is both sides, and every message fits in one line.
    - `rawr daemon` keeps the Rex connection and the pane list built from it, the sessions no open pane holds, what it has read of each transcript, and the search catalog.
    - It also runs the window's actions in Rex: going to a pane, handing a floating window over to a copy in another tab, and resuming a session in a tab of its own.
      The window only asks, and the daemon answers with a `notice` when an action fails.
-   - A resume in the window's own pane is the one action the window does itself: the daemon answers `exec`, and the window gives the terminal back and becomes `claude --resume`.
+   - A resume in the window's own pane is the one action the window does itself: the daemon answers `exec`, and the window gives the terminal back and becomes `rawr <agent>` with the resume arguments and the recorded flags ([agent-launcher][agent-launcher] decision 4).
    - Considered: actions stay in the window.
      It lost: a hand-off has to close the old window after the new one draws, which only a process outside both windows can do.
    - Considered: a shared cache file that each window reads.
@@ -62,7 +62,7 @@ rawr is smaller: one binary is both sides, and every message fits in one line.
    | daemon | `hits` | the query ID, a batch of hits, and how many transcripts are read of how many |
    | client | `go_to` | the pane's session and block, and the window's view |
    | client | `resume` | the session to resume, and the Rex session to open a tab in when the window floats |
-   | daemon | `exec` | the session the window should become `claude --resume` for |
+   | daemon | `exec` | the session, and the `rawr <agent>` arguments the window should become |
    | daemon | `notice` | one line for the window's status bar, such as why an action failed |
    | client | `shutdown` | nothing |
 
@@ -122,3 +122,4 @@ rawr is smaller: one binary is both sides, and every message fits in one line.
 
 [rawr-app]: ../rawr-app/design.md
 [setup-and-tap]: ../setup-and-tap/design.md
+[agent-launcher]: ../agent-launcher/design.md

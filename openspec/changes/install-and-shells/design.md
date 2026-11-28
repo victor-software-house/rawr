@@ -14,10 +14,10 @@ rawr follows the first camp.
    rawr declares its one hook, running `rawr resume` once before the first prompt in a Rex pane, and ctl-core renders it for each shell.
    Alternative: rawr ships its own scripts for each shell.
    It lost: every ctl CLI that hooks into a shell would repeat the same hook code, and fix the same bugs one CLI at a time.
-1. **`init` prints; nothing writes shell files.**
-   The installers print `eval "$(rawr init zsh)"`, or the bash and fish forms, and stop.
-   Alternative: append that line to `~/.zshrc`, `~/.bashrc` or `config.fish`.
-   It lost: it edits files the user may manage elsewhere, such as in a dotfiles repository, and does it without asking.
+1. **`init` prints; `rawr setup` writes.**
+   `rawr init <shell>` prints the script, and `rawr setup` writes the marked block that loads it ([setup-and-tap][setup-and-tap] decisions 2 and 3); the installers write no shell file.
+   Alternative: installers append the line themselves.
+   It lost: an installer would write without asking, while `rawr setup` asks once and marks what it wrote.
 2. **`init` output is static.**
    It depends only on the shell and the rawr version, never on the machine, so it can be saved once with `rawr init zsh > ~/.config/zsh/rawr.zsh` and sourced with no process at shell start.
    Alternative: `eval "$(rawr init zsh)"` as the only form.
@@ -27,7 +27,7 @@ rawr follows the first camp.
    Alternative: also nushell, PowerShell and others that mise supports.
    It lost for now: their hooks differ again, and nobody has asked for them.
 4. **Nothing is quoted for a shell.**
-   The app resumes the chosen session itself, by becoming `claude --resume` (rawr-app design, decision 7), so no shell evaluates a line rawr prints.
+   The app resumes the chosen session itself, by becoming `rawr <agent>` with the resume arguments ([agent-launcher][agent-launcher] decision 4), so no shell evaluates a line rawr prints.
 5. **`setup claude` is explicit and idempotent.**
    It reads `$CLAUDE_CONFIG_DIR/settings.json` or `~/.claude/settings.json`, adds the hook only if no `SessionStart` hook already runs `rawr record`, keeps every other key as it was, and reports `added` or `unchanged`.
    This follows `rex skill setup`, which edits Claude Code settings only when run.
@@ -48,3 +48,5 @@ rawr follows the first camp.
 [zoxide]: https://github.com/ajeetdsouza/zoxide#installation
 [starship]: https://starship.rs/guide/
 [uv]: https://docs.astral.sh/uv/configuration/installer/
+[setup-and-tap]: ../setup-and-tap/design.md
+[agent-launcher]: ../agent-launcher/design.md

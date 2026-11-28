@@ -2,7 +2,7 @@
 
 ### Requirement: The launcher records the exact launch
 
-`rawr <agent> [args]` SHALL write the pane's launch record with the agent, its folder and its arguments, SHALL export `RAWR_LAUNCH` with the record's ID, and SHALL replace itself with the agent.
+`rawr <agent> [args]` SHALL write the pane's launch record with the agent, its own process ID, its folder and its arguments, and SHALL replace itself with the agent.
 
 #### Scenario: Claude Code with flags
 
@@ -11,8 +11,13 @@
 
 #### Scenario: The session joins the launch
 
-- **WHEN** Claude Code's session hook runs `rawr record` with `RAWR_LAUNCH` set, for session `0f3c2a9e-1d4b-4c8e-9a71-5b6d2e8f4c10`
+- **WHEN** Claude Code's session hook, whose parent is the recorded process, runs `rawr record` for session `0f3c2a9e-1d4b-4c8e-9a71-5b6d2e8f4c10`
 - **THEN** the launch record holds that session
+
+#### Scenario: A nested agent
+
+- **WHEN** a script inside that Claude Code starts another `claude`, whose hook runs `rawr record` for session `5a1e9c3b-7f20-4d6a-b8e4-2c9d0f1a3e57`
+- **THEN** the launch record keeps its first session, and the nested session gets a record of its own
 
 ### Requirement: A resume brings back the launch flags
 
@@ -53,9 +58,14 @@ A resume from the stand-in or the app SHALL run `rawr <agent>` with the adapter'
 
 ### Requirement: The daemon keeps rawr.lua current
 
-When the daemon starts and `rawr.lua` in Rex's configuration folder differs from the copy its binary carries, the daemon SHALL rewrite it and call `server.config_reload`.
+When the daemon starts, the setup state records the Rex module as installed, and `rawr.lua` in Rex's configuration folder exists and differs from the copy its binary carries, the daemon SHALL rewrite it and call `server.config_reload`.
 
 #### Scenario: After an upgrade
 
 - **WHEN** rawr 0.0.6 replaces 0.0.5 and its daemon starts
 - **THEN** `rawr.lua` matches 0.0.6's copy and `server.status` shows a higher configuration generation
+
+#### Scenario: The module was removed
+
+- **WHEN** the user ran `rawr setup remove` and the daemon starts
+- **THEN** Rex's configuration folder holds no `rawr.lua`

@@ -42,8 +42,9 @@ ctl-core's `shell_init` runs `<bin> <subcommand>`, and `Hook::new` takes a subco
 
 ### 3. The launcher records, then becomes the agent
 
-`rawr <agent> [args]` writes the pane's launch record, exports `RAWR_LAUNCH` with the record's ID, and replaces itself with the agent through `exec`.
-The launch record holds the agent, its folder and its arguments; `rawr record`, run by the agent's session hook with `RAWR_LAUNCH` in its environment, adds the session to that record.
+`rawr <agent> [args]` writes the pane's launch record with its own process ID, and replaces itself with the agent through `exec`, so the agent keeps that ID.
+The launch record holds the agent, its process ID, its folder and its arguments.
+`rawr record`, run by the agent's session hook, adds the session to that record only when the hook's parent process is the recorded one; a nested agent started from inside it has another ID and gets a record of its own.
 No rawr process stays: signals, the exit status and Rex's process name are the agent's own.
 
 Alternative: the launcher stays the agent's parent until it exits.
@@ -68,8 +69,8 @@ An agent without a session hook resumes with its own "continue the last session 
 
 ### 6. The agent's name reaches rawr through the shell line
 
-Inside a Rex pane, the shell line defines one function per supported agent, `function claude { command rawr claude "$@"; }` in zsh, and the bash and fish forms.
-The `function` keyword keeps a user's alias of the same name from breaking the definition.
+Inside a Rex pane, the shell line removes an alias of the same name, since bash and zsh expand an alias before they look up a function, then defines one function per supported agent, `function claude { command rawr claude "$@"; }` in zsh, and the bash and fish forms.
+The shell line does all of this only when `rawr` is on `PATH`, so a block left after rawr is removed does nothing.
 Outside Rex it defines nothing, and it defines no function whose name already names a function, so a user's own wrapper stays in charge.
 This needs ctl-core's `shell_init` to render functions, a ctl-core change with its own ledger row; until it ships, `rawr init` prints only the hook.
 
@@ -79,7 +80,8 @@ It lost on probe point 5.
 ### 7. `rawr.lua` sits beside `init.lua`
 
 `rawr setup` writes `rawr.lua` into Rex's configuration folder and adds `require("rawr")` to `init.lua`; `require` finds a module beside `init.lua` (probe point 6).
-The daemon compares the file with the copy its binary carries when it starts, rewrites it when they differ, and calls `server.config_reload`, so an upgrade needs no step.
+When the daemon starts, the setup state records the Rex module as installed and the file exists, it compares the file with the copy its binary carries, rewrites it when they differ, and calls `server.config_reload`, so an upgrade needs no step and a removed module stays removed.
+Its palette actions report that rawr is missing instead of failing when the binary is gone.
 `rawr.lua` turns off Rex's rule for every agent that has an adapter, so Rex starts none of them at a restart.
 It calls `rex.set` only when `rex.set` exists: Rex 0.1.0-preview.21 and older have no `rex.set`, and an unguarded call makes `rex config check` fail with "attempt to call a non-function object" (checked on preview.20 and preview.21).
 Without the Rex module, Rex 0.1.0-preview.25 or later resumes every Claude Code session at a restart again.
