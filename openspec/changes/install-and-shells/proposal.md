@@ -22,7 +22,7 @@ Installing must not touch the user's shell files or settings unasked, and must n
    - `brew install victor-software-house/tap/rawr`
    - `mise use -g github:victor-software-house/rawr`
 
-   Each ends by printing the one line to add for the user's shell.
+   Each ends by printing `rawr setup`, which writes the shell line in a block it marks as its own.
 
 ## Capabilities
 

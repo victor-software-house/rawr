@@ -80,7 +80,7 @@ The daemon SHALL add to `panes`, after the open panes, a closed pane for each se
 ### Requirement: The daemon acts in Rex for the window
 
 The daemon SHALL run `go_to` and `resume` in Rex for the window that sent them, and SHALL answer a failure with a `notice`.
-A `resume` for a window that does not float SHALL be answered with `exec`, and the window SHALL then become `claude --resume` itself.
+A `resume` for a window that does not float SHALL be answered with `exec`, and the window SHALL then become `rawr <agent>` with the resume arguments and the recorded flags itself.
 
 #### Scenario: Remote Control is off
 
@@ -90,7 +90,7 @@ A `resume` for a window that does not float SHALL be answered with `exec`, and t
 #### Scenario: Resume from a tiled pane
 
 - **WHEN** a window tiled in its Rex tab sends `resume` for session `Fix checkout`
-- **THEN** the daemon answers `exec`, and the window gives the terminal back and becomes `claude --resume <its id>` in its folder
+- **THEN** the daemon answers `exec`, and the window gives the terminal back and becomes `rawr claude --resume <its id>` with its recorded flags in its folder
 
 ### Requirement: A slow client is dropped
 

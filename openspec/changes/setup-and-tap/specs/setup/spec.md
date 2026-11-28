@@ -23,3 +23,21 @@ Install, report and remove everything rawr needs after the binary, and nothing e
 
 - **WHEN** another plugin is installed beside rawr's and `rawr setup remove` runs
 - **THEN** the other plugin is still installed
+
+### Requirement: Setup writes one marked block per file
+
+`rawr setup` SHALL write the shell line and the Rex module's `require` line each between rawr's start and end markers, and a second run SHALL leave each file with one such block.
+
+#### Scenario: Run twice
+
+- **WHEN** the user runs `rawr setup --yes` twice with zsh as the shell
+- **THEN** `~/.zshrc` holds one block between `# >>> rawr >>>` and `# <<< rawr <<<`, and `~/.config/rex/init.lua` holds one `require("rawr")` block
+
+### Requirement: The checklist is asked once
+
+When no setup state exists, the daemon SHALL give the checklist to the first rawr window that connects, and every other window SHALL wait until it is answered.
+
+#### Scenario: Three windows after an install
+
+- **WHEN** rawr was installed with mise and three rawr windows open at once
+- **THEN** one window shows the checklist, and after the answer all three draw their panes

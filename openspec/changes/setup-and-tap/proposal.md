@@ -17,8 +17,9 @@ It installs the plugin and service that change builds.
 ## What Changes
 
 1. A Homebrew tap, `victor-software-house/homebrew-tap`, with a `rawr` formula that installs the binary, completions, and a `brew services` service for `rawr daemon`.
-2. `rawr init <shell>`, which prints the shell hook that offers a restored pane its sessions.
-3. `rawr setup`, `rawr setup status` and `rawr setup remove`, after `rex skill setup`: each reports what it installed and touches nothing it did not install.
+2. `rawr init <shell>`, which prints the shell hook that offers a restored pane its sessions and defines the agent functions.
+3. `rawr setup`, `rawr setup status` and `rawr setup remove`, after `rex skill setup`: `rawr setup` writes the shell line and Rex's `require` line in blocks it marks as its own, each reports what it installed, and none touches what it did not install.
+4. The setup checklist is asked once per user, in Installer for a pkg install or in the first rawr window otherwise.
 
 ## Capabilities
 
@@ -28,7 +29,7 @@ It installs the plugin and service that change builds.
 
 ### Modified Capabilities
 
-- `install` and `shell-integration` (install-and-shells): Homebrew becomes the main install, `rawr setup` replaces `rawr setup claude`, and the shell line printed by `rawr setup` offers restored panes their sessions in every supported shell.
+- `install` and `shell-integration` (install-and-shells): Homebrew becomes the main install, `rawr setup` replaces `rawr setup claude`, and the shell line `rawr setup` writes offers restored panes their sessions in every supported shell.
 
 ## Impact
 

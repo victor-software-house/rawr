@@ -8,12 +8,37 @@ Give each supported shell and Claude Code the hooks rawr needs, printed or writt
 
 ### Requirement: Print the shell integration
 
-`rawr init <SHELL>` SHALL print, for `bash`, `zsh` or `fish`, a script that runs `rawr --startup` once before the first prompt in a Rex pane.
+`rawr init <SHELL>` SHALL print, for `bash`, `zsh` or `fish`, a script that runs `rawr resume` once before the first prompt in a Rex pane and, in a Rex pane, defines one function per supported agent that runs `rawr <agent>` with its arguments, unless a function of that name exists, SHALL keep an alias of that name, and SHALL do nothing when `rawr` is not on `PATH`.
 
 #### Scenario: zsh
 
 - **WHEN** the user runs `rawr init zsh`
 - **THEN** stdout holds a zsh script that uses `add-zsh-hook precmd`, and two runs print the same bytes
+
+#### Scenario: Agent functions inside Rex
+
+- **WHEN** a zsh with `REX_BLOCK` set evaluates `rawr init zsh`
+- **THEN** `claude --model opus` runs `rawr claude --model opus`
+
+#### Scenario: An alias of that name exists
+
+- **WHEN** a zsh in a Rex pane has `alias claude='claude --dangerously-skip-permissions'`, then evaluates `rawr init zsh`
+- **THEN** `claude --model opus` runs `rawr claude --dangerously-skip-permissions --model opus`
+
+#### Scenario: A function of that name exists
+
+- **WHEN** a zsh in a Rex pane defines its own function `claude`, then evaluates `rawr init zsh`
+- **THEN** `claude` still runs the user's function
+
+#### Scenario: rawr was removed
+
+- **WHEN** a zsh in a Rex pane evaluates the saved script and `rawr` is not on `PATH`
+- **THEN** `claude` runs the user's own `claude`
+
+#### Scenario: Outside Rex
+
+- **WHEN** a zsh without `REX_BLOCK` evaluates `rawr init zsh`
+- **THEN** `whence -w claude` reports a command, not a function
 
 #### Scenario: An unknown shell
 
