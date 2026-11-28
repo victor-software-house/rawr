@@ -11,7 +11,7 @@ rawr follows the first camp.
 
 0. **ctl-core owns the shell syntax.**
    `init` and `completion` come from ctl-core features that every ctl CLI shares.
-   rawr declares its one hook, running `rawr --startup` once before the first prompt in a Rex pane, and ctl-core renders it for each shell.
+   rawr declares its one hook, running `rawr resume` once before the first prompt in a Rex pane, and ctl-core renders it for each shell.
    Alternative: rawr ships its own scripts for each shell.
    It lost: every ctl CLI that hooks into a shell would repeat the same hook code, and fix the same bugs one CLI at a time.
 1. **`init` prints; nothing writes shell files.**

@@ -6,7 +6,7 @@ The app in [rawr-app][rawr-app] ran three producers inside each window: a Rex fe
 Each window paid for all three, and a second window, such as the copy that going to a pane starts in another Rex session, paid again from the start.
 Rex keeps a block in its session, so that second copy cannot be avoided; what can be avoided is its starting empty.
 
-The maintainer's `a` project is the prior art for the split.
+An earlier agent supervisor the maintainer wrote is the prior art for the split.
 Its daemon holds sessions and journals, its ratatui client holds the view, and they speak framed messages over a Unix socket in the daemon's state folder.
 The client starts the daemon under a kernel file lock when none answers, and reads one readiness line before connecting.
 Several clients attach at once, each with its own view, and the daemon keeps nothing of a client once it disconnects.
@@ -29,14 +29,14 @@ rawr is smaller: one binary is both sides, and every message fits in one line.
 2. **JSON lines over a Unix socket.**
    - The socket is `$XDG_STATE_HOME/rawr/daemon.sock` (default `~/.local/state/rawr/daemon.sock`), mode 0600 in a 0700 folder.
    - Each message is one JSON object on one line, tagged by `type`.
-   - Considered: Protobuf in length-prefixed frames, as `a` uses.
+   - Considered: Protobuf in length-prefixed frames, as that supervisor uses.
      It lost: both sides are the same binary, so no schema has to bind two programs, and `serde_json` is already a dependency.
 
 3. **The handshake compares the binary, not a version number.**
    - The client sends `hello` with its build: the path, size and modification time of its own executable.
    - The daemon answers `welcome` when the build matches, or `refused` with its own build.
    - On `refused`, the client sends `shutdown`, waits for the socket to close, and starts its own daemon.
-   - Considered: a protocol version, as `a` compares its major version.
+   - Considered: a protocol version, as that supervisor compares its major version.
      It lost: a rebuilt or upgraded binary keeps its version during development, and the old daemon would serve old code.
 
 4. **The first client starts the daemon.**
@@ -79,7 +79,7 @@ rawr is smaller: one binary is both sides, and every message fits in one line.
      It lost: a stopped client would grow the daemon's memory until it resumed.
 
 7. **View state stays in the client.**
-   - Selection, focus, arrangement, tab, query, filters, column widths and scroll live in `App`, as in `a`, where no client's view binds another's.
+   - Selection, focus, arrangement, tab, query, filters, column widths and scroll live in `App`, as in that supervisor, where no client's view binds another's.
    - `go_to` carries the window's view to the daemon, which starts the copy over the pane as `rawr --view <id>` and gives it the view in `welcome`.
      The daemon keeps that view only until the copy connects.
    - Considered: the copy reads the view from its command line.
