@@ -14,6 +14,11 @@
 - **WHEN** Claude Code's session hook, whose parent is the recorded process, runs `rawr record` for session `0f3c2a9e-1d4b-4c8e-9a71-5b6d2e8f4c10`
 - **THEN** the launch record holds that session
 
+#### Scenario: The hook runs through a shell
+
+- **WHEN** Claude Code runs the hook as `sh -c 'rawr record; true'`, so `rawr record`'s parent is `sh`
+- **THEN** `rawr record` walks up to the `claude` process and the launch record holds the session
+
 #### Scenario: A nested agent
 
 - **WHEN** a script inside that Claude Code starts another `claude`, whose hook runs `rawr record` for session `5a1e9c3b-7f20-4d6a-b8e4-2c9d0f1a3e57`
