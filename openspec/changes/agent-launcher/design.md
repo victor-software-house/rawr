@@ -73,9 +73,13 @@ An agent without a session hook resumes with its own "continue the last session 
 
 Inside a Rex pane, the shell line defines one function per supported agent, `function claude { command rawr claude "$@"; }` in zsh, and the bash and fish forms.
 The shell line does all of this only when `rawr` is on `PATH`, so a block left after rawr is removed does nothing.
-Outside Rex it defines nothing, and it defines nothing for a name that already names an alias or a function, so a user's own alias or wrapper stays in charge with its flags; that agent then runs without the launcher, and `rawr setup status` reports it.
-Alternative: remove the alias, as bash and zsh expand an alias before they look up a function.
-It lost: it drops the flags the alias adds, such as `--dangerously-skip-permissions`.
+Outside Rex it defines nothing, and it defines nothing for a name that already names a function, so a user's own wrapper stays in charge.
+An alias of the same name stays: bash and zsh expand it once and do not expand its own name again, so `alias claude='claude --dangerously-skip-permissions'` reaches the function and runs `rawr claude --dangerously-skip-permissions`, keeping the alias's flags and the launcher (checked in zsh and bash).
+An alias whose body names a path, such as `~/.claude/local/claude`, runs that path and bypasses the launcher; `rawr setup status` reports it.
+Alternative: remove the alias.
+It lost: it drops the flags the alias adds.
+Alternative: define nothing when an alias exists.
+It lost: the common alias that adds flags would then bypass the launcher.
 This needs ctl-core's `shell_init` to render functions, a ctl-core change with its own ledger row; until it ships, `rawr init` prints only the hook.
 
 Alternative: a folder of agent links put first on `PATH` by a Rex mechanism.
